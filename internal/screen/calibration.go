@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"strconv"
 
 	"golang.org/x/image/font"
@@ -41,16 +42,16 @@ func ditherBlack(k, dot, x, y int) bool {
 // dot is the side of a dither dot in pixels. E-ink can blur isolated
 // single-pixel dots, which makes sparse patches look lighter than they are,
 // so measuring with 1 and 2 shows whether that skews the result.
-func Calibration(p Profile, dot int) ([]byte, error) {
+func Calibration(w io.Writer, p Profile, dot int) error {
 	if err := p.validate(); err != nil {
-		return nil, err
+		return err
 	}
 	if dot < 1 || dot > 4 {
-		return nil, fmt.Errorf("render calibration: bad dot size %d", dot)
+		return fmt.Errorf("render calibration: bad dot size %d", dot)
 	}
 	rows := p.Levels - 2
 	if rows < 1 {
-		return nil, errors.New("render calibration: a 2-level panel has no grays to calibrate")
+		return errors.New("render calibration: a 2-level panel has no grays to calibrate")
 	}
 	scale := float64(p.Height) / baseHeight
 	faces := make([]font.Face, 4)
@@ -61,7 +62,7 @@ func Calibration(p Profile, dot int) ([]byte, error) {
 		size float64
 	}{{true, 26}, {false, 15}, {true, 22}, {false, 13}} {
 		if faces[i], err = newFace(f.bold, f.size*scale); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	title, body, rowLabel, number := faces[0], faces[1], faces[2], faces[3]
@@ -95,7 +96,7 @@ func Calibration(p Profile, dot int) ([]byte, error) {
 	avail := p.Height - y - margin/2 - numH
 	ph := min(2*pw, avail/rows-rowGap)
 	if pw < 4 || ph < 8 {
-		return nil, fmt.Errorf("render calibration: %dx%d is too small for %d rows", p.Width, p.Height, rows)
+		return fmt.Errorf("render calibration: %dx%d is too small for %d rows", p.Width, p.Height, rows)
 	}
 	ph &^= 1 // Even, so the halves are equal.
 	rowH := ph + rowGap
@@ -125,5 +126,5 @@ func Calibration(p Profile, dot int) ([]byte, error) {
 			}
 		}
 	}
-	return encode(img, p)
+	return encode(w, img, p)
 }

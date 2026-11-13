@@ -2,14 +2,23 @@ package imagestore
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// nameOf is the name an image with these bytes is stored under.
+func nameOf(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:nameLen]
+}
 
 // serve makes a request to the store's handler.
 func serve(t *testing.T, s *Store, path string) *httptest.ResponseRecorder {
@@ -31,14 +40,14 @@ func TestPutAndServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := []byte("\x89PNG not really")
-	name, err := s.Put(data)
+	name, err := s.Put(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(name) != nameLen || name != Name(data) {
-		t.Fatalf("name %q, want %d hex digits matching Name", name, nameLen)
+	if len(name) != nameLen || name != nameOf(data) {
+		t.Fatalf("name %q, want %d hex digits matching its hash", name, nameLen)
 	}
-	if again, err := s.Put(data); err != nil || again != name {
+	if again, err := s.Put(bytes.NewReader(data)); err != nil || again != name {
 		t.Fatalf("second Put = %q, %v; want %q", again, err, name)
 	}
 	onDisk, err := fs.ReadFile(os.DirFS(dir), name[:2]+"/"+name[2:]+".png")
@@ -62,7 +71,7 @@ func TestServeRejects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, err := s.Put([]byte("x"))
+	name, err := s.Put(strings.NewReader("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +99,7 @@ func TestPutTouches(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := []byte("image")
-	name, err := s.Put(data)
+	name, err := s.Put(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +115,7 @@ func TestPutTouches(t *testing.T) {
 		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Put(data); err != nil {
+		if _, err := s.Put(bytes.NewReader(data)); err != nil {
 			t.Fatal(err)
 		}
 		info, err := os.Stat(path)
@@ -132,7 +141,7 @@ func TestExpire(t *testing.T) {
 	old := cutoff.Add(-time.Hour)
 	put := func(data string, mtime time.Time) string {
 		t.Helper()
-		name, err := s.Put([]byte(data))
+		name, err := s.Put(strings.NewReader(data))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -144,7 +153,7 @@ func TestExpire(t *testing.T) {
 	oldUnused := put("old unused", old)
 	oldKept := put("old kept", old)
 	fresh := put("fresh", now)
-	stray := filepath.Join(dir, oldKept[:2], tmpPrefix+"123")
+	stray := filepath.Join(dir, tmpPrefix+"123")
 	other := filepath.Join(dir, oldKept[:2], "notes.txt")
 	for _, f := range []string{stray, other} {
 		if err := os.WriteFile(f, nil, 0o600); err != nil {
@@ -172,6 +181,72 @@ func TestExpire(t *testing.T) {
 		_, err := os.Stat(tc.path)
 		if exists := err == nil; exists != tc.exists {
 			t.Errorf("%s exists = %v, want %v", tc.path, exists, tc.exists)
+		}
+	}
+}
+
+// TestCommitKeepsExisting checks that storing bytes already stored leaves
+// the existing file in place rather than replacing it, which keeps
+// filesystem snapshots from holding a copy of every rewrite, and leaves no
+// temporary file behind.
+func TestCommitKeepsExisting(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := s.Put(strings.NewReader("image"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(s.path(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.Put(strings.NewReader("image")); err != nil || again != name {
+		t.Fatalf("second Put = %q, %v", again, err)
+	}
+	after, err := os.Stat(s.path(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Error("storing the same bytes replaced the file")
+	}
+	assertNoTemp(t, dir)
+}
+
+// TestAbort checks that an aborted image leaves nothing behind.
+func TestAbort(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	w.Abort()
+	w.Abort() // A second Abort does nothing.
+	if _, err := w.Commit(); err == nil {
+		t.Error("Commit after Abort succeeded")
+	}
+	assertNoTemp(t, dir)
+}
+
+func assertNoTemp(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), tmpPrefix) {
+			t.Errorf("temporary file %s left behind", e.Name())
 		}
 	}
 }

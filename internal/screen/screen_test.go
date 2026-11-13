@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+// renderPNG renders into memory, which a test may do.
+func renderPNG(p Profile, lines []Line) ([]byte, error) {
+	var buf bytes.Buffer
+	err := Render(&buf, p, lines)
+	return buf.Bytes(), err
+}
+
+func calibrationPNG(p Profile, dot int) ([]byte, error) {
+	var buf bytes.Buffer
+	err := Calibration(&buf, p, dot)
+	return buf.Bytes(), err
+}
+
 // TestRenderBitDepth checks that a screen comes out at the panel's size and
 // at the smallest PNG bit depth for its gray levels, and that a 4-level
 // screen has more than 2 colors, which is what puts an OG in gray mode.
@@ -20,7 +33,7 @@ func TestRenderBitDepth(t *testing.T) {
 		{4, 2},
 		{16, 4},
 	} {
-		data, err := Render(Profile{Width: 800, Height: 480, Levels: tc.levels}, lines)
+		data, err := renderPNG(Profile{Width: 800, Height: 480, Levels: tc.levels}, lines)
 		if err != nil {
 			t.Fatalf("levels %d: %v", tc.levels, err)
 		}
@@ -50,7 +63,7 @@ func TestRenderBitDepth(t *testing.T) {
 
 // TestRenderScales checks that a TRMNL X-sized screen renders.
 func TestRenderScales(t *testing.T) {
-	if _, err := Render(Profile{Width: 1872, Height: 1404, Levels: 16}, []Line{{Text: "Hello", Size: 44}}); err != nil {
+	if _, err := renderPNG(Profile{Width: 1872, Height: 1404, Levels: 16}, []Line{{Text: "Hello", Size: 44}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -62,7 +75,7 @@ func TestRenderRejects(t *testing.T) {
 		{Width: 800, Height: 480, Levels: 1},
 		{Width: 800, Height: 480, Levels: 257},
 	} {
-		if _, err := Render(p, nil); err == nil {
+		if _, err := renderPNG(p, nil); err == nil {
 			t.Errorf("Render(%+v) succeeded", p)
 		}
 	}
@@ -78,10 +91,10 @@ func TestSwatches(t *testing.T) {
 		{Width: 480, Height: 800, Levels: 16},
 		{Width: 1872, Height: 1404, Levels: 16},
 	} {
-		data, err := Render(p, []Line{{Swatches: true, Size: 36}})
+		data, err := renderPNG(p, []Line{{Swatches: true, Size: 36}})
 		if err == nil && p.Levels == 4 {
 			p.Light = ogLight
-			data, err = Render(p, []Line{{Swatches: true, Size: 36}})
+			data, err = renderPNG(p, []Line{{Swatches: true, Size: 36}})
 		}
 		if err != nil {
 			t.Fatalf("%+v: %v", p, err)
@@ -139,7 +152,7 @@ func TestCalibration(t *testing.T) {
 		{Width: 480, Height: 800, Levels: 4},
 		{Width: 1872, Height: 1404, Levels: 16},
 	} {
-		data, err := Calibration(p, 2)
+		data, err := calibrationPNG(p, 2)
 		if err != nil {
 			t.Fatalf("%+v: %v", p, err)
 		}
@@ -155,10 +168,10 @@ func TestCalibration(t *testing.T) {
 			t.Errorf("%+v: %d levels used, want %d", p, len(used), p.Levels)
 		}
 	}
-	if _, err := Calibration(Profile{Width: 800, Height: 480, Levels: 2}, 1); err == nil {
+	if _, err := calibrationPNG(Profile{Width: 800, Height: 480, Levels: 2}, 1); err == nil {
 		t.Error("calibrated a 2-level panel")
 	}
-	if _, err := Calibration(Profile{Width: 800, Height: 480, Levels: 4}, 0); err == nil {
+	if _, err := calibrationPNG(Profile{Width: 800, Height: 480, Levels: 4}, 0); err == nil {
 		t.Error("accepted dot size 0")
 	}
 }
@@ -222,7 +235,7 @@ func TestProfileLightRejects(t *testing.T) {
 		{0, 0.2, 0.5, 1.1},  // above 1
 		{-0.1, 0.2, 0.5, 1}, // below 0
 	} {
-		if _, err := Render(Profile{Width: 8, Height: 8, Levels: 4, Light: light}, nil); err == nil {
+		if _, err := renderPNG(Profile{Width: 8, Height: 8, Levels: 4, Light: light}, nil); err == nil {
 			t.Errorf("accepted light %v", light)
 		}
 	}

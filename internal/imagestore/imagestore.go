@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,66 +36,114 @@ func New(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
-// Name returns the name an image with these bytes is stored under. The same
-// pixels always get the same name, so a device skips a download, and a
-// repaint, when nothing changed.
-func Name(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])[:nameLen]
-}
-
-// touchAfter is how stale an image's modification time gets before Put
-// refreshes it. Expire's grace period is far longer, and touching at most
-// hourly keeps metadata writes, and filesystem snapshot churn, low.
+// touchAfter is how stale an image's modification time gets before it is
+// refreshed. Expire's grace period is far longer, and touching at most hourly
+// keeps metadata writes, and filesystem snapshot churn, low.
 const touchAfter = time.Hour
 
-// Put stores a PNG and returns its name. When a file with the same name
-// already exists, Put never rewrites it. It only refreshes the file's
-// modification time, which Expire reads as when the image was last used.
-func (s *Store) Put(data []byte) (string, error) {
-	name := Name(data)
-	path := s.path(name)
-	info, err := os.Stat(path)
-	switch {
-	case err == nil:
-		if now := time.Now(); now.Sub(info.ModTime()) > touchAfter {
-			if err := os.Chtimes(path, now, now); err != nil {
-				return "", fmt.Errorf("touch image: %w", err)
-			}
-		}
-		return name, nil
-	case !errors.Is(err, os.ErrNotExist):
-		return "", fmt.Errorf("stat image: %w", err)
-	}
-	// Write to a temporary file and rename it, so a reader never sees part
-	// of an image.
-	sub := filepath.Dir(path)
-	if err := os.MkdirAll(sub, 0o750); err != nil {
-		return "", fmt.Errorf("create image dir: %w", err)
-	}
-	tmp, err := os.CreateTemp(sub, tmpPrefix+"*")
+// tmpPrefix starts the name of a file still being written.
+const tmpPrefix = ".tmp-"
+
+// Writer writes a new image. Write the PNG to it, then Commit, or Abort.
+type Writer struct {
+	store *Store
+	file  *os.File
+	hash  hash.Hash
+	w     io.Writer
+	done  bool
+}
+
+// Create starts a new image. Its name is the hash of what is written, so it
+// is known only at Commit. Until then it is a temporary file in the store's
+// top directory.
+func (s *Store) Create() (*Writer, error) {
+	f, err := os.CreateTemp(s.dir, tmpPrefix+"*")
 	if err != nil {
-		return "", fmt.Errorf("create image: %w", err)
+		return nil, fmt.Errorf("create image: %w", err)
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("write image: %w", err)
+	h := sha256.New()
+	return &Writer{store: s, file: f, hash: h, w: io.MultiWriter(f, h)}, nil
+}
+
+// Write writes part of the image.
+func (w *Writer) Write(p []byte) (int, error) {
+	return w.w.Write(p)
+}
+
+// Commit stores the image and returns its name. The same pixels always get
+// the same name, so a device skips a download, and a repaint, when nothing
+// changed. When the image is already stored, Commit leaves that file alone
+// rather than rewriting it, and only refreshes its time.
+func (w *Writer) Commit() (string, error) {
+	if w.done {
+		return "", errors.New("image already finished")
 	}
-	if err := tmp.Close(); err != nil {
+	w.done = true
+	defer func() { _ = os.Remove(w.file.Name()) }() // A no-op once renamed.
+	if err := w.file.Close(); err != nil {
 		return "", fmt.Errorf("close image: %w", err)
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	name := hex.EncodeToString(w.hash.Sum(nil))[:nameLen]
+	if ok, err := w.store.Refresh(name); err != nil || ok {
+		return name, err
+	}
+	path := w.store.path(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return "", fmt.Errorf("create image dir: %w", err)
+	}
+	if err := os.Rename(w.file.Name(), path); err != nil {
 		return "", fmt.Errorf("rename image: %w", err)
 	}
 	return name, nil
 }
 
-// tmpPrefix starts the name of a file Put is still writing.
-const tmpPrefix = ".tmp-"
+// Abort discards the image. It does nothing after Commit.
+func (w *Writer) Abort() {
+	if w.done {
+		return
+	}
+	w.done = true
+	_ = w.file.Close()
+	_ = os.Remove(w.file.Name())
+}
+
+// Put stores the PNG read from r and returns its name.
+func (s *Store) Put(r io.Reader) (string, error) {
+	w, err := s.Create()
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(w, r); err != nil {
+		w.Abort()
+		return "", fmt.Errorf("write image: %w", err)
+	}
+	return w.Commit()
+}
+
+// Refresh reports whether the named image is stored, and marks it used now
+// if its time is more than touchAfter old, so Expire keeps it.
+func (s *Store) Refresh(name string) (bool, error) {
+	if !validName(name) {
+		return false, nil
+	}
+	path := s.path(name)
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat image: %w", err)
+	}
+	if now := time.Now(); now.Sub(info.ModTime()) > touchAfter {
+		if err := os.Chtimes(path, now, now); err != nil {
+			return false, fmt.Errorf("touch image: %w", err)
+		}
+	}
+	return true, nil
+}
 
 // Expire deletes each image that keep does not name and that was last
-// stored before cutoff, plus temporary files a crashed Put left behind, and
+// stored before cutoff, plus temporary files a crashed write left behind, and
 // returns how many images it deleted. The cutoff gives a grace period: a
 // render writes its image before the row naming it commits, and a device
 // fetches an image a moment after it is told the name.
@@ -104,7 +154,16 @@ func (s *Store) Expire(keep map[string]bool, cutoff time.Time) (int, error) {
 	}
 	deleted := 0
 	for _, sub := range subs {
-		if !sub.IsDir() || len(sub.Name()) != 2 {
+		if !sub.IsDir() {
+			// A temporary file left by a crashed write.
+			if strings.HasPrefix(sub.Name(), tmpPrefix) {
+				if err := removeIfOld(filepath.Join(s.dir, sub.Name()), sub, cutoff); err != nil {
+					return deleted, err
+				}
+			}
+			continue
+		}
+		if len(sub.Name()) != 2 {
 			continue
 		}
 		dir := filepath.Join(s.dir, sub.Name())
@@ -139,6 +198,25 @@ func (s *Store) Expire(keep map[string]bool, cutoff time.Time) (int, error) {
 		}
 	}
 	return deleted, nil
+}
+
+// removeIfOld removes the file at path if it was last modified before
+// cutoff. A file already gone is fine.
+func removeIfOld(path string, d os.DirEntry, cutoff time.Time) error {
+	info, err := d.Info()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat image: %w", err)
+	}
+	if !info.ModTime().Before(cutoff) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete image: %w", err)
+	}
+	return nil
 }
 
 // path is where the image with a valid name is stored.

@@ -2,6 +2,8 @@ package deviceapi
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -157,8 +159,8 @@ func (ts *testServer) fetchImage(t *testing.T, url, filename string) {
 	if code != http.StatusOK || !bytes.HasPrefix(data, []byte("\x89PNG")) {
 		t.Fatalf("GET %s = %d, %d bytes", url, code, len(data))
 	}
-	if filename != "" && imagestore.Name(data) != filename {
-		t.Fatalf("filename %q is not the image's name %q", filename, imagestore.Name(data))
+	if sum := sha256.Sum256(data); filename != "" && hex.EncodeToString(sum[:])[:len(filename)] != filename {
+		t.Fatalf("filename %q is not a prefix of the image's SHA-256 %x", filename, sum)
 	}
 	if len(filename) > 31 {
 		t.Fatalf("filename %q is longer than the firmware keeps", filename)
@@ -463,4 +465,23 @@ func TestShowScreenCalibrate(t *testing.T) {
 	if _, err := ShowScreen(t.Context(), ts.db, "NOSUCH", ScreenCalibrate, ts.now.Add(time.Minute)); !errors.Is(err, ErrNoDevice) {
 		t.Fatalf("unknown device: %v, want ErrNoDevice", err)
 	}
+}
+
+// TestScreenRedrawnAfterExpiry checks that a system screen whose image was
+// deleted, as image expiry does, is drawn again on the next wake rather
+// than handed out as a name with no file behind it.
+func TestScreenRedrawnAfterExpiry(t *testing.T) {
+	ts := newTestServer(t)
+	key := ts.register(t)
+	m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+	name := m["filename"].(string)
+	n, err := ts.srv.images.Expire(nil, ts.now.Add(24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("Expire = %d, %v; want 1", n, err)
+	}
+	m = ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+	if m["filename"] != name {
+		t.Fatalf("filename %v, want %s", m["filename"], name)
+	}
+	ts.fetchImage(t, m["image_url"].(string), name)
 }

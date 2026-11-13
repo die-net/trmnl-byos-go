@@ -9,13 +9,13 @@
 package screen
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	"io"
 	"math"
 	"sync"
 
@@ -73,12 +73,12 @@ var fonts = sync.OnceValues(func() ([2]*opentype.Font, error) {
 	return [2]*opentype.Font{regular, bold}, nil
 })
 
-// Render draws lines centered on a white screen and encodes it as a PNG.
-// Text is anti-aliased, and each edge pixel becomes the level nearest the
-// light it should give off, without dithering.
-func Render(p Profile, lines []Line) ([]byte, error) {
+// Render draws lines centered on a white screen and writes it to w as a
+// PNG. Text is anti-aliased, and each edge pixel becomes the level nearest
+// the light it should give off, without dithering.
+func Render(w io.Writer, p Profile, lines []Line) error {
 	if err := p.validate(); err != nil {
-		return nil, err
+		return err
 	}
 	scale := float64(p.Height) / baseHeight
 	faces := make([]font.Face, len(lines))
@@ -91,7 +91,7 @@ func Render(p Profile, lines []Line) ([]byte, error) {
 		}
 		face, err := newFace(l.Bold, l.Size*scale)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		faces[i] = face
 		total += lineHeight(face)
@@ -109,7 +109,7 @@ func Render(p Profile, lines []Line) ([]byte, error) {
 		y += lineHeight(faces[i])
 		drawText(img, faces[i], l.Text, p.Width/2, y-faces[i].Metrics().Descent.Round())
 	}
-	return encode(img, p)
+	return encode(w, img, p)
 }
 
 func (p Profile) validate() error {
@@ -204,14 +204,13 @@ func fill(img *image.Alpha, r image.Rectangle, light []float64, i int) {
 	draw.Draw(img, r, image.NewUniform(levelInk(light, i)), image.Point{}, draw.Src)
 }
 
-// encode reduces img to the panel's levels and encodes it as a PNG.
-func encode(img *image.Alpha, p Profile) ([]byte, error) {
-	var buf bytes.Buffer
+// encode reduces img to the panel's levels and writes it to w as a PNG.
+func encode(w io.Writer, img *image.Alpha, p Profile) error {
 	enc := png.Encoder{CompressionLevel: png.BestCompression}
-	if err := enc.Encode(&buf, quantize(img, p)); err != nil {
-		return nil, fmt.Errorf("render screen: encode: %w", err)
+	if err := enc.Encode(w, quantize(img, p)); err != nil {
+		return fmt.Errorf("render screen: encode: %w", err)
 	}
-	return buf.Bytes(), nil
+	return nil
 }
 
 // levelGray is the palette entry for level i of n, darkest first. The

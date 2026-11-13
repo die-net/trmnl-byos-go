@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -77,17 +78,16 @@ type Server struct {
 	now    func() time.Time
 
 	mu sync.Mutex
-	// screens maps a system screen's profile and text to its PNG, so a
-	// screen is drawn once, not on every wake. The PNG is stored again on
-	// each use, which is cheap when it exists and restores it if image
-	// expiry deleted it.
-	screens map[string][]byte
+	// screens maps a system screen's profile and text to its image name,
+	// so a screen is drawn once, not on every wake. It is drawn again only
+	// if image expiry deleted it.
+	screens map[string]string
 }
 
 // New returns a Server that keeps state in client and images in images.
 func New(client *db.Client, images *imagestore.Store, cfg Config) *Server {
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
-	return &Server{db: client, images: images, cfg: cfg, now: time.Now, screens: map[string][]byte{}}
+	return &Server{db: client, images: images, cfg: cfg, now: time.Now, screens: map[string]string{}}
 }
 
 // Register adds the device endpoints to mux.
@@ -341,7 +341,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	var name string
 	if dot, ok := calibrationDots[dev.ScreenOverride]; ok && dev.ScreenOverrideUntil > s.now().Unix() {
 		left := dev.ScreenOverrideUntil - s.now().Unix()
-		name, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, p), func() ([]byte, error) { return screen.Calibration(p, dot) })
+		name, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, p), func(w io.Writer) error { return screen.Calibration(w, p, dot) })
 		// Wake when the override ends, so the usual screen comes back on time.
 		refresh = min(refresh, left)
 	} else {
@@ -523,26 +523,39 @@ func hashKey(key string) []byte {
 // screen renders a system screen of text lines, stores it, and returns its
 // image name.
 func (s *Server) screen(p screen.Profile, lines []screen.Line) (string, error) {
-	return s.cached(fmt.Sprintf("lines %+v %+v", p, lines), func() ([]byte, error) { return screen.Render(p, lines) })
+	return s.cached(fmt.Sprintf("lines %+v %+v", p, lines), func(w io.Writer) error { return screen.Render(w, p, lines) })
 }
 
-// cached stores the PNG render draws and returns its name, drawing it only
-// the first time key is seen.
-func (s *Server) cached(key string, render func() ([]byte, error)) (string, error) {
+// cached returns the name of the image render draws for key. It draws the
+// image straight into the image store the first time key is seen, and again
+// only if the stored image is gone. Using it marks it used, so image expiry
+// keeps it.
+func (s *Server) cached(key string, render func(io.Writer) error) (string, error) {
 	s.mu.Lock()
-	data, ok := s.screens[key]
+	name, ok := s.screens[key]
 	s.mu.Unlock()
-	if !ok {
-		var err error
-		data, err = render()
-		if err != nil {
-			return "", err
+	if ok {
+		stored, err := s.images.Refresh(name)
+		if err != nil || stored {
+			return name, err
 		}
-		s.mu.Lock()
-		s.screens[key] = data
-		s.mu.Unlock()
 	}
-	return s.images.Put(data)
+	w, err := s.images.Create()
+	if err != nil {
+		return "", err
+	}
+	if err := render(w); err != nil {
+		w.Abort()
+		return "", err
+	}
+	name, err = w.Commit()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.screens[key] = name
+	s.mu.Unlock()
+	return name, nil
 }
 
 // imageURL is the absolute URL a device fetches the named image from. The

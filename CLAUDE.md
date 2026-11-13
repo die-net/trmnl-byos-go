@@ -46,7 +46,8 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 - Encode JSON from a struct with `json` tags, not from `map[string]any`. An anonymous struct is fine for a one-off payload. Decoding into `map[string]any` to inspect unknown JSON is fine.
 - Test-only helpers, flags, and fields live in `_test.go` files, not in production code.
 - A rename or move updates every caller. No wrapper, `type X = other.X` alias, or shim is kept for the old name.
-- A new dependency comes from the standard library first, then `golang.org/x`, before anything else.
+- A new dependency comes from the standard library first, then `golang.org/x`, before anything else. Before writing a general-purpose piece such as a proxy, cache, or address check, look for one in the standard library, `golang.org/x`, or another die-net repository, and use or copy that.
+- Bodies stream. Pass an `io.Reader` or `io.Writer` through, and copy with `io.Copy`; never read a body, file, upload, or rendered image into a `[]byte`, `string`, or `bytes.Buffer` just to hand it on. Bounded small values, such as a JSON control message read through a size limit, are fine.
 
 ## Fixes
 

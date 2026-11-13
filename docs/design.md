@@ -64,8 +64,8 @@ flowchart LR
 Device requests never wait on a render: the scheduler renders ahead, the shim runs one `trmnlp build` per job, and the PNG lands in the store by content hash.
 
 - **Server**: device API, scheduler, store, admin UI, JSON API, MCP server and webhook ingest in one binary.
-- **Renderer**: the `trmnl/trmnlp` image plus a small HTTP shim. It sees only the `projects` and `framework` volumes, never the database or secrets. It sits on an internal network with no route out; its only way to the internet is the server's filtering proxy (see Security and privacy).
-- **Framework mirror**: every framework release from TRMNL's public bucket, so recipes pinned to old versions keep rendering and fewer assets come from the internet at render time.
+- **Renderer**: the `trmnl/trmnlp` image plus a small HTTP shim. It sees only the `projects` volume, never the database or secrets. It sits on an internal network with no route out; its only way to the internet is the server's filtering proxy (see Security and privacy).
+- **Asset cache**: the renderer's proxy caches the framework's CSS, JavaScript, fonts and images, Highcharts, and Google Fonts on the server's disk, so each is fetched from the internet once, and recipes pinned to old framework versions keep rendering.
 
 ## Device protocol and profiles
 
@@ -171,7 +171,7 @@ The plugin format is the TRMNL recipe, unmodified, and the renderer is trmnlp dr
 | `polling_url` is Liquid, sometimes several URLs (`IDX_0`, `IDX_1`) | 3 multi-URL, many templated | trmnlp |
 | Transforms (4 JS, 1 Ruby, 1 Python) | 6 | trmnlp image ships Node, Python, Ruby, PHP |
 | JavaScript in the page (3 load Highcharts) | 6 | Browser in the trmnlp image |
-| Pinned framework version (7 distinct versions) | 24 | Framework mirror |
+| Pinned framework version (7 distinct versions) | 24 | Asset cache |
 | `trmnl.device.*` in markup or URLs | 3 | Per-device project directory |
 | Webhook strategy | 1 | Our webhook endpoint writes the data file |
 | OAuth | 0 | Deferred |
@@ -274,7 +274,13 @@ The device API is LAN-only and token-based; the admin side needs a login; and re
   - The trmnlp container runs on a Docker `--internal` network, which has no gateway. Nothing inside it reaches the internet or the LAN directly.
   - The server joins that network too and runs an HTTP forward proxy there, with `CONNECT` for HTTPS. The proxy resolves each host itself, refuses any loopback, private, link-local, CGNAT, unique-local or otherwise non-public address, and connects to the address it checked, so a DNS answer that changes between check and connect gets nothing through. It uses the same check as the server's own outbound client.
   - Each build gets `HTTP_PROXY` and `HTTPS_PROXY` pointing at the proxy, with credentials unique to that build. The proxy logs each host a build contacts and each refusal against its recipe, which the UI shows. Paperboy, for example, would show its third-party "battery" endpoint, which receives the device ID, battery level and a timestamp.
-  - trmnlp's HTTP client and Python honor the proxy variables. Node's built-in `fetch` does not, so a JavaScript transform that fetches on its own fails rather than leaking.
+  - trmnlp's HTTP client, Python and the trmnlp image's Firefox honor the proxy variables; a test showed Firefox's page and image requests at the proxy. `NO_PROXY` must cover `localhost` and `127.0.0.1`, since trmnlp drives Firefox through a local WebDriver connection. Node's built-in `fetch` does not use a proxy, so a JavaScript transform that fetches on its own fails rather than leaking.
+  - The proxy caches assets. A `CONNECT` tunnel hides what passes through it, so each project's `.trmnlp.yml` sets `framework_asset_host: http://trmnl.com` and `asset_overrides` that turn `https://` into `http://` for `trmnl.com`, `fonts.googleapis.com`, `fonts.gstatic.com` and `code.highcharts.com`. Firefox then sends those requests to the proxy in the clear, with their full URLs. The proxy serves them from the cache, or fetches them over HTTPS and stores them. Root-relative URLs in the framework's CSS resolve to `http://trmnl.com/...` and are cached the same way. Versioned paths (`/css/<version>/`, `/js/<version>/`, `/js/highcharts/<version>/`, Google's font files) are kept forever; anything else follows its `Cache-Control`, and a stale copy is served if the upstream fails. The proxy rewrites `https://fonts.gstatic.com/` to `http://` inside Google Fonts stylesheets, and keys those stylesheets by User-Agent, since Google picks the font format by it. It upgrades to HTTPS only for the cached hosts.
+  - The proxy is built from the standard library and die-net code, not written from scratch:
+    - The server is conduit's `internal/proxy.HTTPProxyServer`. Plain-HTTP requests go through `net/http/httputil.ReverseProxy`, which streams bodies and handles hop-by-hop headers; its director turns a cached host's URL to `https://`, and its `Transport` is the caching round tripper below. `ReverseProxy` refuses `CONNECT`, and neither the standard library nor `golang.org/x/net` serves it (`x/net/proxy` and `x/net/http/httpproxy` are client side), so conduit hijacks the connection, dials, answers 200, and copies both ways with `internal/conn.CopyBidirectional`, which half-closes each direction and sets no deadlines so `io.Copy` can splice on Linux.
+    - The dialer is conduit's direct dialer (fully qualified lookups, TCP keepalive, one address family when the host has only one) with legwork's `guard` check in its `Control` hook. The check runs on the address each connection is about to use, so neither a redirect nor a DNS answer that changes between lookups gets around it. Recipes poll plain HTTP and other ports, so unlike legwork's client, any port on a public address is allowed.
+    - The cache is plainweb's `internal/cache`. An entry is one file: a JSON line with the request fields that matter and the response's status and headers, then the body. The file is named by the SHA-256 of those request fields, under a subdirectory of its first two hex digits. Entries are written to a temporary file and renamed into place, the modification time is when the entry was last known fresh, and a janitor sweeps by age and total size. Reads and writes stream: a hit's body is the open file, and a miss's body is copied to the client and the cache entry at once, committed only if it was read to the end.
+  - A test with trmnl-meteoswiss sent every framework asset through the cache and rendered the same image. `plugins.css` for framework 3.4.6 is 19 MB, and Firefox loads it once per layout, so the cache saves about 76 MB of downloads per build. What still goes out uncached: the recipe's own data, trmnlp's framework version list on `raw.githubusercontent.com`, two small `trmnl.com` API calls from the poller, and Firefox's own update and settings checks at Mozilla.
   - There is no per-host allowlist. Some hosts come from data, not markup: Top Hacker News Story shows each story's preview image, fetched from whatever site the story links to, so no install-time review could list them.
 - **Transforms and page JavaScript** run inside the trmnlp container, which has no access to the server's database or secrets volume and gets only its project directories. It is not a sandbox; the network is the boundary that matters.
 - **Plain HTTP on the LAN** saves the ESP32 a TLS handshake per request. HTTPS via a reverse proxy remains an option.
@@ -292,7 +298,7 @@ Two containers and three volumes; the server alone is small, and the renderer's 
 
 - `data`: SQLite file, rendered PNGs, firmware files. Back up this one.
 - `projects`: trmnlp project directories, shared with the renderer. Rebuildable from `data`.
-- `framework`: mirror of every framework release from TRMNL's public bucket (`index.json` + per-version CSS/JS), plus fonts, pattern images, and cached Highcharts and icon assets. Shared with the renderer.
+- `cache`: the asset cache. Only the server uses it, and deleting it costs only refetching.
 
 **Runtime.** Measured with trmnlp 0.34.1 (arm64) in Colima with 4 CPUs and 4 GB, on an Apple Silicon Mac, so slower hardware will take longer:
 
@@ -336,11 +342,11 @@ The biggest risk is coupling to trmnlp, a 0.x development tool whose CLI and dir
 - [x] Can trmnlp render a mashup of several recipes as one page? No. Each layout renders in its slot on a full-size page, so the server composes mashups from slot crops.
 - [x] Do `.trmnlp.yml` `variables` reach a webhook recipe's templates as merge variables? Yes.
 - [x] Do concurrent `trmnlp build` runs in different directories interfere? No: two in one container both finished, at about 1.1x the time of one, and memory adds up per build.
-- [ ] Do `framework_asset_host` and prefix `asset_overrides`, which trmnlp has, cover every framework, Highcharts and icon URL, so recipes render with no internet but their data sources? Not tested.
+- [x] Can framework assets avoid the internet on every build? Yes, through the proxy's cache (see Renderer network).
 - [ ] Does the firmware accept a plain `http://` server URL? The code says yes: `http_client.h` picks TLS by the URL's scheme. Confirm on a device.
 - [ ] Which firmware `Model` values map to which registry models? Build the table from `platformio.ini` and `config.h`.
 - [x] Should the trmnlp container get an egress allowlist built from approved hosts? No. It gets no route out except a proxy that refuses non-public addresses (see Renderer network).
-- [ ] Does Firefox in the trmnlp image use `HTTP_PROXY` and `HTTPS_PROXY`? Its default proxy setting reads them on Linux; confirm in the image, or set its proxy preferences if not.
+- [x] Does Firefox in the trmnlp image use `HTTP_PROXY` and `HTTPS_PROXY`? Yes, with `NO_PROXY` covering localhost.
 - [ ] Are measured gray levels firmware-specific? The OG was measured on 1.8.10. Firmware 1.8.19's bb_epaper reworks 4-gray on 7.5" panels and sets VCOM to −1.60 V, which can shift contrast. Re-measure after updating, and key `panelLight` by firmware version, or by the `Panel-Vcom` header 1.8.19 sends, if the levels move.
 - [ ] Admin auth: built-in password login, reverse-proxy identity header, or both?
 
@@ -348,5 +354,5 @@ The biggest risk is coupling to trmnlp, a 0.x development tool whose CLI and dir
 
 - trmnlp CLI or layout changes break rendering. Mitigation: pin the image, golden-image tests over the community catalog, upgrade deliberately.
 - Some recipes fetch from APIs that answer only TRMNL's servers. The Hourly Weather Forecast recipe got HTTP 401 from its data source. The server should show such a fetch failure on the recipe's page and in its staleness flag, not a blank screen.
-- Framework 4.0 removes 3.x classes. Recipes pinned to 3.x are fine with the mirror; recipes on `latest` may break. Mitigation: show the resolved version and allow pinning per instance.
+- Framework 4.0 removes 3.x classes. Recipes pinned to 3.x are fine with the asset cache; recipes on `latest` may break. Mitigation: show the resolved version and allow pinning per instance.
 - TRMNL changes the device protocol. Mitigation: the protocol surface is small and covered by tests built from real firmware request captures.
