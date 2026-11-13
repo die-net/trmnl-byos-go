@@ -3,7 +3,9 @@ package deviceapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,39 +20,44 @@ import (
 
 const testMAC = "D8:3B:DA:12:34:56"
 
-// Header sets as the firmware's buildSetupHeaders, buildDisplayHeaders and
-// buildLogHeaders send them for a TRMNL OG DIY kit.
+// Header sets a TRMNL OG DIY kit sends, captured from firmware 1.8.10 with
+// serve -debug. The MAC and token are the test's own. Firmware 1.8.10
+// sends no Width, Height or RSSI on /api/setup, though newer source does.
 func setupHeaders(mac string) map[string]string {
 	return map[string]string{
-		"ID":           mac,
-		"Content-Type": "application/json",
-		"FW-Version":   "1.7.8",
-		"Model":        "xiao_epaper_display",
-		"Width":        "800",
-		"Height":       "480",
-		"RSSI":         "-61",
+		"ID":              mac,
+		"Content-Type":    "application/json",
+		"FW-Version":      "1.8.10",
+		"Model":           "xiao_epaper_display",
+		"User-Agent":      "ESP32HTTPClient",
+		"Connection":      "close",
+		"Accept-Encoding": "identity;q=1,chunked;q=0.1,*;q=0",
 	}
 }
 
+// displayHeaders is a button wake: on this board the firmware reports a
+// press as Update-Source EXT0, the ESP32 wake source, not "button".
 func displayHeaders(mac, token string) map[string]string {
 	return map[string]string{
 		"ID":                  mac,
-		"Content-Type":        "application/json",
-		"Update-Source":       "timer",
 		"Access-Token":        token,
+		"Content-Type":        "application/json",
+		"Update-Source":       "EXT0",
 		"Refresh-Rate":        "900",
-		"Battery-Voltage":     "4.07",
-		"FW-Version":          "1.7.8",
-		"FW-Commit":           "5f8a43d",
+		"Battery-Voltage":     "4.20",
+		"FW-Version":          "1.8.10",
+		"FW-Commit":           "2a0a4d4",
 		"Model":               "xiao_epaper_display",
 		"Image-Cached":        "false",
-		"Wake-Time":           "3120",
-		"Reset-Reason":        "ESP_RST_DEEPSLEEP",
-		"RSSI":                "-61",
+		"Wake-Time":           "16039",
+		"Rssi":                "-56",
+		"Wifi-Band":           "2.4",
 		"Temperature-Profile": "true",
 		"Width":               "800",
 		"Height":              "480",
-		"Log-Level":           "info",
+		"User-Agent":          "ESP32HTTPClient",
+		"Connection":          "close",
+		"Accept-Encoding":     "identity;q=1,chunked;q=0.1,*;q=0",
 	}
 }
 
@@ -212,6 +219,35 @@ func TestSetupJoinWindow(t *testing.T) {
 	}
 }
 
+// TestSetupScreenSize checks that the "not registered" screen is drawn at
+// the panel's size when setup sends Width and Height, as firmware newer than
+// 1.8.10 does, and at 800x480 when it does not.
+func TestSetupScreenSize(t *testing.T) {
+	ts := newTestServer(t)
+	for _, tc := range []struct {
+		name          string
+		width, height string
+		wantW, wantH  int
+	}{
+		{"1.8.10, no size", "", "", 800, 480},
+		{"newer, portrait", "480", "800", 480, 800},
+	} {
+		h := setupHeaders(testMAC)
+		if tc.width != "" {
+			h["Width"], h["Height"] = tc.width, tc.height
+		}
+		m := ts.getJSON(t, "/api/setup", h)
+		code, data := ts.do(t, http.MethodGet, strings.TrimPrefix(m["image_url"].(string), ts.URL), nil, nil)
+		if code != http.StatusOK {
+			t.Fatalf("%s: image HTTP %d", tc.name, code)
+		}
+		cfg, err := png.DecodeConfig(bytes.NewReader(data))
+		if err != nil || cfg.Width != tc.wantW || cfg.Height != tc.wantH {
+			t.Errorf("%s: image %dx%d, %v; want %dx%d", tc.name, cfg.Width, cfg.Height, err, tc.wantW, tc.wantH)
+		}
+	}
+}
+
 func TestSetupBadID(t *testing.T) {
 	ts := newTestServer(t)
 	for _, id := range []string{"", "not a mac", "D8:3B:DA:12:34"} {
@@ -257,8 +293,8 @@ func TestDisplay(t *testing.T) {
 		t.Fatalf("status rows = %v, %v", rows, err)
 	}
 	r := rows[0]
-	if *r.LastSeen != ts.now.Unix() || *r.BatteryV != 4.07 || *r.Rssi != -61 || *r.WakeTimeMs != 3120 ||
-		*r.UpdateSource != "timer" || *r.LastRefreshRateSent != 900 {
+	if *r.LastSeen != ts.now.Unix() || *r.BatteryV != 4.20 || *r.Rssi != -56 || *r.WakeTimeMs != 16039 ||
+		*r.UpdateSource != "EXT0" || *r.LastRefreshRateSent != 900 {
 		t.Fatalf("state = %+v", r)
 	}
 }
@@ -269,10 +305,10 @@ func TestDisplayFirmwareChange(t *testing.T) {
 	ts := newTestServer(t)
 	key := ts.register(t)
 	h := displayHeaders(testMAC, key)
-	h["FW-Version"] = "1.8.0"
+	h["FW-Version"] = "1.8.19"
 	ts.getJSON(t, "/api/display", h)
 	dev, err := ts.db.Read.GetDeviceByMAC(t.Context(), testMAC)
-	if err != nil || dev.FwVersion != "1.8.0" || dev.FwModel != "xiao_epaper_display" {
+	if err != nil || dev.FwVersion != "1.8.19" || dev.FwModel != "xiao_epaper_display" {
 		t.Fatalf("device = %+v, %v", dev, err)
 	}
 }
@@ -331,7 +367,7 @@ func logBody(n int) []byte {
 	for i := range entries {
 		entries[i] = fmt.Sprintf(`{"created_at":1800000000,"id":%d,"message":"entry %d","source_line":42,`+
 			`"source_path":"src/bl.cpp","wifi_signal":-61,"wifi_status":"connected","refresh_rate":900,`+
-			`"sleep_duration":900,"firmware_version":"1.7.8","special_function":"none","battery_voltage":4.07,`+
+			`"sleep_duration":900,"firmware_version":"1.8.10","special_function":"none","battery_voltage":4.07,`+
 			`"wake_reason":"timer","free_heap_size":180000,"max_alloc_size":110000,"level":"info"}`, i, i)
 	}
 	return []byte(`{"logs":[` + strings.Join(entries, ",") + `]}`)
@@ -342,7 +378,16 @@ func logBody(n int) []byte {
 func TestLog(t *testing.T) {
 	ts := newTestServer(t)
 	key := ts.register(t)
-	h := map[string]string{"ID": testMAC, "Access-Token": key, "Content-Type": "application/json", "Accept": "application/json, */*"}
+	// As captured from firmware 1.8.10.
+	h := map[string]string{
+		"ID":              testMAC,
+		"Access-Token":    key,
+		"Content-Type":    "application/json",
+		"Accept":          "application/json, */*",
+		"User-Agent":      "ESP32HTTPClient",
+		"Connection":      "close",
+		"Accept-Encoding": "identity;q=1,chunked;q=0.1,*;q=0",
+	}
 
 	if code, _ := ts.do(t, http.MethodPost, "/api/log", h, logBody(keepLogs+5)); code != http.StatusNoContent {
 		t.Fatalf("POST /api/log = %d", code)
@@ -371,5 +416,51 @@ func TestLog(t *testing.T) {
 	h["Access-Token"] = "wrong"
 	if code, _ := ts.do(t, http.MethodPost, "/api/log", h, logBody(1)); code != http.StatusUnauthorized {
 		t.Fatalf("wrong token: HTTP %d, want 401", code)
+	}
+}
+
+// TestShowScreenCalibrate checks that a calibration override shows the
+// calibration screen until it ends, wakes the device when it ends, and then
+// goes back to the usual screen.
+func TestShowScreenCalibrate(t *testing.T) {
+	ts := newTestServer(t)
+	key := ts.register(t)
+	usual := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))["filename"]
+
+	dev, err := ShowScreen(t.Context(), ts.db, strings.ToLower(testMAC), ScreenCalibrate, ts.now.Add(20*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+	if m["filename"] == usual || m["refresh_rate"] != float64(900) {
+		t.Fatalf("calibrating: %v", m)
+	}
+	ts.fetchImage(t, m["image_url"].(string), m["filename"].(string))
+
+	ts.now = ts.now.Add(15 * time.Minute)
+	if later := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key)); later["refresh_rate"] != float64(300) {
+		t.Fatalf("5 minutes left: refresh_rate %v, want 300", later["refresh_rate"])
+	}
+
+	ts.now = ts.now.Add(5 * time.Minute)
+	if after := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key)); after["filename"] != usual {
+		t.Fatalf("after the override: %v, want the usual screen", after)
+	}
+
+	// The 2x2 calibration screen is a different image.
+	if _, err := ShowScreen(t.Context(), ts.db, testMAC, ScreenCalibrate2x2, ts.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	m2 := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+	if m2["filename"] == usual || m2["filename"] == m["filename"] {
+		t.Fatalf("2x2 calibration: %v", m2)
+	}
+
+	// The friendly ID works too, in any case.
+	if _, err := ShowScreen(t.Context(), ts.db, strings.ToLower(dev.FriendlyID), ScreenCalibrate, ts.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ShowScreen(t.Context(), ts.db, "NOSUCH", ScreenCalibrate, ts.now.Add(time.Minute)); !errors.Is(err, ErrNoDevice) {
+		t.Fatalf("unknown device: %v, want ErrNoDevice", err)
 	}
 }

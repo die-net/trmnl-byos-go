@@ -94,6 +94,12 @@ The server implements the three endpoints TRMNL firmware calls, and never render
 
 The registry is a vendored copy of `trmnl.com/api/models` and `/api/palettes`, refreshed daily, never fetched per request.
 
+**Gray calibration.** The registry's gray palettes assume evenly spaced levels, and no measured brightness for any panel's levels has turned up. `trmnl-byos calibrate` shows a device a screen where each middle gray sits over black-and-white ordered dither patches with 1 to 15 of every 16 pixels black. The patch that matches from arm's length measures the level to about 1/16. `-dot 2` draws the dither with 2x2-pixel dots, to check whether the panel blurs isolated single pixels and skews the result.
+
+The OG DIY kit measured 2/16 and 6/16 of white's light for its dark and light grays. Evenly spaced light would be 0.33 and 0.67, so the panel's grays are not evenly spaced in light. They are within measurement error of evenly spaced sRGB values (`#555555` and `#aaaaaa` give off 0.09 and 0.40), so TRMNL's palette is right if read as sRGB.
+
+The server draws its own screens as ink coverage and maps each pixel to the level whose measured light is nearest the light the pixel should give off. Measured levels are kept per firmware model; a model not yet measured is assumed to be evenly spaced in sRGB. For the OG this puts glyph edges with 94% coverage or more at black, 75 to 94% at dark gray, 31 to 75% at light gray, and less at white. Blending in sRGB values and rounding, as before, made edges darker and text bolder than the font. Recipes are quantized by trmnlp and are not affected.
+
 **Non-TRMNL clients.** KOReader, Kindle, Kobo, Nook, Android and Raspberry Pi clients speak the same `/api/display`. They may omit firmware headers such as `Update-Source` or the battery fields, so every header is optional.
 
 **Joining and leaving.**
@@ -141,7 +147,7 @@ Rotation is time-based and tracked per device: each item shows for its own durat
 | Signal | Source | Action |
 | --- | --- | --- |
 | `Update-Source: timer` | Scheduled wake | Advance if the item's duration elapsed |
-| `Update-Source: button` | OG single press | The device's configured command: next (default), previous, first, or refresh |
+| `Update-Source: button`, `EXT0` or `EXT1` | Single press. The value is the ESP32 wake source, so it depends on the board: the OG DIY kit sends `EXT0`. | The device's configured command: next (default), previous, first, or refresh |
 | `special_function` header | Double click, or the TRMNL X touch bar | `rewind` shows the previous screen from history, `restart_playlist` jumps to the first item; others as configured |
 | Touch bar right | TRMNL X | Next |
 
@@ -203,7 +209,7 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 
 | Table | Key fields |
 | --- | --- |
-| `device` | mac, api_key_hash, friendly_id, name, fw_model, fw_version, profile_override, palette_override, time_zone, locale, button_command, special_function, sleep_start, sleep_end, updates_enabled, fw_pin, blocked |
+| `device` | mac, api_key_hash, friendly_id, name, fw_model, fw_version, profile_override, palette_override, time_zone, locale, button_command, special_function, sleep_start, sleep_end, updates_enabled, fw_pin, blocked, screen_override, screen_override_until |
 | `device_state` | device_id, last_seen, last_refresh_rate_sent, last_image, battery_v, battery_pct, rssi, wake_time_ms, update_source, playlist_id, item_id, item_started_at, pending_reset |
 | `device_log` | device_id, received_at, device_at, level, message, detail (the entry as sent, with wake reason, heap and Wi-Fi state); the newest 1000 per device are kept |
 | `sensor_reading` | device_id, at, kind, value, unit (latest kept per kind, plus history) |
@@ -221,7 +227,7 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 | `firmware_rollout` | firmware_id, canary_device_id, state |
 | `setting` | key, value (join window, secrets key id, defaults) |
 
-Migrations are embedded in the binary and run at startup.
+Migrations are embedded in the binary and run at startup. A column added after its table first shipped is listed in `addedColumns` in `internal/db/client.go`, with a constant ALTER TABLE statement that runs when the column is missing.
 
 **Image store.** A PNG is stored as `images/<first 2 hex digits>/<next 14>.png`. Storing bytes that already exist never rewrites the file. It refreshes the file's modification time, at most hourly, which keeps snapshot churn low on filesystems such as ZFS. An hourly sweep deletes images that no row names and that were last stored more than 24 hours ago. The rows that name images are `device_state.last_image` now, and `render` and `device_screen` once they exist. The grace period covers an image written before the row naming it commits, and a device that fetches an image a moment after it is told the name.
 
@@ -312,6 +318,7 @@ The biggest risk is coupling to trmnlp, a 0.x development tool whose CLI and dir
 - [ ] Does the firmware accept a plain `http://` server URL? The code says yes: `http_client.h` picks TLS by the URL's scheme. Confirm on a device.
 - [ ] Which firmware `Model` values map to which registry models? Build the table from `platformio.ini` and `config.h`.
 - [ ] Should the trmnlp container get an egress allowlist built from approved hosts?
+- [ ] Are measured gray levels firmware-specific? The OG was measured on 1.8.10. Firmware 1.8.19's bb_epaper reworks 4-gray on 7.5" panels and sets VCOM to −1.60 V, which can shift contrast. Re-measure after updating, and key `panelLight` by firmware version, or by the `Panel-Vcom` header 1.8.19 sends, if the levels move.
 - [ ] Admin auth: built-in password login, reverse-proxy identity header, or both?
 
 **Risks.**

@@ -3,6 +3,12 @@ INSERT INTO device (mac, api_key_hash, friendly_id, name, fw_model, fw_version, 
 VALUES (?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
+-- name: GetDeviceByFriendlyID :one
+SELECT * FROM device WHERE friendly_id = ?;
+
+-- name: SetScreenOverride :exec
+UPDATE device SET screen_override = ?, screen_override_until = ? WHERE id = ?;
+
 -- name: GetDeviceByMAC :one
 SELECT * FROM device WHERE mac = ?;
 

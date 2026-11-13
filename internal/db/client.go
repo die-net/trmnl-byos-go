@@ -127,14 +127,49 @@ func (c *Client) Close() error {
 	return errors.Join(errs...)
 }
 
-// applySchema creates the schema in one transaction. Both drivers run every
-// statement in a multi-statement Exec. This bypasses sqlc, which generates
-// queries against the schema rather than applying it.
+// addedColumns are columns added to a table after it first shipped. schema.sql
+// creates them in a new database. In an older one, CREATE TABLE IF NOT EXISTS
+// leaves the table alone, so applySchema runs each one's ALTER TABLE when the
+// column is missing. Each definition matches the column's in schema.sql.
+var addedColumns = []struct {
+	table, column, alter string
+}{
+	{"device", "screen_override", `ALTER TABLE device ADD COLUMN screen_override TEXT NOT NULL DEFAULT ''`},
+	{"device", "screen_override_until", `ALTER TABLE device ADD COLUMN screen_override_until INTEGER NOT NULL DEFAULT 0`},
+}
+
+// applySchema creates and migrates the schema in one transaction, so a
+// migration that fails partway is tried again from the start on the next
+// Open. Both drivers run every statement in a multi-statement Exec. This
+// bypasses sqlc, which generates queries against the finished schema, not
+// changes to it.
 func (c *Client) applySchema(ctx context.Context) error {
 	return c.InTx(ctx, func(q *Queries) error {
 		if _, err := q.db.ExecContext(ctx, schema); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
+		for _, col := range addedColumns {
+			if err := addColumn(ctx, q.db, col.table, col.column, col.alter); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
+}
+
+// addColumn runs alter, which adds column to table, unless the table has the
+// column already.
+func addColumn(ctx context.Context, tx DBTX, table, column, alter string) error {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, alter); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
 }

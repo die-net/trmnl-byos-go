@@ -7,6 +7,7 @@
 *.db-shm
 *.db-wal
 /var/
+/data/
 
 # Test and coverage artifacts
 *.out

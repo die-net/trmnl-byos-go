@@ -95,7 +95,55 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/setup", s.setup)
 	mux.HandleFunc("GET /api/display", s.display)
 	mux.HandleFunc("POST /api/log", s.log)
-	mux.Handle("GET /images/{name}", s.images)
+	mux.Handle("GET /images/{name}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		debugRequest(r)
+		s.images.ServeHTTP(w, r)
+	}))
+}
+
+// Screen overrides that show the gray calibration screen, with dither dots
+// of 1x1 and 2x2 pixels.
+const (
+	ScreenCalibrate    = "calibrate"
+	ScreenCalibrate2x2 = "calibrate-2x2"
+)
+
+// calibrationDots is the dither dot size of each calibration override.
+var calibrationDots = map[string]int{ScreenCalibrate: 1, ScreenCalibrate2x2: 2}
+
+// ErrNoDevice means no registered device matches.
+var ErrNoDevice = errors.New("no such device")
+
+// ShowScreen makes the device named by its friendly ID or MAC show the
+// named system screen, such as ScreenCalibrate, until the given time, then
+// go back to its usual screen. It returns the device.
+func ShowScreen(ctx context.Context, client *db.Client, device, screenName string, until time.Time) (db.Device, error) {
+	var dev db.Device
+	err := client.InTx(ctx, func(q *db.Queries) error {
+		var err error
+		if mac, ok := parseMAC(device); ok {
+			dev, err = q.GetDeviceByMAC(ctx, mac)
+		} else {
+			dev, err = q.GetDeviceByFriendlyID(ctx, strings.ToUpper(device))
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrNoDevice, device)
+		}
+		if err != nil {
+			return fmt.Errorf("get device: %w", err)
+		}
+		dev.ScreenOverride, dev.ScreenOverrideUntil = screenName, until.Unix()
+		err = q.SetScreenOverride(ctx, db.SetScreenOverrideParams{
+			ScreenOverride:      screenName,
+			ScreenOverrideUntil: until.Unix(),
+			ID:                  dev.ID,
+		})
+		if err != nil {
+			return fmt.Errorf("set screen: %w", err)
+		}
+		return nil
+	})
+	return dev, err
 }
 
 // SetJoinWindow lets devices with unknown MACs register through /api/setup
@@ -288,18 +336,29 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	}
 
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
-	name, err := s.screen(profileOf(r), []screen.Line{
-		{Text: "Connected", Size: 44, Bold: true},
-		{Text: dev.FriendlyID, Size: 64, Bold: true},
-		{Text: "Nothing is scheduled for this display yet.", Size: 22},
-		{Text: model + " · firmware " + version, Size: 18},
-	})
+	p := profileOf(r)
+	refresh := int64(s.cfg.RefreshRate / time.Second)
+	var name string
+	if dot, ok := calibrationDots[dev.ScreenOverride]; ok && dev.ScreenOverrideUntil > s.now().Unix() {
+		left := dev.ScreenOverrideUntil - s.now().Unix()
+		name, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, p), func() ([]byte, error) { return screen.Calibration(p, dot) })
+		// Wake when the override ends, so the usual screen comes back on time.
+		refresh = min(refresh, left)
+	} else {
+		name, err = s.screen(p, []screen.Line{
+			{Text: "Connected", Size: 44, Bold: true},
+			{Text: dev.FriendlyID, Size: 64, Bold: true},
+			{Text: "Nothing is scheduled for this display yet.", Size: 22},
+			{Swatches: true, Size: 36},
+			{Text: fmt.Sprintf("Each box above should be a different shade, %d in all.", grayLevels), Size: 16},
+			{Text: model + " · firmware " + version, Size: 18},
+		})
+	}
 	if err != nil {
 		slog.Error("display: render screen", "mac", dev.Mac, "err", err)
 		http.Error(w, "render failed", http.StatusInternalServerError)
 		return
 	}
-	refresh := int64(s.cfg.RefreshRate / time.Second)
 
 	err = s.db.InTx(ctx, func(q *db.Queries) error {
 		if (model != "" && model != dev.FwModel) || (version != "" && version != dev.FwVersion) {
@@ -461,24 +520,26 @@ func hashKey(key string) []byte {
 	return sum[:]
 }
 
-// screen renders a system screen, stores it, and returns its image name.
+// screen renders a system screen of text lines, stores it, and returns its
+// image name.
 func (s *Server) screen(p screen.Profile, lines []screen.Line) (string, error) {
-	var key strings.Builder
-	fmt.Fprintf(&key, "%dx%dx%d", p.Width, p.Height, p.Levels)
-	for _, l := range lines {
-		fmt.Fprintf(&key, "\x00%s\x00%g\x00%t", l.Text, l.Size, l.Bold)
-	}
+	return s.cached(fmt.Sprintf("lines %+v %+v", p, lines), func() ([]byte, error) { return screen.Render(p, lines) })
+}
+
+// cached stores the PNG render draws and returns its name, drawing it only
+// the first time key is seen.
+func (s *Server) cached(key string, render func() ([]byte, error)) (string, error) {
 	s.mu.Lock()
-	data, ok := s.screens[key.String()]
+	data, ok := s.screens[key]
 	s.mu.Unlock()
 	if !ok {
 		var err error
-		data, err = screen.Render(p, lines)
+		data, err = render()
 		if err != nil {
 			return "", err
 		}
 		s.mu.Lock()
-		s.screens[key.String()] = data
+		s.screens[key] = data
 		s.mu.Unlock()
 	}
 	return s.images.Put(data)
@@ -501,11 +562,22 @@ func (s *Server) imageURL(r *http.Request, name string) string {
 // profileOf takes the panel size from the Width and Height headers, which
 // the firmware sends on every request.
 func profileOf(r *http.Request) screen.Profile {
+	p := screen.Profile{Width: defaultWidth, Height: defaultHeight, Levels: grayLevels, Light: panelLight[r.Header.Get("Model")]}
 	w, h := headerInt(r, "Width"), headerInt(r, "Height")
-	if w == nil || h == nil || *w <= 0 || *h <= 0 || *w > maxDimension || *h > maxDimension {
-		return screen.Profile{Width: defaultWidth, Height: defaultHeight, Levels: grayLevels}
+	if w != nil && h != nil && *w > 0 && *h > 0 && *w <= maxDimension && *h <= maxDimension {
+		p.Width, p.Height = int(*w), int(*h)
 	}
-	return screen.Profile{Width: int(*w), Height: int(*h), Levels: grayLevels}
+	return p
+}
+
+// panelLight is the measured light of each gray level, darkest first, by
+// the firmware's Model header. A model not listed is assumed to have levels
+// evenly spaced in sRGB values.
+var panelLight = map[string][]float64{
+	// TRMNL 7.5" OG DIY kit, firmware 1.8.10, measured 2026-11-13 with the
+	// 1x1-dot calibration screen at room temperature: dark gray matched 14
+	// of 16 black, light gray 10 of 16.
+	"xiao_epaper_display": {0, 2.0 / 16, 6.0 / 16, 1},
 }
 
 // parseMAC returns a MAC address in the firmware's form, AA:BB:CC:DD:EE:FF.

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strconv"
@@ -143,5 +144,50 @@ func TestWriterSerializes(t *testing.T) {
 	}
 	if len(devices) != n {
 		t.Fatalf("%d devices, want %d", len(devices), n)
+	}
+}
+
+// TestMigrateAddedColumns checks that opening a database made before a
+// column was added adds it, keeps the rows, and leaves them usable.
+func TestMigrateAddedColumns(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "trmnl.db")
+	old, err := sql.Open(driverName(), writerDSN(path, busyTimeout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The device table as it first shipped.
+	const v1 = `CREATE TABLE device (
+  id INTEGER PRIMARY KEY,
+  mac TEXT NOT NULL UNIQUE,
+  api_key_hash BLOB NOT NULL UNIQUE,
+  friendly_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL DEFAULT '',
+  fw_model TEXT NOT NULL DEFAULT '',
+  fw_version TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+)`
+	if _, err := old.ExecContext(ctx, v1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.ExecContext(ctx, `INSERT INTO device (mac, api_key_hash, friendly_id, created_at) VALUES ('m', x'00', 'F', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 2 { // The second Open finds the columns already there.
+		client, err := Open(ctx, path)
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		dev, err := client.Read.GetDeviceByFriendlyID(ctx, "F")
+		if cerr := client.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil || dev.Mac != "m" || dev.ScreenOverride != "" || dev.ScreenOverrideUntil != 0 {
+			t.Fatalf("open %d: device = %+v, %v", i, dev, err)
+		}
 	}
 }

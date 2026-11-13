@@ -29,6 +29,7 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 - A file name or path from a recipe, an upload, or a request is cleaned and checked to stay inside its directory before it reaches the filesystem.
 - A secret custom field is stored encrypted and never shown back or logged. Neither is a device `api_key`, an admin token, or a password hash.
 - Every admin, API, and MCP route requires a signed-in session or a bearer token. Device routes accept only a device `api_key`.
+- Nothing from a real deployment goes into the repo: no MAC, friendly ID, API key, Wi-Fi name, IP address, or hostname. A request captured from a real device becomes a fixture with the test's own MAC and token, and docs use placeholders such as `ABC123`.
 
 ## Database
 

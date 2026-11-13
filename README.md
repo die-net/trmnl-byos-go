@@ -33,7 +33,13 @@ go build -o trmnl-byos ./cmd/trmnl-byos
 
 The join window admits devices until it closes. A device that tries while it is closed shows "Not registered" with its MAC and tries again every 5 minutes. A device that lost its credentials, after a Wi-Fi reset for example, needs the window open again to re-pair. It keeps its friendly ID. `./trmnl-byos devices -data data` lists registered devices with their battery, signal and wake time. `serve -debug` logs each device request's headers, without its token.
 
-For now every device shows a "Connected" screen with its friendly ID.
+For now every device shows a "Connected" screen with its friendly ID and a row of gray swatches. A panel in its gray mode shows each swatch as a different shade.
+
+```
+./trmnl-byos calibrate -data data -for 30m ABC123
+```
+
+`calibrate` shows a device a gray calibration screen from its next wake, for 30 minutes by default; press the device's button to wake it now. Each row is one of the panel's grays over strips of black-and-white dither. The box in each row whose halves match from arm's length says how dark that gray really looks, in sixteenths. `-dot 2` draws the dither with 2x2-pixel dots, which checks whether the panel blurs single pixels. Measured levels go in `panelLight` in `internal/deviceapi`.
 
 ## License
 

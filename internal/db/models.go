@@ -5,14 +5,16 @@
 package db
 
 type Device struct {
-	ID         int64  `json:"id"`
-	Mac        string `json:"mac"`
-	ApiKeyHash []byte `json:"api_key_hash"`
-	FriendlyID string `json:"friendly_id"`
-	Name       string `json:"name"`
-	FwModel    string `json:"fw_model"`
-	FwVersion  string `json:"fw_version"`
-	CreatedAt  int64  `json:"created_at"`
+	ID                  int64  `json:"id"`
+	Mac                 string `json:"mac"`
+	ApiKeyHash          []byte `json:"api_key_hash"`
+	FriendlyID          string `json:"friendly_id"`
+	Name                string `json:"name"`
+	FwModel             string `json:"fw_model"`
+	FwVersion           string `json:"fw_version"`
+	CreatedAt           int64  `json:"created_at"`
+	ScreenOverride      string `json:"screen_override"`
+	ScreenOverrideUntil int64  `json:"screen_override_until"`
 }
 
 type DeviceLog struct {

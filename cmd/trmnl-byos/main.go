@@ -1,8 +1,9 @@
 // Command trmnl-byos is a self-hosted server for TRMNL e-ink displays.
 //
-//	trmnl-byos serve    run the server
-//	trmnl-byos join     let new devices register for a while
-//	trmnl-byos devices  list registered devices
+//	trmnl-byos serve      run the server
+//	trmnl-byos join       let new devices register for a while
+//	trmnl-byos devices    list registered devices
+//	trmnl-byos calibrate  show a device the gray calibration screen
 package main
 
 import (
@@ -28,9 +29,10 @@ import (
 const usage = `usage: trmnl-byos <command> [flags]
 
 commands:
-  serve    run the server
-  join     let new devices register for a while
-  devices  list registered devices
+  serve      run the server
+  join       let new devices register for a while
+  devices    list registered devices
+  calibrate  show a device the gray calibration screen
 
 Run "trmnl-byos <command> -h" for a command's flags.
 `
@@ -56,6 +58,8 @@ func run() int {
 		err = join(ctx, args, os.Stdout)
 	case "devices":
 		err = devices(ctx, args, os.Stdout)
+	case "calibrate":
+		err = calibrate(ctx, args, os.Stdout)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		return 2
@@ -195,6 +199,32 @@ func join(ctx context.Context, args []string, out io.Writer) error {
 	} else {
 		_, err = fmt.Fprintf(out, "New devices can register until %s.\n", until.Format(time.Kitchen))
 	}
+	return err
+}
+
+func calibrate(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("calibrate", flag.ExitOnError)
+	data := dataFlag(fs)
+	window := fs.Duration("for", 30*time.Minute, "how long the device shows the calibration screen")
+	dot := fs.Int("dot", 1, "dither dot size in pixels: 1 or 2")
+	_ = fs.Parse(args) // ExitOnError exits on a parse error.
+	override := map[int]string{1: deviceapi.ScreenCalibrate, 2: deviceapi.ScreenCalibrate2x2}[*dot]
+	if fs.NArg() != 1 || *window <= 0 || override == "" {
+		return errors.New("usage: trmnl-byos calibrate [-data dir] [-for duration] [-dot 1|2] <friendly ID or MAC>")
+	}
+
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	until := time.Now().Add(*window)
+	dev, err := deviceapi.ShowScreen(ctx, client, fs.Arg(0), override, until)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s shows the calibration screen from its next wake until %s. Press its button to wake it now.\n",
+		dev.FriendlyID, until.Format(time.Kitchen))
 	return err
 }
 

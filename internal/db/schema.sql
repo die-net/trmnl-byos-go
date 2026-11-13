@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS device (
   name TEXT NOT NULL DEFAULT '',
   fw_model TEXT NOT NULL DEFAULT '',
   fw_version TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- screen_override names a system screen, such as calibrate, that the
+  -- device shows instead of its usual one until screen_override_until.
+  screen_override TEXT NOT NULL DEFAULT '',
+  screen_override_until INTEGER NOT NULL DEFAULT 0
 );
 
 -- device_state is what a device reported on its last /api/display call, and
