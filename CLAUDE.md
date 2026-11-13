@@ -9,11 +9,16 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 
 ## Devices
 
-- A device is known only by the `api_key` it got from `/api/setup`, compared in constant time. The MAC in the `ID` header only picks which device to compare against.
+- A device is known by the `api_key` it got from `/api/setup`, sent as `Access-Token`. Only the key's SHA-256 is stored, and a device is looked up by that hash. The `ID` header is optional, but when present it must be the device's MAC.
+- `/api/setup` works only while the join window is open, for a known MAC too, since anything on the LAN can see a MAC. Each setup issues a new key, which retires the old one.
 - A firmware build is offered only to a device whose `Model` header names the exact firmware model the build is for, never by wildcard, family, or "latest". The ESP image header's chip and the app description's version are checked on upload. The firmware does not check the board, so this check is all that stops a wrong-board update.
 - Firmware is never offered as a downgrade, to a device with updates off or pinned, or to more than the canary device until it reports the new version.
+- `/api/setup` and `/api/display` answer HTTP 200 with the outcome in the JSON `status` field, which is what the firmware reads. `/api/display` sends 0 for a normal response, never 200, which the firmware ignores.
+- Status 500 and `reset_firmware: true` erase a device's key, Wi-Fi settings and server URL, and start its setup portal. `reset_firmware` is sent only to a deleted device, or to a registered MAC whose key was replaced by a later setup, which would otherwise stay stuck on its old key. A request from an unknown MAC or with no `ID` gets 202, never a reset: it may mean the server lost its database. Status 500 is never sent.
+- No state may leave a device showing stale data indefinitely, or stuck where it cannot recover on its own. For a known device, a reset that sends it back through setup is better than leaving it there. Only an unknown device, where a reset could wipe every display after a server mistake, is left to poll.
 - A response field the firmware reads as a number, such as `refresh_rate`, is encoded as a JSON number.
-- A rendered image's `filename` is its content hash, so the firmware skips a download or repaint it has already done.
+- A rendered image's `filename` is its content hash, so the firmware skips a download or repaint it has already done. It stays within the 31 characters the firmware keeps.
+- Whatever hands out an image name stores the image through `imagestore.Store.Put` first, and a row that keeps an image in use is listed in `ListReferencedImages`. Image expiry depends on both.
 
 ## Security
 

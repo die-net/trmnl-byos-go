@@ -73,9 +73,17 @@ The server implements the three endpoints TRMNL firmware calls, and never render
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
-| `GET /api/setup` | `ID` (MAC), `Model`, `FW-Version`, `Width`, `Height` | `api_key`, `friendly_id`, a welcome `image_url`. Unknown MACs are accepted only while the join window is open. |
+| `GET /api/setup` | `ID` (MAC), `Model`, `FW-Version`, `Width`, `Height` | A new `api_key`, `friendly_id`, and an empty `image_url`, so the firmware draws its own screen with the friendly ID. Accepted only while the join window is open. |
 | `GET /api/display` | `Access-Token`, battery, RSSI, `Refresh-Rate`, `Update-Source`, `special_function`, `Wake-Time`, `Image-Cached`, `SENSORS`, `Width`/`Height` | `image_url`, `filename`, `refresh_rate` (a number), `special_function`, `update_firmware`/`firmware_url`, `reset_firmware`, `temperature_profile`, `maximum_compatibility` |
 | `POST /api/log` | Firmware log entries | Stored per device with wake reason, heap and Wi-Fi state |
+
+**Status codes.** The firmware reads the JSON `status` field, not the HTTP status, so `/api/setup` and `/api/display` answer HTTP 200 with the outcome in the body.
+
+- `/api/setup` sends 200 for a registered device. For an unknown MAC it sends 404 with an `image_url`, which the device shows before trying again every 5 minutes.
+- `/api/display` sends 0 for a normal response. The firmware ignores a response whose status is 200.
+- An unknown device or a wrong token gets 202. The device keeps its credentials, shows its own setup screen, and polls again soon.
+- Status 500 and `reset_firmware: true` both make the device erase its key, friendly ID, Wi-Fi settings and server URL, then start its setup portal. No response clears only the key. The server never sends 500. It sends `reset_firmware` to a deleted device, and to a registered MAC presenting a key that a later setup replaced. That device would otherwise keep its old key, never run setup again, and sit on its setup screen.
+- An unknown MAC, or a request with no `ID`, is never reset. It may mean the server lost its database or is reading the wrong data directory, and a reset then would wipe every display at once.
 
 **Device profile.** Each device resolves to a profile: width, height, rotation, offsets, scale factor, palette, plus the framework's CSS parameters (CSS screen size, pixel ratio, dither pixel ratio, density class). Resolution order:
 
@@ -90,9 +98,10 @@ The registry is a vendored copy of `trmnl.com/api/models` and `/api/palettes`, r
 
 **Joining and leaving.**
 
-- A time-limited join window (default 10 minutes) admits new MACs; otherwise unknown devices get a "not registered" response.
+- A time-limited join window (default 10 minutes) admits devices; otherwise setup gets a "not registered" response. Until the admin UI exists, `trmnl-byos join` opens it.
+- A known MAC needs the window too, since anything on the LAN can see a MAC. A device that lost its credentials re-pairs while the window is open and keeps its friendly ID and settings. Each setup issues a new key and retires the old one.
 - A MAC blocklist rejects specific devices outright.
-- Deleting a device makes its next request return `reset_firmware: true`, so it forgets its credentials.
+- Deleting a device makes its next request return `reset_firmware: true`, so it forgets its credentials. It also forgets its Wi-Fi settings and server URL and needs the setup portal again. Delete keeps the device's MAC as a tombstone until then, since an unknown MAC is never reset.
 
 ## Scheduling and pre-rendering
 
@@ -102,7 +111,7 @@ Every screen a device might ask for is rendered before it wakes, and an unchange
 
 **Rules.**
 
-1. `filename` is a hash of the PNG bytes. Same pixels, same name.
+1. `filename` is the first 16 hex digits of the PNG's SHA-256. Same pixels, same name. The firmware keeps at most 31 characters of a filename as-is.
 2. `/api/display` is a SQLite lookup plus a static file. If nothing is ready (new device, cold start) it returns the last image, or a placeholder with a short `refresh_rate`.
 3. `refresh_rate` is chosen from content, not fixed: the seconds until the current playlist item ends, the next aligned wake a plugin asked for (on the minute, on the hour), or the next sleep-window edge, whichever comes first.
 4. Next wake = last request + the `refresh_rate` we sent. Renders are scheduled ahead of it with a lead time that covers render duration (seconds for trmnlp) plus deep-sleep clock drift.
@@ -194,9 +203,9 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 
 | Table | Key fields |
 | --- | --- |
-| `device` | mac, api_key, friendly_id, name, fw_model, fw_version, profile_override, palette_override, time_zone, locale, button_command, special_function, sleep_start, sleep_end, updates_enabled, fw_pin, blocked |
-| `device_state` | device_id, last_seen, last_refresh_rate_sent, battery_v, battery_pct, rssi, wake_time_ms, update_source, playlist_id, item_id, item_started_at, pending_reset |
-| `device_log` | device_id, at, level, message, wake_reason, free_heap, max_alloc |
+| `device` | mac, api_key_hash, friendly_id, name, fw_model, fw_version, profile_override, palette_override, time_zone, locale, button_command, special_function, sleep_start, sleep_end, updates_enabled, fw_pin, blocked |
+| `device_state` | device_id, last_seen, last_refresh_rate_sent, last_image, battery_v, battery_pct, rssi, wake_time_ms, update_source, playlist_id, item_id, item_started_at, pending_reset |
+| `device_log` | device_id, received_at, device_at, level, message, detail (the entry as sent, with wake reason, heap and Wi-Fi state); the newest 1000 per device are kept |
 | `sensor_reading` | device_id, at, kind, value, unit (latest kept per kind, plus history) |
 | `model` / `palette` | Vendored registry rows plus the framework CSS parameters |
 | `recipe` | id, source (gallery, catalog, git, local), source_ref, source_hash, settings (parsed), approved_hosts |
@@ -213,6 +222,8 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 | `setting` | key, value (join window, secrets key id, defaults) |
 
 Migrations are embedded in the binary and run at startup.
+
+**Image store.** A PNG is stored as `images/<first 2 hex digits>/<next 14>.png`. Storing bytes that already exist never rewrites the file. It refreshes the file's modification time, at most hourly, which keeps snapshot churn low on filesystems such as ZFS. An hourly sweep deletes images that no row names and that were last stored more than 24 hours ago. The rows that name images are `device_state.last_image` now, and `render` and `device_screen` once they exist. The grace period covers an image written before the row naming it commits, and a device that fetches an image a moment after it is told the name.
 
 ## Admin UI, API and MCP
 
@@ -249,7 +260,7 @@ This lets an assistant write a recipe, render it, look at the result and iterate
 The device API is LAN-only and token-based; the admin side needs a login; and recipes are treated as untrusted code that talks to the internet.
 
 - **Admin auth.** One admin password (argon2id hash) with session cookies, or trust an identity header from a configured reverse proxy. API and MCP use bearer tokens created in the UI.
-- **Device auth.** Per-device `api_key` from setup, compared in constant time. Device endpoints can listen on a separate port bound to the LAN.
+- **Device auth.** Per-device `api_key` from setup, sent as `Access-Token`. Only its SHA-256 is stored, and the device is looked up by that hash, so neither a copy of the database nor request timing gives away a key. The key is 128 random bits, so a fast hash is enough. `ID` is optional for clients that leave it out, but must match the device when sent. Device endpoints can listen on a separate port bound to the LAN.
 - **Secrets at rest.** Custom fields marked secret (API keys, passwords) are encrypted in SQLite with a key from the environment; the UI never shows them back.
 - **Outbound review.** On install, the server renders each recipe's polling URLs with the current settings and lists the hosts, plus image and script hosts found in its markup. You approve them. Example: Paperboy sends the device ID, battery level and a timestamp to a third-party "battery" endpoint.
 - **Transforms and page JavaScript** run inside the trmnlp container, which has no access to the server's database or secrets volume and gets only its project directories. It is not a sandbox: an egress allowlist on that container is the stronger control (open question).
@@ -298,7 +309,7 @@ The biggest risk is coupling to trmnlp, a 0.x development tool whose CLI and dir
 - [ ] Does writing webhook data into the project's data file work the way `user_data_assembler.rb` suggests?
 - [ ] Do concurrent `trmnlp build` runs in different directories interfere? Start with one at a time.
 - [ ] Can trmnlp's asset overrides point every framework, Highcharts and icon URL at the local mirror, so recipes render offline?
-- [ ] Does the firmware accept a plain `http://` server URL? Confirm in code and on a device.
+- [ ] Does the firmware accept a plain `http://` server URL? The code says yes: `http_client.h` picks TLS by the URL's scheme. Confirm on a device.
 - [ ] Which firmware `Model` values map to which registry models? Build the table from `platformio.ini` and `config.h`.
 - [ ] Should the trmnlp container get an egress allowlist built from approved hosts?
 - [ ] Admin auth: built-in password login, reverse-proxy identity header, or both?

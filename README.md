@@ -18,6 +18,23 @@ SQL is in `internal/db/schema.sql` and `internal/db/queries/`. Regenerate with s
 go generate ./internal/db/
 ```
 
+## Run
+
+```
+go build -o trmnl-byos ./cmd/trmnl-byos
+./trmnl-byos serve -data data -listen :8080
+```
+
+`serve` keeps its database and images under `-data`. Point a device at `http://<server>:8080` in its Wi-Fi setup portal, then let it register:
+
+```
+./trmnl-byos join -data data -for 10m
+```
+
+The join window admits devices until it closes. A device that tries while it is closed shows "Not registered" with its MAC and tries again every 5 minutes. A device that lost its credentials, after a Wi-Fi reset for example, needs the window open again to re-pair. It keeps its friendly ID. `./trmnl-byos devices -data data` lists registered devices with their battery, signal and wake time. `serve -debug` logs each device request's headers, without its token.
+
+For now every device shows a "Connected" screen with its friendly ID.
+
 ## License
 
 Copyright 2026 Aaron Hopkins and contributors. All rights reserved.

@@ -7,12 +7,33 @@ package db
 type Device struct {
 	ID         int64  `json:"id"`
 	Mac        string `json:"mac"`
-	ApiKey     string `json:"api_key"`
+	ApiKeyHash []byte `json:"api_key_hash"`
 	FriendlyID string `json:"friendly_id"`
 	Name       string `json:"name"`
 	FwModel    string `json:"fw_model"`
 	FwVersion  string `json:"fw_version"`
 	CreatedAt  int64  `json:"created_at"`
+}
+
+type DeviceLog struct {
+	ID         int64  `json:"id"`
+	DeviceID   int64  `json:"device_id"`
+	ReceivedAt int64  `json:"received_at"`
+	DeviceAt   int64  `json:"device_at"`
+	Level      string `json:"level"`
+	Message    string `json:"message"`
+	Detail     string `json:"detail"`
+}
+
+type DeviceState struct {
+	DeviceID            int64    `json:"device_id"`
+	LastSeen            int64    `json:"last_seen"`
+	BatteryV            *float64 `json:"battery_v"`
+	Rssi                *int64   `json:"rssi"`
+	WakeTimeMs          *int64   `json:"wake_time_ms"`
+	UpdateSource        *string  `json:"update_source"`
+	LastRefreshRateSent int64    `json:"last_refresh_rate_sent"`
+	LastImage           string   `json:"last_image"`
 }
 
 type Setting struct {

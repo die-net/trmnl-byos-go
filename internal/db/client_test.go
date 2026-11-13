@@ -79,7 +79,7 @@ func TestInTx(t *testing.T) {
 
 	insert := func(mac string) func(q *Queries) error {
 		return func(q *Queries) error {
-			_, err := q.CreateDevice(ctx, CreateDeviceParams{Mac: mac, ApiKey: "key-" + mac, FriendlyID: "id-" + mac, CreatedAt: 1})
+			_, err := q.CreateDevice(ctx, CreateDeviceParams{Mac: mac, ApiKeyHash: []byte("key-" + mac), FriendlyID: "id-" + mac, CreatedAt: 1})
 			return err
 		}
 	}
@@ -127,7 +127,7 @@ func TestWriterSerializes(t *testing.T) {
 		go func() {
 			errs <- client.InTx(ctx, func(q *Queries) error {
 				mac := strconv.Itoa(i)
-				_, err := q.CreateDevice(ctx, CreateDeviceParams{Mac: mac, ApiKey: "key-" + mac, FriendlyID: "id-" + mac, CreatedAt: 1})
+				_, err := q.CreateDevice(ctx, CreateDeviceParams{Mac: mac, ApiKeyHash: []byte("key-" + mac), FriendlyID: "id-" + mac, CreatedAt: 1})
 				return err
 			})
 		}()
