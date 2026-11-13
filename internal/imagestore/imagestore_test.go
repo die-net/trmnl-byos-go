@@ -40,15 +40,15 @@ func TestPutAndServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := []byte("\x89PNG not really")
-	name, err := s.Put(bytes.NewReader(data))
+	name, _, err := s.Put(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(name) != nameLen || name != nameOf(data) {
 		t.Fatalf("name %q, want %d hex digits matching its hash", name, nameLen)
 	}
-	if again, err := s.Put(bytes.NewReader(data)); err != nil || again != name {
-		t.Fatalf("second Put = %q, %v; want %q", again, err, name)
+	if again, size, err := s.Put(bytes.NewReader(data)); err != nil || again != name || size != int64(len(data)) {
+		t.Fatalf("second Put = %q, %d, %v; want %q, %d", again, size, err, name, len(data))
 	}
 	onDisk, err := fs.ReadFile(os.DirFS(dir), name[:2]+"/"+name[2:]+".png")
 	if err != nil || !bytes.Equal(onDisk, data) {
@@ -71,7 +71,7 @@ func TestServeRejects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, err := s.Put(strings.NewReader("x"))
+	name, _, err := s.Put(strings.NewReader("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestPutTouches(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := []byte("image")
-	name, err := s.Put(bytes.NewReader(data))
+	name, _, err := s.Put(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestPutTouches(t *testing.T) {
 		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Put(bytes.NewReader(data)); err != nil {
+		if _, _, err := s.Put(bytes.NewReader(data)); err != nil {
 			t.Fatal(err)
 		}
 		info, err := os.Stat(path)
@@ -141,7 +141,7 @@ func TestExpire(t *testing.T) {
 	old := cutoff.Add(-time.Hour)
 	put := func(data string, mtime time.Time) string {
 		t.Helper()
-		name, err := s.Put(strings.NewReader(data))
+		name, _, err := s.Put(strings.NewReader(data))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -195,7 +195,7 @@ func TestCommitKeepsExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, err := s.Put(strings.NewReader("image"))
+	name, _, err := s.Put(strings.NewReader("image"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestCommitKeepsExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again, err := s.Put(strings.NewReader("image")); err != nil || again != name {
+	if again, _, err := s.Put(strings.NewReader("image")); err != nil || again != name {
 		t.Fatalf("second Put = %q, %v", again, err)
 	}
 	after, err := os.Stat(s.path(name))
@@ -232,7 +232,7 @@ func TestAbort(t *testing.T) {
 	}
 	w.Abort()
 	w.Abort() // A second Abort does nothing.
-	if _, err := w.Commit(); err == nil {
+	if _, _, err := w.Commit(); err == nil {
 		t.Error("Commit after Abort succeeded")
 	}
 	assertNoTemp(t, dir)

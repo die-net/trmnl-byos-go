@@ -87,12 +87,21 @@ The server implements the three endpoints TRMNL firmware calls, and never render
 
 **Device profile.** Each device resolves to a profile: width, height, rotation, offsets, scale factor, palette, plus the framework's CSS parameters (CSS screen size, pixel ratio, dither pixel ratio, density class). Resolution order:
 
-1. Per-device override set in the UI.
-2. The firmware `Model` header mapped to a registry model. Firmware names differ from registry names (`xiao_epaper_display` and `og` map to `og_plus`; `x` maps to `v2`), so we keep a small mapping table.
-3. `Width`/`Height` headers matched against the registry.
-4. A conservative default (800x480, 1-bit).
+1. Per-device override set in the UI (not built yet).
+2. The firmware `Model` header mapped to a registry model. Firmware names differ from registry names (`xiao_epaper_display` and `og` map to `og_plus`; `x` maps to `v2`), so `internal/profile` keeps a mapping table, which also holds per-board size limits and measured gray levels. A `Model` that is itself a registry name, such as `xteink_x4`, needs no entry. Firmware 1.8.10 and older reports `og` for the 4-color OG too, which only the override can tell apart; newer firmware reports `og_4clr`.
+3. For an unknown `Model`: the `Width`/`Height` headers, with black and white only and the smallest size limit. Matching size alone against the registry would be a guess, since a dozen models are 800x480.
+4. With no usable headers either: 800x480, black and white.
 
-The registry is a vendored copy of `trmnl.com/api/models` and `/api/palettes`, refreshed daily, never fetched per request.
+The registry is a copy of `trmnl.com/api/models` and `/api/palettes` embedded in the binary and refreshed with `go generate`, never fetched per request. Refreshing it daily at runtime is deferred.
+
+**Image size limit.** The firmware refuses an image body over `MAX_IMAGE_SIZE`: 90,000 bytes on a build without PSRAM, such as the original OG's ESP32-C3, and 750,000 bytes with it. The OG DIY kit's build gets PSRAM from the XIAO ESP32-S3 board definition, so it has the larger limit. The registry carries the limit as `image_size_limit` (90,000 for most TRMNL models, 750,000 for the TRMNL X, none for most third-party clients). The firmware table overrides it where a board's build is known to differ, as the DIY kit's is. A device whose model is unknown gets 90,000.
+
+- Every stored image's size is known: the image store records it when the image is written, and each render row keeps it.
+- `/api/display` checks the size against the requesting device's limit every time it hands out an image, not only when the image is rendered. One render can be shared by devices with different limits, and a device's model can change after a firmware update.
+- An image over the limit is never handed out. The device gets a small "too large" screen naming the recipe, with a short `refresh_rate`, and the recipe's page shows the error. A device would otherwise fail the download on every wake and keep showing what it had.
+- The recipe's page shows its renders' sizes against the smallest limit among the devices that show it, and warns past 80%, before a device ever fails.
+
+Typical screens are far below either limit: 2 to 12 KB for the recipes tested. Size grows with dithering, which defeats PNG's compression, and with more levels per pixel, so dithered photos at 16 grays or in color on a device without PSRAM are the case to watch. A plugin instance set to a smaller palette is the fix a person chooses; the server does not quietly fall back to one.
 
 **Gray calibration.** The registry's gray palettes assume evenly spaced levels, and no measured brightness for any panel's levels has turned up. `trmnl-byos calibrate` shows a device a screen where each middle gray sits over black-and-white ordered dither patches with 1 to 15 of every 16 pixels black. The patch that matches from arm's length measures the level to about 1/16. `-dot 2` draws the dither with 2x2-pixel dots, to check whether the panel blurs isolated single pixels and skews the result.
 
@@ -216,13 +225,13 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 | `model` / `palette` | Vendored registry rows plus the framework CSS parameters |
 | `recipe` | id, source (gallery, catalog, git, local), source_ref, source_hash, settings (parsed) |
 | `outbound_host` | recipe_id, host, first_seen, last_seen, refused (from the renderer proxy's log) |
-| `plugin_instance` | recipe_id, name, field_values, secret_values (encrypted), framework_pin, dark_mode, refresh_override, align, stale_after |
+| `plugin_instance` | recipe_id, name, field_values, secret_values (encrypted), framework_pin, palette (empty for the device's own), dark_mode, refresh_override, align, stale_after |
 | `instance_data` | instance_id, data (webhook payload), updated_at, last_error, last_success_at |
 | `playlist` | name, schedule (weekdays, from, until), priority |
 | `playlist_device` | playlist_id, device_id |
 | `playlist_item` | playlist_id, position, kind (single or mashup), layout, duration_s, schedule, hidden |
 | `playlist_slot` | item_id, slot, instance_id |
-| `render` | key (instance, layout, profile or device), png_hash, rendered_at, data_hash, duration_ms, error |
+| `render` | key (instance, layout, profile or device), png_hash, png_bytes, rendered_at, data_hash, duration_ms, error |
 | `device_screen` | device_id, role (current, next, history n), png_hash |
 | `firmware` | fw_model, version, sha256, chip, idf_version, source, uploaded_at |
 | `firmware_rollout` | firmware_id, canary_device_id, state |
@@ -312,7 +321,7 @@ Two containers and three volumes; the server alone is small, and the renderer's 
 - A build peaks at about 1 GB, Firefox included, and the container drops back to about 40 MiB after it. Two builds at once peaked at 2.1 GB.
 - Starting the container and its virtual display adds about 0.2 s, so a container per build costs little; a long-running shim container idles at about 11 MiB with the display up.
 - PNGs come out 1-bit for `--palette bw`, 2-bit for `gray-4` and 4-bit for `gray-16`, all grayscale (color type 0), at the requested size.
-- At 2 bits the framework draws text in a bitmap font without anti-aliasing and draws grays as dither patterns. BBC World News at `gray-4` came out with 68 gray pixels out of 384,000, from its logo; the rest was black and white. Any gray pixel puts the OG in gray mode, which means a full, flashing refresh, while a 1-bit image gets a partial one. So a device may be better served by `bw` for recipes that barely use gray: a per-device or per-recipe palette choice, not something the server should guess by altering images.
+- At 2 bits the framework draws text in a bitmap font without anti-aliasing and draws grays as dither patterns. BBC World News at `gray-4` came out with 68 gray pixels out of 384,000, from its logo; the rest was black and white. Any gray pixel puts the OG in gray mode, which means a full, flashing refresh, while a 1-bit image gets a partial one. Whether that is worth it depends on the recipe, not the device: BBC World News gains nothing from gray, while meteoswiss draws real gray areas. So the device profile holds only what the panel can show, and a plugin instance can ask for less: `bw` to keep partial refreshes. The render uses the instance's palette when the device can show it, and the device's otherwise. A recipe could carry a suggested default, set when it is installed. The server does not guess by inspecting or altering images.
 - At 16 grays (TRMNL X) the framework switches to an anti-aliased font and solid grays, and fits more items, so a recipe's layout differs by device.
 
 **Networks.** Compose defines two: the server's normal network, and an `internal: true` network shared by the server and the renderer. The renderer is on the internal one only.
@@ -347,7 +356,7 @@ The biggest risk is coupling to trmnlp, a 0.x development tool whose CLI and dir
 - [ ] Which firmware `Model` values map to which registry models? Build the table from `platformio.ini` and `config.h`.
 - [x] Should the trmnlp container get an egress allowlist built from approved hosts? No. It gets no route out except a proxy that refuses non-public addresses (see Renderer network).
 - [x] Does Firefox in the trmnlp image use `HTTP_PROXY` and `HTTPS_PROXY`? Yes, with `NO_PROXY` covering localhost.
-- [ ] Are measured gray levels firmware-specific? The OG was measured on 1.8.10. Firmware 1.8.19's bb_epaper reworks 4-gray on 7.5" panels and sets VCOM to −1.60 V, which can shift contrast. Re-measure after updating, and key `panelLight` by firmware version, or by the `Panel-Vcom` header 1.8.19 sends, if the levels move.
+- [ ] Are measured gray levels firmware-specific? The OG was measured on 1.8.10. Firmware 1.8.19's bb_epaper reworks 4-gray on 7.5" panels and sets VCOM to −1.60 V, which can shift contrast. Re-measure after updating, and key the measured levels in `internal/profile` by firmware version, or by the `Panel-Vcom` header 1.8.19 sends, if the levels move.
 - [ ] Admin auth: built-in password login, reverse-proxy identity header, or both?
 
 **Risks.**

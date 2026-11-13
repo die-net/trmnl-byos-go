@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
+	"github.com/die-net/trmnl-byos-go/internal/profile"
 )
 
 const testMAC = "D8:3B:DA:12:34:56"
@@ -222,19 +225,24 @@ func TestSetupJoinWindow(t *testing.T) {
 }
 
 // TestSetupScreenSize checks that the "not registered" screen is drawn at
-// the panel's size when setup sends Width and Height, as firmware newer than
-// 1.8.10 does, and at 800x480 when it does not.
+// the registry's size for a known Model, whatever size headers say, and at
+// the size headers give for an unknown one. Firmware 1.8.10 sends no size
+// on setup; newer firmware does.
 func TestSetupScreenSize(t *testing.T) {
 	ts := newTestServer(t)
 	for _, tc := range []struct {
 		name          string
+		model         string
 		width, height string
 		wantW, wantH  int
 	}{
-		{"1.8.10, no size", "", "", 800, 480},
-		{"newer, portrait", "480", "800", 480, 800},
+		{"known model, no size", "xiao_epaper_display", "", "", 800, 480},
+		{"known model, other size", "xiao_epaper_display", "480", "800", 800, 480},
+		{"unknown model, portrait size", "mystery", "480", "800", 480, 800},
+		{"unknown model, no size", "mystery", "", "", 800, 480},
 	} {
 		h := setupHeaders(testMAC)
+		h["Model"] = tc.model
 		if tc.width != "" {
 			h["Width"], h["Height"] = tc.width, tc.height
 		}
@@ -484,4 +492,99 @@ func TestScreenRedrawnAfterExpiry(t *testing.T) {
 		t.Fatalf("filename %v, want %s", m["filename"], name)
 	}
 	ts.fetchImage(t, m["image_url"].(string), name)
+}
+
+// imageOf fetches a display response's image and returns its PNG header.
+func (ts *testServer) imageOf(t *testing.T, m map[string]any) (image.Config, int) {
+	t.Helper()
+	code, data := ts.do(t, http.MethodGet, strings.TrimPrefix(m["image_url"].(string), ts.URL), nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("image HTTP %d", code)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, len(data)
+}
+
+// TestDisplayProfiles checks that the Connected screen is drawn at the
+// device's size and gray depth, from its Model header when known and its
+// size headers otherwise.
+func TestDisplayProfiles(t *testing.T) {
+	ts := newTestServer(t)
+	key := ts.register(t)
+	for _, tc := range []struct {
+		name          string
+		model         string
+		width, height string
+		w, h          int
+		depth         uint8
+	}{
+		{"OG DIY kit", "xiao_epaper_display", "800", "480", 800, 480, 2},
+		{"TRMNL X", "x", "1872", "1404", 1872, 1404, 4},
+		{"unknown model", "mystery", "1024", "758", 1024, 758, 1},
+	} {
+		h := displayHeaders(testMAC, key)
+		h["Model"], h["Width"], h["Height"] = tc.model, tc.width, tc.height
+		cfg, _ := ts.imageOf(t, ts.getJSON(t, "/api/display", h))
+		if cfg.Width != tc.w || cfg.Height != tc.h {
+			t.Errorf("%s: %dx%d, want %dx%d", tc.name, cfg.Width, cfg.Height, tc.w, tc.h)
+		}
+		if p, ok := cfg.ColorModel.(color.Palette); !ok || bitsFor(len(p)) != tc.depth {
+			t.Errorf("%s: palette %v, want %d bits", tc.name, cfg.ColorModel, tc.depth)
+		}
+	}
+}
+
+func bitsFor(colors int) uint8 {
+	switch {
+	case colors <= 2:
+		return 1
+	case colors <= 4:
+		return 2
+	case colors <= 16:
+		return 4
+	}
+	return 8
+}
+
+// TestDisplayTooLarge checks that an image over the device's size limit is
+// never handed out: the device gets a "too large" screen that fits, and
+// wakes again soon.
+func TestDisplayTooLarge(t *testing.T) {
+	ts := newTestServer(t)
+	key := ts.register(t)
+	usual := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+	_, size := ts.imageOf(t, usual)
+
+	limit := int64(size - 1)
+	ts.srv.resolve = func(fwModel string, width, height *int64) (profile.Profile, error) {
+		p, err := profile.Resolve(fwModel, width, height)
+		p.ImageSizeLimit = limit
+		return p, err
+	}
+	m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+	if m["filename"] == usual["filename"] || m["refresh_rate"] != float64(tooLargeRefresh) {
+		t.Fatalf("over the limit: %v", m)
+	}
+	if _, got := ts.imageOf(t, m); int64(got) > limit {
+		t.Fatalf("the too-large screen is %d bytes, over the %d limit", got, limit)
+	}
+}
+
+// TestCalibrateTwoLevels checks that a panel with no grays to calibrate
+// keeps its usual screen during a calibration override.
+func TestCalibrateTwoLevels(t *testing.T) {
+	ts := newTestServer(t)
+	key := ts.register(t)
+	h := displayHeaders(testMAC, key)
+	h["Model"] = "mystery"
+	usual := ts.getJSON(t, "/api/display", h)["filename"]
+	if _, err := ShowScreen(t.Context(), ts.db, testMAC, ScreenCalibrate, ts.now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if m := ts.getJSON(t, "/api/display", h); m["filename"] != usual {
+		t.Fatalf("2-level panel during calibration: %v, want the usual screen", m)
+	}
 }

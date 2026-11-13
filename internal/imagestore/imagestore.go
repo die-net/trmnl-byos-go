@@ -50,7 +50,9 @@ type Writer struct {
 	file  *os.File
 	hash  hash.Hash
 	w     io.Writer
-	done  bool
+	// n is how many bytes have been written.
+	n    int64
+	done bool
 }
 
 // Create starts a new image. Its name is the hash of what is written, so it
@@ -67,34 +69,37 @@ func (s *Store) Create() (*Writer, error) {
 
 // Write writes part of the image.
 func (w *Writer) Write(p []byte) (int, error) {
-	return w.w.Write(p)
+	n, err := w.w.Write(p)
+	w.n += int64(n)
+	return n, err
 }
 
-// Commit stores the image and returns its name. The same pixels always get
-// the same name, so a device skips a download, and a repaint, when nothing
-// changed. When the image is already stored, Commit leaves that file alone
-// rather than rewriting it, and only refreshes its time.
-func (w *Writer) Commit() (string, error) {
+// Commit stores the image and returns its name and size in bytes. The same
+// pixels always get the same name, so a device skips a download, and a
+// repaint, when nothing changed. When the image is already stored, Commit
+// leaves that file alone rather than rewriting it, and only refreshes its
+// time.
+func (w *Writer) Commit() (string, int64, error) {
 	if w.done {
-		return "", errors.New("image already finished")
+		return "", 0, errors.New("image already finished")
 	}
 	w.done = true
 	defer func() { _ = os.Remove(w.file.Name()) }() // A no-op once renamed.
 	if err := w.file.Close(); err != nil {
-		return "", fmt.Errorf("close image: %w", err)
+		return "", 0, fmt.Errorf("close image: %w", err)
 	}
 	name := hex.EncodeToString(w.hash.Sum(nil))[:nameLen]
-	if ok, err := w.store.Refresh(name); err != nil || ok {
-		return name, err
+	if _, ok, err := w.store.Refresh(name); err != nil || ok {
+		return name, w.n, err
 	}
 	path := w.store.path(name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return "", fmt.Errorf("create image dir: %w", err)
+		return "", 0, fmt.Errorf("create image dir: %w", err)
 	}
 	if err := os.Rename(w.file.Name(), path); err != nil {
-		return "", fmt.Errorf("rename image: %w", err)
+		return "", 0, fmt.Errorf("rename image: %w", err)
 	}
-	return name, nil
+	return name, w.n, nil
 }
 
 // Abort discards the image. It does nothing after Commit.
@@ -107,39 +112,40 @@ func (w *Writer) Abort() {
 	_ = os.Remove(w.file.Name())
 }
 
-// Put stores the PNG read from r and returns its name.
-func (s *Store) Put(r io.Reader) (string, error) {
+// Put stores the PNG read from r and returns its name and size in bytes.
+func (s *Store) Put(r io.Reader) (string, int64, error) {
 	w, err := s.Create()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if _, err := io.Copy(w, r); err != nil {
 		w.Abort()
-		return "", fmt.Errorf("write image: %w", err)
+		return "", 0, fmt.Errorf("write image: %w", err)
 	}
 	return w.Commit()
 }
 
-// Refresh reports whether the named image is stored, and marks it used now
-// if its time is more than touchAfter old, so Expire keeps it.
-func (s *Store) Refresh(name string) (bool, error) {
+// Refresh reports whether the named image is stored, and its size in bytes,
+// and marks it used now if its time is more than touchAfter old, so Expire
+// keeps it.
+func (s *Store) Refresh(name string) (size int64, ok bool, err error) {
 	if !validName(name) {
-		return false, nil
+		return 0, false, nil
 	}
 	path := s.path(name)
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("stat image: %w", err)
+		return 0, false, fmt.Errorf("stat image: %w", err)
 	}
 	if now := time.Now(); now.Sub(info.ModTime()) > touchAfter {
 		if err := os.Chtimes(path, now, now); err != nil {
-			return false, fmt.Errorf("touch image: %w", err)
+			return 0, false, fmt.Errorf("touch image: %w", err)
 		}
 	}
-	return true, nil
+	return info.Size(), true, nil
 }
 
 // Expire deletes each image that keep does not name and that was last

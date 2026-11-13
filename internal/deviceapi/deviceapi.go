@@ -24,6 +24,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
+	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/screen"
 )
 
@@ -45,12 +46,6 @@ const (
 )
 
 const (
-	defaultWidth  = 800
-	defaultHeight = 480
-	maxDimension  = 4096
-	// grayLevels is the gray depth of system screens. Every panel can show a
-	// 2-bit image, and the OG shows its 4 grays only from one.
-	grayLevels = 4
 	// maxLogBody bounds an /api/log request body.
 	maxLogBody = 1 << 20
 	// keepLogs is how many log entries are kept per device.
@@ -76,6 +71,8 @@ type Server struct {
 	images *imagestore.Store
 	cfg    Config
 	now    func() time.Time
+	// resolve finds a device's profile: profile.Resolve.
+	resolve func(fwModel string, width, height *int64) (profile.Profile, error)
 
 	mu sync.Mutex
 	// screens maps a system screen's profile and text to its image name,
@@ -87,7 +84,7 @@ type Server struct {
 // New returns a Server that keeps state in client and images in images.
 func New(client *db.Client, images *imagestore.Store, cfg Config) *Server {
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
-	return &Server{db: client, images: images, cfg: cfg, now: time.Now, screens: map[string]string{}}
+	return &Server{db: client, images: images, cfg: cfg, now: time.Now, resolve: profile.Resolve, screens: map[string]string{}}
 }
 
 // Register adds the device endpoints to mux.
@@ -232,11 +229,13 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	if !registered {
 		slog.Info("setup refused: join window closed", "mac", mac)
 		resp := setupResponse{Status: statusSetupUnknown, Message: "MAC not registered"}
-		name, err := s.screen(profileOf(r), []screen.Line{
-			{Text: "Not registered", Size: 44, Bold: true},
-			{Text: mac, Size: 28},
-			{Text: "Open the join window on the server.", Size: 22},
-			{Text: "This display tries again every 5 minutes.", Size: 18},
+		name, err := s.systemScreen(r, func(sp screen.Profile) (string, error) {
+			return s.screen(sp, []screen.Line{
+				{Text: "Not registered", Size: 44, Bold: true},
+				{Text: mac, Size: 28},
+				{Text: "Open the join window on the server.", Size: 22},
+				{Text: "This display tries again every 5 minutes.", Size: 18},
+			})
 		})
 		if err != nil {
 			// The firmware shows its own message when there is no image.
@@ -336,23 +335,42 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	}
 
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
-	p := profileOf(r)
+	p, err := s.resolve(model, headerInt(r, "Width"), headerInt(r, "Height"))
+	if err != nil {
+		slog.Error("display: resolve profile", "mac", dev.Mac, "err", err)
+		http.Error(w, "profile failed", http.StatusInternalServerError)
+		return
+	}
+	sp, err := screenProfile(p)
+	if err != nil {
+		slog.Error("display: screen profile", "mac", dev.Mac, "err", err)
+		http.Error(w, "profile failed", http.StatusInternalServerError)
+		return
+	}
 	refresh := int64(s.cfg.RefreshRate / time.Second)
 	var name string
-	if dot, ok := calibrationDots[dev.ScreenOverride]; ok && dev.ScreenOverrideUntil > s.now().Unix() {
-		left := dev.ScreenOverrideUntil - s.now().Unix()
-		name, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, p), func(w io.Writer) error { return screen.Calibration(w, p, dot) })
+	var size int64
+	dot, calibrating := calibrationDots[dev.ScreenOverride]
+	if left := dev.ScreenOverrideUntil - s.now().Unix(); calibrating && left > 0 && sp.Levels > 2 {
+		name, size, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, sp), func(w io.Writer) error { return screen.Calibration(w, sp, dot) })
 		// Wake when the override ends, so the usual screen comes back on time.
 		refresh = min(refresh, left)
 	} else {
-		name, err = s.screen(p, []screen.Line{
+		name, size, err = s.screenSized(sp, []screen.Line{
 			{Text: "Connected", Size: 44, Bold: true},
 			{Text: dev.FriendlyID, Size: 64, Bold: true},
 			{Text: "Nothing is scheduled for this display yet.", Size: 22},
 			{Swatches: true, Size: 36},
-			{Text: fmt.Sprintf("Each box above should be a different shade, %d in all.", grayLevels), Size: 16},
+			{Text: fmt.Sprintf("Each box above should be a different shade, %d in all.", sp.Levels), Size: 16},
 			{Text: model + " · firmware " + version, Size: 18},
 		})
+	}
+	if err == nil && !p.Fits(size) {
+		// The firmware would fail the download on every wake and keep
+		// showing its old screen, so it gets a small screen saying why.
+		slog.Warn("display: image too large for the device", "mac", dev.Mac, "image", name, "bytes", size, "limit", p.ImageSizeLimit)
+		name, err = s.tooLarge(sp, size, p.ImageSizeLimit)
+		refresh = tooLargeRefresh
 	}
 	if err != nil {
 		slog.Error("display: render screen", "mac", dev.Mac, "err", err)
@@ -520,42 +538,90 @@ func hashKey(key string) []byte {
 	return sum[:]
 }
 
+// tooLargeRefresh is how long a device showing the "too large" screen
+// sleeps, so it picks up a fix soon.
+const tooLargeRefresh = 300
+
+// tooLarge renders the screen a device gets instead of an image over its
+// size limit.
+func (s *Server) tooLarge(sp screen.Profile, size, limit int64) (string, error) {
+	return s.screen(sp, []screen.Line{
+		{Text: "Image too large", Size: 44, Bold: true},
+		{Text: fmt.Sprintf("This screen is %d KB; this display takes at most %d KB.", (size+1023)/1024, limit/1024), Size: 20},
+		{Text: "Try a palette with fewer grays for it on the server.", Size: 18},
+	})
+}
+
+// screenProfile is what system screens are drawn for on a device: its size
+// and its richest gray palette, with the palette's measured light if known.
+func screenProfile(p profile.Profile) (screen.Profile, error) {
+	levels, err := p.GrayLevels()
+	if err != nil {
+		return screen.Profile{}, err
+	}
+	sp := screen.Profile{Width: p.Width, Height: p.Height, Levels: levels}
+	if len(p.Light) == levels {
+		sp.Light = p.Light
+	}
+	return sp, nil
+}
+
+// systemScreen resolves the requesting device's profile from its headers
+// and draws a system screen for it with draw.
+func (s *Server) systemScreen(r *http.Request, draw func(screen.Profile) (string, error)) (string, error) {
+	p, err := s.resolve(r.Header.Get("Model"), headerInt(r, "Width"), headerInt(r, "Height"))
+	if err != nil {
+		return "", err
+	}
+	sp, err := screenProfile(p)
+	if err != nil {
+		return "", err
+	}
+	return draw(sp)
+}
+
 // screen renders a system screen of text lines, stores it, and returns its
 // image name.
 func (s *Server) screen(p screen.Profile, lines []screen.Line) (string, error) {
+	name, _, err := s.screenSized(p, lines)
+	return name, err
+}
+
+// screenSized is screen, also returning the image's size in bytes.
+func (s *Server) screenSized(p screen.Profile, lines []screen.Line) (string, int64, error) {
 	return s.cached(fmt.Sprintf("lines %+v %+v", p, lines), func(w io.Writer) error { return screen.Render(w, p, lines) })
 }
 
-// cached returns the name of the image render draws for key. It draws the
-// image straight into the image store the first time key is seen, and again
-// only if the stored image is gone. Using it marks it used, so image expiry
-// keeps it.
-func (s *Server) cached(key string, render func(io.Writer) error) (string, error) {
+// cached returns the name and size of the image render draws for key. It
+// draws the image straight into the image store the first time key is seen,
+// and again only if the stored image is gone. Using it marks it used, so
+// image expiry keeps it.
+func (s *Server) cached(key string, render func(io.Writer) error) (string, int64, error) {
 	s.mu.Lock()
 	name, ok := s.screens[key]
 	s.mu.Unlock()
 	if ok {
-		stored, err := s.images.Refresh(name)
+		size, stored, err := s.images.Refresh(name)
 		if err != nil || stored {
-			return name, err
+			return name, size, err
 		}
 	}
 	w, err := s.images.Create()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if err := render(w); err != nil {
 		w.Abort()
-		return "", err
+		return "", 0, err
 	}
-	name, err = w.Commit()
+	name, size, err := w.Commit()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	s.mu.Lock()
 	s.screens[key] = name
 	s.mu.Unlock()
-	return name, nil
+	return name, size, nil
 }
 
 // imageURL is the absolute URL a device fetches the named image from. The
@@ -570,27 +636,6 @@ func (s *Server) imageURL(r *http.Request, name string) string {
 		base = scheme + "://" + r.Host
 	}
 	return base + "/images/" + name + ".png"
-}
-
-// profileOf takes the panel size from the Width and Height headers, which
-// the firmware sends on every request.
-func profileOf(r *http.Request) screen.Profile {
-	p := screen.Profile{Width: defaultWidth, Height: defaultHeight, Levels: grayLevels, Light: panelLight[r.Header.Get("Model")]}
-	w, h := headerInt(r, "Width"), headerInt(r, "Height")
-	if w != nil && h != nil && *w > 0 && *h > 0 && *w <= maxDimension && *h <= maxDimension {
-		p.Width, p.Height = int(*w), int(*h)
-	}
-	return p
-}
-
-// panelLight is the measured light of each gray level, darkest first, by
-// the firmware's Model header. A model not listed is assumed to have levels
-// evenly spaced in sRGB values.
-var panelLight = map[string][]float64{
-	// TRMNL 7.5" OG DIY kit, firmware 1.8.10, measured 2026-11-13 with the
-	// 1x1-dot calibration screen at room temperature: dark gray matched 14
-	// of 16 black, light gray 10 of 16.
-	"xiao_epaper_display": {0, 2.0 / 16, 6.0 / 16, 1},
 }
 
 // parseMAC returns a MAC address in the firmware's form, AA:BB:CC:DD:EE:FF.

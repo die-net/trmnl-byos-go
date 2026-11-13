@@ -12,6 +12,12 @@ CGO_ENABLED=0 go test ./...
 golangci-lint run
 ```
 
+`internal/profile/registry/` is a copy of TRMNL's model and palette registry. Refresh it with:
+
+```
+go generate ./internal/profile/
+```
+
 SQL is in `internal/db/schema.sql` and `internal/db/queries/`. Regenerate with sqlc 1.30.0:
 
 ```
@@ -39,7 +45,7 @@ For now every device shows a "Connected" screen with its friendly ID and a row o
 ./trmnl-byos calibrate -data data -for 30m ABC123
 ```
 
-`calibrate` shows a device a gray calibration screen from its next wake, for 30 minutes by default; press the device's button to wake it now. Each row is one of the panel's grays over strips of black-and-white dither. The box in each row whose halves match from arm's length says how dark that gray really looks, in sixteenths. `-dot 2` draws the dither with 2x2-pixel dots, which checks whether the panel blurs single pixels. Measured levels go in `panelLight` in `internal/deviceapi`.
+`calibrate` shows a device a gray calibration screen from its next wake, for 30 minutes by default; press the device's button to wake it now. Each row is one of the panel's grays over strips of black-and-white dither. The box in each row whose halves match from arm's length says how dark that gray really looks, in sixteenths. `-dot 2` draws the dither with 2x2-pixel dots, which checks whether the panel blurs single pixels. Measured levels go in the firmware model table in `internal/profile`.
 
 ## License
 
