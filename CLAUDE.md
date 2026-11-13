@@ -23,7 +23,7 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 ## Security
 
 - Recipes are untrusted code from the internet. Their transforms and page scripts run only in the renderer container, which never gets the database, the secrets key, or the data volume.
-- A recipe reaches only the hosts approved for it at install. A URL that came from a recipe, its settings, or a webhook is fetched only through the client that enforces that list and refuses non-public addresses, never through `http.DefaultClient` or a client built for the call.
+- Recipes may reach public hosts only. The renderer has no route out except the server's proxy, which refuses non-public addresses. A URL the server itself fetches that came from a recipe, its settings, or a webhook goes through the outbound client that makes the same check, never through `http.DefaultClient` or a client built for the call.
 - SQL lives in `internal/db/queries/` and runs through sqlc. A query sqlc cannot handle, such as a migration, may bypass it: it lives in `internal/db` as a constant string with `?` parameters, and a comment says why sqlc cannot take it. No SQL is built from strings anywhere.
 - A command runs through `exec.CommandContext` with an argument list, never through a shell such as `sh -c`.
 - A file name or path from a recipe, an upload, or a request is cleaned and checked to stay inside its directory before it reaches the filesystem.

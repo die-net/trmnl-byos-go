@@ -64,7 +64,7 @@ flowchart LR
 Device requests never wait on a render: the scheduler renders ahead, the shim runs one `trmnlp build` per job, and the PNG lands in the store by content hash.
 
 - **Server**: device API, scheduler, store, admin UI, JSON API, MCP server and webhook ingest in one binary.
-- **Renderer**: the `trmnl/trmnlp` image plus a small HTTP shim. It sees only the `projects` and `framework` volumes, never the database or secrets.
+- **Renderer**: the `trmnl/trmnlp` image plus a small HTTP shim. It sees only the `projects` and `framework` volumes, never the database or secrets. It sits on an internal network with no route out; its only way to the internet is the server's filtering proxy (see Security and privacy).
 - **Framework mirror**: every framework release from TRMNL's public bucket, so recipes pinned to old versions keep rendering and fewer assets come from the internet at render time.
 
 ## Device protocol and profiles
@@ -155,7 +155,7 @@ The `special_function` value in our responses is a per-device setting, sent on e
 
 **Sleep window.** Per device, for example 23:00 to 06:30: show a sleep screen and set `refresh_rate` to the window's end.
 
-**Mashups.** The framework renders a mashup as one page with mashup classes. v1 tiles separately rendered slot images as a fallback; rendering mashups as one page through trmnlp is an open question.
+**Mashups.** The framework renders a mashup as one page with mashup classes. trmnlp cannot put several recipes on one page: it renders each of a recipe's half and quadrant layouts on a full-size page, inside a one-slot mashup in the slot's position (the half-horizontal layout fills the top half). So the server composes a mashup by cropping each slot from its recipe's render and placing it, which keeps the framework's slot frame and spacing.
 
 ## Plugins and rendering
 
@@ -179,8 +179,8 @@ The plugin format is the TRMNL recipe, unmodified, and the renderer is trmnlp dr
 **Render path.**
 
 1. The server keeps a trmnlp project directory per plugin instance (per device when the recipe reads device fields): the recipe's `src/`, plus a `.trmnlp.yml` with custom field values, time zone, locale and the device's `trmnl` variables as overrides.
-2. For webhook recipes, the server stores pushed data, applies the merge mode (`replace`, `deep_merge`, `stream`) and writes the result where trmnlp reads webhook data.
-3. When a render is due, the server calls the shim, which runs `trmnlp build --png --width W --height H --palette P` in that directory and returns the PNG. One build at a time to start.
+2. For webhook recipes, the server stores pushed data, applies the merge mode (`replace`, `deep_merge`, `stream`) and writes the result into the project's `.trmnlp.yml` under `variables`, trmnlp's documented override for user data. trmnlp's own webhook store is a cache file keyed by a hash of the project path, which is an internal detail to stay away from. Tested with Top Hacker News Story: a `stories` list under `variables` reached the templates as a top-level merge variable, next to the usual `trmnl` variables.
+3. When a render is due, the server calls the shim, which runs `trmnlp build --png --width W --height H --palette P` in that directory and returns the PNGs. One build polls once and renders all four layouts; there is no option for one layout.
 4. The server stores the PNG under its content hash and updates each affected device's ready screens.
 
 **Settings.** Forms are generated from `custom_fields` (`select` incl. multi-select, `string`, `number`, `lat_lon`; `author_bio` is metadata only). Time zone and locale are server-wide with per-device overrides; instances carry name, dark mode, icon and an optional framework version pin.
@@ -214,7 +214,8 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 | `device_log` | device_id, received_at, device_at, level, message, detail (the entry as sent, with wake reason, heap and Wi-Fi state); the newest 1000 per device are kept |
 | `sensor_reading` | device_id, at, kind, value, unit (latest kept per kind, plus history) |
 | `model` / `palette` | Vendored registry rows plus the framework CSS parameters |
-| `recipe` | id, source (gallery, catalog, git, local), source_ref, source_hash, settings (parsed), approved_hosts |
+| `recipe` | id, source (gallery, catalog, git, local), source_ref, source_hash, settings (parsed) |
+| `outbound_host` | recipe_id, host, first_seen, last_seen, refused (from the renderer proxy's log) |
 | `plugin_instance` | recipe_id, name, field_values, secret_values (encrypted), framework_pin, dark_mode, refresh_override, align, stale_after |
 | `instance_data` | instance_id, data (webhook payload), updated_at, last_error, last_success_at |
 | `playlist` | name, schedule (weekdays, from, until), priority |
@@ -239,7 +240,7 @@ One JSON API backs the web UI, scripts and the MCP server, so anything you can c
 
 - Dashboard: devices, last seen, battery and wake-time trends, current screen thumbnails.
 - Devices: profile, playlist, button command, sleep window, firmware, logs, join window toggle.
-- Recipes and instances: install from gallery, catalog, git or upload; settings form from `custom_fields`; rendered outbound hosts for approval; preview at any device profile.
+- Recipes and instances: install from gallery, catalog, git or upload; settings form from `custom_fields`; the hosts each recipe contacts and any refused requests; preview at any device profile.
 - Playlists: items, durations, schedules, mashups.
 - Firmware: catalog, upload, rollout state.
 
@@ -268,8 +269,14 @@ The device API is LAN-only and token-based; the admin side needs a login; and re
 - **Admin auth.** One admin password (argon2id hash) with session cookies, or trust an identity header from a configured reverse proxy. API and MCP use bearer tokens created in the UI.
 - **Device auth.** Per-device `api_key` from setup, sent as `Access-Token`. Only its SHA-256 is stored, and the device is looked up by that hash, so neither a copy of the database nor request timing gives away a key. The key is 128 random bits, so a fast hash is enough. `ID` is optional for clients that leave it out, but must match the device when sent. Device endpoints can listen on a separate port bound to the LAN.
 - **Secrets at rest.** Custom fields marked secret (API keys, passwords) are encrypted in SQLite with a key from the environment; the UI never shows them back.
-- **Outbound review.** On install, the server renders each recipe's polling URLs with the current settings and lists the hosts, plus image and script hosts found in its markup. You approve them. Example: Paperboy sends the device ID, battery level and a timestamp to a third-party "battery" endpoint.
-- **Transforms and page JavaScript** run inside the trmnlp container, which has no access to the server's database or secrets volume and gets only its project directories. It is not a sandbox: an egress allowlist on that container is the stronger control (open question).
+- **Secrets at render time.** A secret field never goes into a project directory in the clear. The project's `.trmnlp.yml` sets the field to `{{ env.NAME }}`, which trmnlp expands, and the shim passes the decrypted value as that environment variable to the one build container that needs it.
+- **Renderer network.** Recipes may reach any public host but nothing private: not the LAN, the Docker host, other containers, or cloud metadata. Nothing in trmnlp enforces that. Its poller only warns about a private address, and its Firefox fetched images from loopback and the container's own private address in a test. Transforms in four languages can open any connection. So it is enforced by the network:
+  - The trmnlp container runs on a Docker `--internal` network, which has no gateway. Nothing inside it reaches the internet or the LAN directly.
+  - The server joins that network too and runs an HTTP forward proxy there, with `CONNECT` for HTTPS. The proxy resolves each host itself, refuses any loopback, private, link-local, CGNAT, unique-local or otherwise non-public address, and connects to the address it checked, so a DNS answer that changes between check and connect gets nothing through. It uses the same check as the server's own outbound client.
+  - Each build gets `HTTP_PROXY` and `HTTPS_PROXY` pointing at the proxy, with credentials unique to that build. The proxy logs each host a build contacts and each refusal against its recipe, which the UI shows. Paperboy, for example, would show its third-party "battery" endpoint, which receives the device ID, battery level and a timestamp.
+  - trmnlp's HTTP client and Python honor the proxy variables. Node's built-in `fetch` does not, so a JavaScript transform that fetches on its own fails rather than leaking.
+  - There is no per-host allowlist. Some hosts come from data, not markup: Top Hacker News Story shows each story's preview image, fetched from whatever site the story links to, so no install-time review could list them.
+- **Transforms and page JavaScript** run inside the trmnlp container, which has no access to the server's database or secrets volume and gets only its project directories. It is not a sandbox; the network is the boundary that matters.
 - **Plain HTTP on the LAN** saves the ESP32 a TLS handshake per request. HTTPS via a reverse proxy remains an option.
 
 ## Deployment and footprint
@@ -287,7 +294,22 @@ Two containers and three volumes; the server alone is small, and the renderer's 
 - `projects`: trmnlp project directories, shared with the renderer. Rebuildable from `data`.
 - `framework`: mirror of every framework release from TRMNL's public bucket (`index.json` + per-version CSS/JS), plus fonts, pattern images, and cached Highcharts and icon assets. Shared with the renderer.
 
-**Runtime.** Idle memory stays low if the shim starts `trmnlp build` per render, since Firefox exists only during a render. Peak memory and render time are not measured yet.
+**Runtime.** Measured with trmnlp 0.34.1 (arm64) in Colima with 4 CPUs and 4 GB, on an Apple Silicon Mac, so slower hardware will take longer:
+
+| Build | Time |
+| --- | --- |
+| trmnl-meteoswiss, HTML only | 1.2 s |
+| trmnl-meteoswiss, PNGs for all four layouts | 7.3 to 7.7 s |
+| Two meteoswiss builds at once in one container | 8.3 s each |
+| "Is this weather normal" (five polling URLs, Python transform, framework 3.1.1) | 16 s, mostly fetching |
+
+- A build peaks at about 1 GB, Firefox included, and the container drops back to about 40 MiB after it. Two builds at once peaked at 2.1 GB.
+- Starting the container and its virtual display adds about 0.2 s, so a container per build costs little; a long-running shim container idles at about 11 MiB with the display up.
+- PNGs come out 1-bit for `--palette bw`, 2-bit for `gray-4` and 4-bit for `gray-16`, all grayscale (color type 0), at the requested size.
+- At 2 bits the framework draws text in a bitmap font without anti-aliasing and draws grays as dither patterns. BBC World News at `gray-4` came out with 68 gray pixels out of 384,000, from its logo; the rest was black and white. Any gray pixel puts the OG in gray mode, which means a full, flashing refresh, while a 1-bit image gets a partial one. So a device may be better served by `bw` for recipes that barely use gray: a per-device or per-recipe palette choice, not something the server should guess by altering images.
+- At 16 grays (TRMNL X) the framework switches to an anti-aliased font and solid grays, and fits more items, so a recipe's layout differs by device.
+
+**Networks.** Compose defines two: the server's normal network, and an `internal: true` network shared by the server and the renderer. The renderer is on the internal one only.
 
 **Proxmox.** An LXC with Docker, or a small VM, works. Compose file and a single env file ship with the repo. Updates are `docker compose pull`; schema migrations run at startup.
 
@@ -310,19 +332,21 @@ Each of these has a place in the design so it can land later without reshaping t
 
 The biggest risk is coupling to trmnlp, a 0.x development tool whose CLI and directory layout are its only interface.
 
-- [ ] How long does `trmnlp build --png` take per render, and what is its peak memory? Measure on the Proxmox host.
-- [ ] Can trmnlp render a mashup of several recipes as one page? If not, is tiling slot images good enough, or do we generate the mashup page ourselves?
-- [ ] Does writing webhook data into the project's data file work the way `user_data_assembler.rb` suggests?
-- [ ] Do concurrent `trmnlp build` runs in different directories interfere? Start with one at a time.
-- [ ] Can trmnlp's asset overrides point every framework, Highcharts and icon URL at the local mirror, so recipes render offline?
+- [x] How long does `trmnlp build --png` take, and what is its peak memory? About 7.5 s and 1 GB for all four layouts on a Mac (see Runtime). Re-measure on the Proxmox host.
+- [x] Can trmnlp render a mashup of several recipes as one page? No. Each layout renders in its slot on a full-size page, so the server composes mashups from slot crops.
+- [x] Do `.trmnlp.yml` `variables` reach a webhook recipe's templates as merge variables? Yes.
+- [x] Do concurrent `trmnlp build` runs in different directories interfere? No: two in one container both finished, at about 1.1x the time of one, and memory adds up per build.
+- [ ] Do `framework_asset_host` and prefix `asset_overrides`, which trmnlp has, cover every framework, Highcharts and icon URL, so recipes render with no internet but their data sources? Not tested.
 - [ ] Does the firmware accept a plain `http://` server URL? The code says yes: `http_client.h` picks TLS by the URL's scheme. Confirm on a device.
 - [ ] Which firmware `Model` values map to which registry models? Build the table from `platformio.ini` and `config.h`.
-- [ ] Should the trmnlp container get an egress allowlist built from approved hosts?
+- [x] Should the trmnlp container get an egress allowlist built from approved hosts? No. It gets no route out except a proxy that refuses non-public addresses (see Renderer network).
+- [ ] Does Firefox in the trmnlp image use `HTTP_PROXY` and `HTTPS_PROXY`? Its default proxy setting reads them on Linux; confirm in the image, or set its proxy preferences if not.
 - [ ] Are measured gray levels firmware-specific? The OG was measured on 1.8.10. Firmware 1.8.19's bb_epaper reworks 4-gray on 7.5" panels and sets VCOM to −1.60 V, which can shift contrast. Re-measure after updating, and key `panelLight` by firmware version, or by the `Panel-Vcom` header 1.8.19 sends, if the levels move.
 - [ ] Admin auth: built-in password login, reverse-proxy identity header, or both?
 
 **Risks.**
 
 - trmnlp CLI or layout changes break rendering. Mitigation: pin the image, golden-image tests over the community catalog, upgrade deliberately.
+- Some recipes fetch from APIs that answer only TRMNL's servers. The Hourly Weather Forecast recipe got HTTP 401 from its data source. The server should show such a fetch failure on the recipe's page and in its staleness flag, not a blank screen.
 - Framework 4.0 removes 3.x classes. Recipes pinned to 3.x are fine with the mirror; recipes on `latest` may break. Mitigation: show the resolved version and allow pinning per instance.
 - TRMNL changes the device protocol. Mitigation: the protocol surface is small and covered by tests built from real firmware request captures.
