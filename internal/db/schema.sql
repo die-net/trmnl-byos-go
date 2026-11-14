@@ -235,6 +235,19 @@ CREATE TABLE IF NOT EXISTS api_token (
   last_used_at INTEGER NOT NULL DEFAULT 0
 );
 
+-- admin_session is a signed-in browser. token_hash is the SHA-256 of the
+-- session token, which is 256 random bits, so a fast hash is enough. The
+-- token itself is only in the browser's cookie. last_seen_at and expires_at
+-- slide forward as the session is used. Setting the admin password deletes
+-- every session.
+CREATE TABLE IF NOT EXISTS admin_session (
+  id INTEGER PRIMARY KEY,
+  token_hash BLOB NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
 -- firmware is a build in the catalog. It is for exactly one firmware model,
 -- the Model header value, and sha256 (lowercase hex) is both its file name
 -- under firmware/ and the name in its download URL. chip and idf_version are

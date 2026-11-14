@@ -25,6 +25,7 @@ type step struct {
 var steps = []step{
 	{"adopt a database from before numbered versions", adoptUnversioned},
 	{"move playlist cursors out of device_state", moveCursors},
+	{"add admin sessions", addAdminSessions},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -181,6 +182,24 @@ ALTER TABLE device_state DROP COLUMN item_started_at`
 func moveCursors(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, moveCursorsSQL); err != nil {
 		return fmt.Errorf("move cursors: %w", err)
+	}
+	return nil
+}
+
+// addAdminSessionsSQL is step 3: the table that holds admin sessions, as in
+// schema.sql.
+const addAdminSessionsSQL = `CREATE TABLE IF NOT EXISTS admin_session (
+  id INTEGER PRIMARY KEY,
+  token_hash BLOB NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+)`
+
+// addAdminSessions is step 3: see addAdminSessionsSQL.
+func addAdminSessions(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addAdminSessionsSQL); err != nil {
+		return fmt.Errorf("add admin_session: %w", err)
 	}
 	return nil
 }
