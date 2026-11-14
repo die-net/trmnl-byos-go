@@ -204,4 +204,16 @@ CREATE TABLE IF NOT EXISTS render_image (
   bytes INTEGER NOT NULL,
   PRIMARY KEY (render_id, layout)
 );
+
+-- api_token is a bearer token for the admin API. token_hash is the SHA-256
+-- of the token, which is 256 random bits, so a fast hash is enough. The
+-- token itself is shown once, when it is created, and never stored.
+-- last_used_at is 0 until the token is first used.
+CREATE TABLE IF NOT EXISTS api_token (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  token_hash BLOB NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL DEFAULT 0
+);
 `

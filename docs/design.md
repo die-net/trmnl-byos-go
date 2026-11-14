@@ -45,7 +45,7 @@ flowchart LR
     api["Device API"]
     sched["Scheduler"]
     store[("SQLite + PNG store")]
-    admin["Admin UI, JSON API, MCP (not built)"]
+    admin["JSON API (built)<br/>Admin UI, MCP (not built)"]
     api --> store
     sched --> store
     admin --> store
@@ -63,7 +63,7 @@ flowchart LR
 
 Device requests never wait on a render: the scheduler renders ahead, the shim runs one `trmnlp build` per job, and the PNG lands in the store by content hash.
 
-- **Server**: device API, scheduler, store, and the CLI in one binary. The admin UI, the JSON API and the MCP server are not built. The scheduler and the asset cache sweep run only when `-render-url` is set.
+- **Server**: device API, scheduler, store, the bearer-token JSON API and the CLI in one binary. The admin UI and the MCP server are not built. The scheduler and the asset cache sweep run only when `-render-url` is set.
 - **Renderer**: the `trmnl/trmnlp` image plus `trmnl-render`, a small Go shim (`deploy/renderer/Dockerfile`, `cmd/trmnl-render`, `internal/render`). The server POSTs a build job as one tar stream: the first member is `job.json` (size, palette, secret values) and the rest are the recipe project. The shim reads the job, then extracts the other members into a fresh directory, confined with `os.Root`, runs `trmnlp build` as an unprivileged user with its temporary and cache directories inside that directory, and streams back a tar of the build log and the four PNGs. If Xvfb exits, `trmnl-render` exits with an error, so the container restarts. A build gets at most 5 minutes from the server (the shim's own limit is 2). The renderer holds nothing between builds and shares no files with the server. How it is isolated depends on how it is deployed, but in every deployment its only way to the internet is the server's filtering proxy (see Renderer network).
 - **Shutdown.** `serve` runs both HTTP servers and the loops (image expiry, the scheduler, the asset cache sweep) in one `errgroup`. When the process is told to stop, or any of them fails, such as a server that cannot listen, the rest are stopped, and the database is closed only after all of them have returned. A render in flight is canceled, not finished.
 - **Asset cache**: the renderer's proxy caches the framework's CSS, JavaScript, fonts and images, Highcharts, and Google Fonts on the server's disk, so each is fetched from the internet once, and recipes pinned to old framework versions keep rendering.
@@ -117,7 +117,7 @@ The server draws its own screens as ink coverage and maps each pixel to the leve
 
 **Joining and leaving.**
 
-- A time-limited join window (default 10 minutes) admits devices; otherwise setup gets a "not registered" response. Until the admin UI exists, `trmnl-byos join` opens it.
+- A time-limited join window (default 10 minutes) admits devices; otherwise setup gets a "not registered" response. Until the admin UI exists, `trmnl-byos join` and `PUT /api/v1/join` open it.
 - A known MAC needs the window too, since anything on the LAN can see a MAC. A device that lost its credentials re-pairs while the window is open and keeps its friendly ID and settings. Each setup issues a new key and retires the old one.
 
 **Not built.** These are designed and nothing implements them yet:
@@ -194,7 +194,7 @@ Planned: the `special_function` value in our responses is a per-device setting, 
 
 The plugin format is the TRMNL recipe, unmodified, and the renderer is trmnlp driven through a small shim; the Go server never parses Liquid.
 
-**Recipe format.** A directory or the zip from `trmnl.com/api/plugin_settings/<id>/archive`: `settings.yml`, `full.liquid`, `half_horizontal.liquid`, `half_vertical.liquid`, `quadrant.liquid`, optional `shared.liquid` and `transform.{js,py,rb,php}`. Built: a local directory or zip, installed with `trmnl-byos recipe add`, which can be written locally and previewed with `trmnlp serve`. Not built: installing from the TRMNL gallery, the community catalog (`bnussbau/trmnl-recipe-catalog`) or a git URL.
+**Recipe format.** A directory or the zip from `trmnl.com/api/plugin_settings/<id>/archive`: `settings.yml`, `full.liquid`, `half_horizontal.liquid`, `half_vertical.liquid`, `quadrant.liquid`, optional `shared.liquid` and `transform.{js,py,rb,php}`. Built: a local directory or zip, installed with `trmnl-byos recipe add` or `POST /api/v1/recipes`, which can be written locally and previewed with `trmnlp serve`. Not built: installing from the TRMNL gallery, the community catalog (`bnussbau/trmnl-recipe-catalog`) or a git URL.
 
 **What the top 25 recipes need** (survey of trmnl.com by popularity):
 
@@ -258,6 +258,7 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 | `playlist_slot` | item_id, slot, instance_id. `slot` is always 0 until mashups, which put several instances in one item |
 | `render` | instance_id, device_id, width, height, palette, rendered_at (last good build), attempted_at, duration_ms, error, log (latest build), failures (builds failed in a row) |
 | `render_image` | render_id, layout, image, bytes |
+| `api_token` | name, token_hash (SHA-256), created_at, last_used_at (0 until used) |
 | `setting` | key, value, updated_at. Only the join window (`join_until`) is kept here |
 
 **Not built.** These tables and columns are designed and do not exist:
@@ -293,13 +294,24 @@ One JSON API backs the web UI, scripts and the MCP server, so anything you can c
 - Playlists: items, durations, schedules, mashups.
 - Firmware: catalog, upload, rollout state.
 
-**JSON API** (`/api/v1`, bearer token): devices, recipes, instances, playlists, renders. Narrow on purpose; no attempt at parity with Terminus.
+**JSON API** (`/api/v1`, bearer token). Narrow on purpose; no attempt at parity with Terminus.
 
-**What is built.** The commands only (`devices`, `join`, `calibrate`, `recipe`, `instance`, `playlist`). Their logic is in the packages `recipe`, `playlist` and `device`, so the API can be a thin layer over them and share their validation. Their errors wrap one of four kinds from `internal/errkind` (invalid input, not found, conflict, too big), so a caller can map each kind to a status in one place.
+**What is built.** The JSON API and its tokens (`internal/adminapi`). The web UI, the MCP server, `POST /api/screen`, `GET /api/alias` and admin password sessions are not built (see below). The API is a thin layer over the packages the commands use (`recipe`, `playlist`, `device`, `apitoken`), so a command and its route share their validation. Their errors wrap one of four kinds from `internal/errkind` (invalid input, not found, conflict, too big), and the API maps each kind to a status in one place, so a new error that wraps a kind needs no change there.
+
+- **Tokens.** `trmnl-byos token add -name NAME` makes 32 random bytes, base64url, and shows them once. Only the SHA-256 is stored, in `api_token`, and a request is looked up by that hash. `token list` never shows a token, and `token remove NAME` revokes one. A request without a known `Authorization: Bearer` token, on any `/api/v1` path, gets 401 with `WWW-Authenticate: Bearer`. `last_used_at` is updated at most once a minute per token. Device routes still take only a device `api_key`.
+- **Deadlines.** The server's read and write timeouts (30 and 60 seconds) cover everything but the routes that move a large body. A recipe upload sets its own deadline with `http.NewResponseController`: 10 minutes, so a slow link does not cut them off.
+- **Format.** JSON bodies are limited to 64 KB and refuse unknown fields. Responses use real HTTP statuses: 400 bad input, 401, 404 unknown ID, 409 conflict (an instance still in a playlist), 413, 415, and 500 with a generic message and the detail in the log. Times are Unix seconds and durations are seconds.
+- **Routes.**
+  - `GET /devices`, `GET /devices/{id}` (friendly ID or MAC). Never the `api_key` or its hash.
+  - `POST /devices/{id}/calibrate` with `dot` and `for_seconds`.
+  - `GET /join`, `PUT /join` with `for_seconds` (0 closes it).
+  - `GET /recipes`, `GET /recipes/{id}`, `POST /recipes` with a zip as the body, `Content-Type: application/zip`, up to 8 MB. The body is streamed to a temporary file in the recipes directory, installed, and removed.
+  - `GET /instances`, `GET /instances/{id}`, `POST /instances` with `recipe_id`, `name`, `palette`, `fields` and `secrets`, `DELETE /instances/{id}`. A response has the plain field values and only the names of the secret fields that are set, as `secret_fields`. That is null when the names cannot be read: the server has no secrets key, or the sealed secrets do not open (see Secrets at rest). The list and one instance agree, and one unreadable instance does not fail the list.
+  - `GET /playlists`, `POST /playlists/items` with `device`, `playlist`, `instance_id` and `duration_seconds`, `DELETE /playlists/items/{id}`.
+  - `GET /renders`, `GET /renders/{id}`. The list has each render target's status without its build log. One render's response adds the log.
 
 **Not built.** Everything below, and the Web UI above, is design only:
 
-- The JSON API at `/api/v1` and its bearer tokens, with the routes and the `token` command that go with them.
 - `POST /api/custom_plugins/<uuid>`, which would accept `merge_variables` with `merge_strategy` (`replace`, `deep_merge`, `stream`), compatible with TRMNL's webhook shape, with a rate limit. It would store the data per instance and write it into each build's `.trmnlp.yml` under `variables`.
 - `POST /api/screen`, which would accept a full markup or PNG screen from a script.
 - `GET /api/alias/<uuid>?model=<name>`, which would return a plugin instance's current image for any model, for clients outside a playlist (a Home Assistant card, a web page).
@@ -320,7 +332,7 @@ This lets an assistant write a recipe, render it, look at the result and iterate
 
 The device API is LAN-only and token-based; the admin side needs a login; and recipes are treated as untrusted code that talks to the internet.
 
-- **Admin auth.** Not built. The design is one admin password (argon2id hash) with session cookies, or trusting an identity header from a configured reverse proxy. API and MCP use bearer tokens created in the UI.
+- **Admin auth.** Built: bearer tokens, created with `trmnl-byos token add`. Not built: one admin password (argon2id hash) with session cookies, or trusting an identity header from a configured reverse proxy, which the web UI will need. The UI will create tokens later.
 - **Device auth.** Per-device `api_key` from setup, sent as `Access-Token`. Only its SHA-256 is stored, and the device is looked up by that hash, so neither a copy of the database nor request timing gives away a key. The key is 128 random bits, so a fast hash is enough. `ID` is optional for clients that leave it out, but must match the device when sent. Device endpoints on a separate port bound to the LAN are not built: the server has one `-listen` address.
 - **Secrets at rest.** Custom fields marked secret (API keys, passwords) are sealed together with AES-256-GCM under `TRMNL_SECRET_KEY`, 32 random bytes in base64 from the environment (`internal/secrets`); the UI never shows them back. The instance ID is bound in as associated data, so a sealed value copied to another instance does not open. Recipes do not mark fields secret, so the person adding an instance chooses which are. A secret must be at least 6 characters. A shorter value is easy to guess, so sealing it protects nothing, and redacting it would hide its characters all over a build log. Such a value can be a plain field. Values sealed before the instance ID was bound in, or under another key, cannot be opened. There is no fallback decoder. The API shows `secret_fields` as null for such an instance and logs a warning with its ID, never the error. A render of it fails with a reason. The fix is to create the instance again with its secrets.
 - **Secrets at render time.** No field value goes into a project's files. The project's `.trmnlp.yml` sets each field to `{{ env.FIELD_n }}`, which trmnlp expands, and the value, decrypted if secret, travels in the build job, which the shim passes to that one build as an environment variable. A transform or a failed fetch can print a value, and the build log and the error line made from it are stored and shown, so the server replaces each secret field's value with `[redacted]` in the log before it saves either. It matches the value as written and in its two URL-encoded forms, `url.QueryEscape` (a space is `+`) and `url.PathEscape` (a space is `%20`), longest first. trmnlp 0.34.1 prints the full polling URL when a poll gets a 3xx or 4xx answer other than 429, or a body that is not JSON. A recipe that writes `{{ api_key }}` into the URL shows the raw value there, and one that uses `url_encode` shows the query-encoded form. Other encodings, such as base64 or JSON escaping, are not matched, and neither is a value split by the log's size cut. There is no minimum length, so a very short secret, such as `1`, hides every such character in the log. Job variables must be named `FIELD_...`, so a job can never set one the build tools read, such as `LD_PRELOAD` or a proxy setting.
@@ -334,7 +346,7 @@ The device API is LAN-only and token-based; the admin side needs a login; and re
     - systemd, not built: a renderer unit with its own `User=`, `IPAddressDeny=any` with `IPAddressAllow=` for the proxy's address, `ProtectSystem=strict`, `InaccessiblePaths=` for the data directory, and `TasksMax=` and `MemoryMax=`.
     - A network namespace or another container runtime, such as Podman, set up the same way.
     - A renderer run as the server's own user with no sandbox meets none of these. It is for development only.
-  - Not yet true for the server itself. In the shipped Compose file the server joins the render network and listens there on 8080 as well as the proxy's 3128, so a recipe's transform or page can connect to it directly. That exposes the device routes (behind a device key) and `/api/setup`, which gives a key to any MAC while the join window is open. Closing this, and limiting the renderer's processes, memory and privileges, wait on the deployment options design.
+  - Not yet true for the server itself. In the shipped Compose file the server joins the render network and listens there on 8080 as well as the proxy's 3128, so a recipe's transform or page can connect to it directly. That exposes the device routes (behind a device key), the admin API (behind a bearer token), and `/api/setup`, which gives a key to any MAC while the join window is open. Closing this, and limiting the renderer's processes, memory and privileges, wait on the deployment options design.
   - In the shipped Compose file the renderer runs on a Docker `--internal` network, which has no gateway. Nothing inside it reaches the internet or the LAN directly.
   - The server runs an HTTP forward proxy, with `CONNECT` for HTTPS, on an address the renderer can reach. In Compose that is on the internal network, which the server joins too. The proxy resolves each host itself, refuses any loopback, private, link-local, CGNAT, unique-local or otherwise non-public address, and connects to the address it checked, so a DNS answer that changes between check and connect gets nothing through. It uses the same check as the server's own outbound client.
   - Each build gets `HTTP_PROXY` and `HTTPS_PROXY` pointing at the proxy, from the renderer's environment. Not built: credentials unique to each build, and a record of the hosts a build contacts and the requests refused, kept against its recipe and shown in the UI (the `outbound_host` table). Today the proxy writes refused or failed tunnels to the server log, and nothing says which recipe made them. The record would show, for example, Paperboy's third-party "battery" endpoint, which receives the device ID, battery level and a timestamp.

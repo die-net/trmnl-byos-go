@@ -1,0 +1,120 @@
+package adminapi
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/recipe"
+)
+
+// instanceJSON is a plugin instance. It has the values of its plain
+// fields, but of its secret fields only the names, never the values.
+// SecretFields is null when the names cannot be read: the server has no
+// TRMNL_SECRET_KEY, or the sealed secrets do not open, as after a key
+// change. The names are sealed with the values.
+type instanceJSON struct {
+	ID           int64             `json:"id"`
+	RecipeID     int64             `json:"recipe_id"`
+	RecipeName   string            `json:"recipe_name"`
+	Name         string            `json:"name"`
+	Palette      string            `json:"palette"`
+	Fields       map[string]string `json:"fields"`
+	SecretFields []string          `json:"secret_fields"`
+	CreatedAt    int64             `json:"created_at"`
+}
+
+func (s *Server) newInstance(inst *db.PluginInstance, recipeName string) (instanceJSON, error) {
+	fields, names, err := recipe.PublicFields(inst, s.cfg.Key)
+	if err != nil {
+		return instanceJSON{}, fmt.Errorf("instance %d: %w", inst.ID, err)
+	}
+	return instanceJSON{
+		ID: inst.ID, RecipeID: inst.RecipeID, RecipeName: recipeName, Name: inst.Name, Palette: inst.Palette,
+		Fields: fields, SecretFields: names, CreatedAt: inst.CreatedAt,
+	}, nil
+}
+
+func (s *Server) listInstances(_ http.ResponseWriter, r *http.Request) ([]instanceJSON, error) {
+	rows, err := s.db.Read.ListInstances(r.Context())
+	if err != nil {
+		return nil, fmt.Errorf("list instances: %w", err)
+	}
+	out := make([]instanceJSON, 0, len(rows))
+	for i := range rows {
+		inst, err := s.newInstance(&rows[i].PluginInstance, rows[i].RecipeName)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, inst)
+	}
+	return out, nil
+}
+
+func (s *Server) getInstance(_ http.ResponseWriter, r *http.Request) (instanceJSON, error) {
+	id, err := pathID(r, recipe.ErrNoInstance)
+	if err != nil {
+		return instanceJSON{}, err
+	}
+	ctx := r.Context()
+	inst, err := s.db.Read.GetInstance(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return instanceJSON{}, fmt.Errorf("%w: %d", recipe.ErrNoInstance, id)
+	}
+	if err != nil {
+		return instanceJSON{}, fmt.Errorf("get instance: %w", err)
+	}
+	return s.instanceWithRecipe(ctx, &inst)
+}
+
+// instanceWithRecipe returns an instance with its recipe's name.
+func (s *Server) instanceWithRecipe(ctx context.Context, inst *db.PluginInstance) (instanceJSON, error) {
+	rec, err := s.db.Read.GetRecipe(ctx, inst.RecipeID)
+	if err != nil {
+		return instanceJSON{}, fmt.Errorf("get recipe: %w", err)
+	}
+	return s.newInstance(inst, rec.Name)
+}
+
+// createInstanceRequest is the body of an instance create request.
+type createInstanceRequest struct {
+	RecipeID int64 `json:"recipe_id"`
+	// Name defaults to the recipe's.
+	Name string `json:"name"`
+	// Palette defaults to the device's.
+	Palette string `json:"palette"`
+	// Fields are custom field values by keyname.
+	Fields map[string]string `json:"fields"`
+	// Secrets are secret custom field values by keyname, stored encrypted.
+	Secrets map[string]string `json:"secrets"`
+}
+
+func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) (instanceJSON, error) {
+	var req createInstanceRequest
+	if err := decode(w, r, &req, false); err != nil {
+		return instanceJSON{}, err
+	}
+	ctx := r.Context()
+	inst, err := recipe.CreateInstance(ctx, s.db, s.cfg.Key, recipe.InstanceParams{
+		RecipeID: req.RecipeID,
+		Name:     req.Name,
+		Palette:  req.Palette,
+		Fields:   req.Fields,
+		Secrets:  req.Secrets,
+	}, s.now())
+	if err != nil {
+		return instanceJSON{}, err
+	}
+	return s.instanceWithRecipe(ctx, &inst)
+}
+
+func (s *Server) deleteInstance(r *http.Request) error {
+	id, err := pathID(r, recipe.ErrNoInstance)
+	if err != nil {
+		return err
+	}
+	return recipe.DeleteInstance(r.Context(), s.db, id)
+}

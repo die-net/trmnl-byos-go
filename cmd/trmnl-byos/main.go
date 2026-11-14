@@ -7,6 +7,7 @@
 //	trmnl-byos recipe     install and list recipes
 //	trmnl-byos instance   create and list plugin instances
 //	trmnl-byos playlist   edit what devices show
+//	trmnl-byos token      create and remove API tokens
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/die-net/trmnl-byos-go/internal/adminapi"
 	"github.com/die-net/trmnl-byos-go/internal/cache"
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
@@ -49,6 +51,7 @@ commands:
   recipe     install and list recipes: add, list
   instance   create and list plugin instances: add, list
   playlist   edit what devices show: add, remove, list
+  token      create and remove API tokens: add, list, remove
 
 Run "trmnl-byos <command> -h" for a command's flags.
 `
@@ -82,6 +85,8 @@ func run() int {
 		err = instances(ctx, args, os.Stdout)
 	case "playlist":
 		err = playlists(ctx, args, os.Stdout)
+	case "token":
+		err = tokens(ctx, args, os.Stdout)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		return 2
@@ -143,6 +148,7 @@ func serve(ctx context.Context, args []string) error {
 
 	mux := http.NewServeMux()
 	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, RefreshRate: *refresh}).Register(mux)
+	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data)}).Register(mux)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,

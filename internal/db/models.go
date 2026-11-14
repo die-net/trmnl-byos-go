@@ -4,6 +4,14 @@
 
 package db
 
+type ApiToken struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	TokenHash  []byte `json:"token_hash"`
+	CreatedAt  int64  `json:"created_at"`
+	LastUsedAt int64  `json:"last_used_at"`
+}
+
 type Device struct {
 	ID                  int64  `json:"id"`
 	Mac                 string `json:"mac"`
