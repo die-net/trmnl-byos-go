@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -85,21 +86,70 @@ func (w *Writer) Commit() (string, int64, error) {
 	}
 	w.done = true
 	defer func() { _ = os.Remove(w.file.Name()) }() // A no-op once renamed.
+	name := hex.EncodeToString(w.hash.Sum(nil))[:nameLen]
+	if _, ok, err := w.store.Refresh(name); err != nil || ok {
+		_ = w.file.Close()
+		return name, w.n, err
+	}
+	// An existing file is trusted as correct forever, since its name is its
+	// hash. After a power loss a renamed but unsynced file could be empty
+	// or cut short and never be rewritten. So the bytes are synced before
+	// the rename, which means the name never points at less than the full
+	// image. The directory is synced after it, so the name itself is on
+	// disk before the caller writes a row that names it.
+	if err := w.file.Sync(); err != nil {
+		_ = w.file.Close()
+		return "", 0, fmt.Errorf("sync image: %w", err)
+	}
 	if err := w.file.Close(); err != nil {
 		return "", 0, fmt.Errorf("close image: %w", err)
 	}
-	name := hex.EncodeToString(w.hash.Sum(nil))[:nameLen]
-	if _, ok, err := w.store.Refresh(name); err != nil || ok {
-		return name, w.n, err
-	}
 	path := w.store.path(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	shard := filepath.Dir(path)
+	created := false
+	if err := os.Mkdir(shard, 0o750); err == nil {
+		created = true
+	} else if !errors.Is(err, os.ErrExist) {
 		return "", 0, fmt.Errorf("create image dir: %w", err)
 	}
 	if err := os.Rename(w.file.Name(), path); err != nil {
 		return "", 0, fmt.Errorf("rename image: %w", err)
 	}
+	// A new shard directory is itself an entry in the store directory.
+	dirs := []string{shard}
+	if created {
+		dirs = append(dirs, w.store.dir)
+	}
+	for _, dir := range dirs {
+		if err := syncDir(dir); err != nil {
+			// Remove the name, so a retry does not find a file whose
+			// name may not be durable and skip syncing it.
+			_ = os.Remove(path)
+			return "", 0, err
+		}
+	}
 	return name, w.n, nil
+}
+
+// syncDir flushes a directory's entries to disk, so a rename into it
+// survives a power loss. Linux and macOS both open a directory read-only and
+// fsync it (Go's File.Sync uses F_FULLFSYNC on macOS, falling back to fsync
+// when that is unsupported). A filesystem that cannot sync a directory
+// answers EINVAL or an unsupported error. That is not a failure of this
+// write, because nothing more can be done, so it is ignored.
+func syncDir(dir string) error {
+	d, err := os.Open(filepath.Clean(dir))
+	if err != nil {
+		return fmt.Errorf("open image dir: %w", err)
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil && cerr != nil {
+		err = cerr
+	}
+	if err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, errors.ErrUnsupported) {
+		return fmt.Errorf("sync image dir: %w", err)
+	}
+	return nil
 }
 
 // Abort discards the image. It does nothing after Commit.

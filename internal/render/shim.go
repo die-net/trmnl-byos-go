@@ -53,7 +53,7 @@ func (s *Shim) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	job, err := readRequest(r, filepath.Join(dir, "project"))
+	job, err := readRequest(r.Body, filepath.Join(dir, "project"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -81,37 +81,31 @@ func (s *Shim) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// readRequest reads the job part and extracts the project part into dir.
-// The parts come in that order, and each is read as it streams in.
-func readRequest(r *http.Request, dir string) (Job, error) {
-	mr, err := r.MultipartReader()
-	if err != nil {
-		return Job{}, fmt.Errorf("read request: %w", err)
+// readRequest reads the job, the first member of the request's tar, and
+// extracts the other members into dir as they stream in.
+func readRequest(r io.Reader, dir string) (Job, error) {
+	tr := tar.NewReader(io.LimitReader(r, maxProjectBytes))
+	h, err := tr.Next()
+	if err != nil || h.Name != jobMember || h.Typeflag != tar.TypeReg {
+		return Job{}, errors.New("read request: the first member must be " + jobMember)
 	}
 	var job Job
-	part, err := mr.NextPart()
-	if err != nil || part.FormName() != partJob {
-		return Job{}, errors.New("read request: the job part comes first")
-	}
-	if err := json.NewDecoder(io.LimitReader(part, maxJobBytes)).Decode(&job); err != nil {
+	if err := json.NewDecoder(io.LimitReader(tr, maxJobBytes)).Decode(&job); err != nil {
 		return Job{}, fmt.Errorf("read job: %w", err)
 	}
 	if err := job.validate(); err != nil {
 		return Job{}, err
 	}
-	part, err = mr.NextPart()
-	if err != nil || part.FormName() != partProject {
-		return Job{}, errors.New("read request: the project part comes second")
-	}
-	if err := extract(part, dir); err != nil {
+	if err := extract(tr, dir); err != nil {
 		return Job{}, err
 	}
 	return job, nil
 }
 
-// extract writes a tar of a project into dir. os.Root keeps every name
-// inside dir, and only directories and regular files are written.
-func extract(r io.Reader, dir string) error {
+// extract writes the remaining members of a project tar into dir. os.Root
+// keeps every name inside dir, and only directories and regular files are
+// written.
+func extract(tr *tar.Reader, dir string) error {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return fmt.Errorf("create project dir: %w", err)
 	}
@@ -120,7 +114,6 @@ func extract(r io.Reader, dir string) error {
 		return fmt.Errorf("open project dir: %w", err)
 	}
 	defer root.Close()
-	tr := tar.NewReader(io.LimitReader(r, maxProjectBytes))
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {

@@ -48,19 +48,17 @@ type registry struct {
 	palettes map[string]Palette
 }
 
-var loadRegistry = sync.OnceValues(func() (*registry, error) {
+// loadRegistry parses the embedded registry on first use. A broken embedded
+// file is a build defect, so it panics rather than returning an error.
+var loadRegistry = sync.OnceValue(func() *registry {
 	var m struct {
 		Data []Model `json:"data"`
 	}
-	if err := decode("registry/models.json", &m); err != nil {
-		return nil, err
-	}
+	decode("registry/models.json", &m)
 	var p struct {
 		Data []Palette `json:"data"`
 	}
-	if err := decode("registry/palettes.json", &p); err != nil {
-		return nil, err
-	}
+	decode("registry/palettes.json", &p)
 	r := &registry{models: map[string]Model{}, palettes: map[string]Palette{}}
 	for _, model := range m.Data {
 		r.models[model.Name] = model
@@ -68,19 +66,18 @@ var loadRegistry = sync.OnceValues(func() (*registry, error) {
 	for _, pal := range p.Data {
 		r.palettes[pal.ID] = pal
 	}
-	return r, nil
+	return r
 })
 
-func decode(name string, v any) error {
+func decode(name string, v any) {
 	f, err := registryFS.Open(name)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", name, err)
+		panic(fmt.Sprintf("profile: open %s: %v", name, err))
 	}
 	defer f.Close()
 	if err := json.NewDecoder(f).Decode(v); err != nil {
-		return fmt.Errorf("decode %s: %w", name, err)
+		panic(fmt.Sprintf("profile: decode %s: %v", name, err))
 	}
-	return nil
 }
 
 // firmwareModel is what the server knows about a firmware Model header value.
@@ -153,11 +150,8 @@ type Profile struct {
 // Resolve returns the profile for a device by its firmware Model header,
 // falling back to the Width and Height it reports, and then to 800x480.
 // width and height are nil when the device did not send them.
-func Resolve(fwModel string, width, height *int64) (Profile, error) {
-	reg, err := loadRegistry()
-	if err != nil {
-		return Profile{}, err
-	}
+func Resolve(fwModel string, width, height *int64) Profile {
+	reg := loadRegistry()
 	fm, known := firmwareModels[fwModel]
 	if !known {
 		fm = firmwareModel{registry: fwModel}
@@ -175,7 +169,7 @@ func Resolve(fwModel string, width, height *int64) (Profile, error) {
 		if fm.imageSizeLimit != 0 {
 			p.ImageSizeLimit = fm.imageSizeLimit
 		}
-		return p, nil
+		return p
 	}
 	p := Profile{
 		Width:          FallbackWidth,
@@ -187,24 +181,21 @@ func Resolve(fwModel string, width, height *int64) (Profile, error) {
 	if width != nil && height != nil && *width > 0 && *height > 0 && *width <= maxDimension && *height <= maxDimension {
 		p.Width, p.Height = int(*width), int(*height)
 	}
-	return p, nil
+	return p
 }
 
 // GrayLevels is the number of grays in the richest gray palette the panel
 // takes, which system screens use to show what the panel can do. A panel
 // with only color palettes gets 2: black and white are in all of them.
-func (p Profile) GrayLevels() (int, error) {
-	reg, err := loadRegistry()
-	if err != nil {
-		return 0, err
-	}
+func (p Profile) GrayLevels() int {
+	reg := loadRegistry()
 	levels := 2
 	for _, id := range p.Palettes {
 		if g := reg.palettes[id].Grays; g > levels {
 			levels = g
 		}
 	}
-	return levels, nil
+	return levels
 }
 
 // Fits reports whether an image of size bytes is one the device accepts.
@@ -223,11 +214,7 @@ func (p Profile) RenderPalette(want string) string {
 }
 
 // KnownPalette reports whether id is a palette in TRMNL's registry.
-func KnownPalette(id string) (bool, error) {
-	reg, err := loadRegistry()
-	if err != nil {
-		return false, err
-	}
-	_, ok := reg.palettes[id]
-	return ok, nil
+func KnownPalette(id string) bool {
+	_, ok := loadRegistry().palettes[id]
+	return ok
 }

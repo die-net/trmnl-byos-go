@@ -1,5 +1,6 @@
 -- Runtime schema for trmnl-byos-go. sqlc generates queries against this
--- file, and Open applies it at startup. Times are Unix seconds.
+-- file, and Open applies it to a new
+-- database, and migrate.go upgrades an old one. Times are Unix seconds.
 
 -- A device is one display that has called /api/setup. mac is the ID header
 -- it sent. api_key_hash is the SHA-256 of the key it got back, which it
@@ -43,13 +44,19 @@ CREATE TABLE IF NOT EXISTS device_state (
   -- firmware reports, which renders for a model the server does not know
   -- are drawn at.
   width INTEGER,
-  height INTEGER,
-  -- item_id is the playlist item the device is showing, and
-  -- item_started_at is when it started. NULL before the device has shown
-  -- one. An item that was deleted or is no longer in the device's playlist
-  -- starts the playlist over.
-  item_id INTEGER,
-  item_started_at INTEGER
+  height INTEGER
+);
+
+-- device_cursor is where a device is in its playlist: item_id is the item it
+-- is showing and item_started_at is when it started. A device that has none
+-- has no row. An item that was deleted or is no longer in the device's
+-- playlist starts the playlist over. It is the server's state, not
+-- something the device reported, so it is apart from device_state, and a
+-- row in one says nothing about the other.
+CREATE TABLE IF NOT EXISTS device_cursor (
+  device_id INTEGER PRIMARY KEY REFERENCES device (id) ON DELETE CASCADE,
+  item_id INTEGER NOT NULL,
+  item_started_at INTEGER NOT NULL
 );
 
 -- device_log holds entries a device sent to /api/log. device_at is the
@@ -149,12 +156,17 @@ CREATE TABLE IF NOT EXISTS playlist_slot (
 CREATE INDEX IF NOT EXISTS playlist_slot_instance ON playlist_slot (instance_id);
 
 -- render is the latest build of an instance at one size and palette, the
--- render target. rendered_at and the render_image rows are from the latest
--- build that succeeded. attempted_at, error and log are from the latest
--- build, so an error is kept next to the last good images.
+-- render target. device_id is 0 for a render every device shares, and a
+-- device's ID for a recipe that reads trmnl.device, which is built once per
+-- device. It has no foreign key because 0 is no device; the
+-- render_device_deleted trigger removes a deleted device's renders.
+-- rendered_at and the render_image rows are from the latest build that
+-- succeeded. attempted_at, error and log are from the latest build, so an
+-- error is kept next to the last good images.
 CREATE TABLE IF NOT EXISTS render (
   id INTEGER PRIMARY KEY,
   instance_id INTEGER NOT NULL REFERENCES plugin_instance (id) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL DEFAULT 0,
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
   palette TEXT NOT NULL,
@@ -167,8 +179,16 @@ CREATE TABLE IF NOT EXISTS render (
   error TEXT NOT NULL DEFAULT '',
   -- log is the latest build's log, cut to a bound.
   log TEXT NOT NULL DEFAULT '',
-  UNIQUE (instance_id, width, height, palette)
+  -- failures is how many builds in a row have failed, 0 after a success.
+  -- The scheduler waits longer to retry the more there are.
+  failures INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (instance_id, device_id, width, height, palette)
 );
+
+CREATE TRIGGER IF NOT EXISTS render_device_deleted AFTER DELETE ON device
+BEGIN
+  DELETE FROM render WHERE device_id = OLD.id;
+END;
 
 -- render_image is one layout's image from a render.
 CREATE TABLE IF NOT EXISTS render_image (

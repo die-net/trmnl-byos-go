@@ -9,19 +9,53 @@ import (
 	"context"
 )
 
+const deleteRender = `-- name: DeleteRender :exec
+DELETE FROM render WHERE id = ?
+`
+
+// Deletes a render and, by cascade, its images, which image expiry then
+// deletes once nothing else names them.
+func (q *Queries) DeleteRender(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteRender, id)
+	return err
+}
+
+const deleteRenderWithImage = `-- name: DeleteRenderWithImage :exec
+DELETE FROM render
+WHERE id = ?1
+  AND EXISTS (SELECT 1 FROM render_image WHERE render_image.render_id = render.id AND render_image.image = ?2)
+`
+
+type DeleteRenderWithImageParams struct {
+	ID    int64  `json:"id"`
+	Image string `json:"image"`
+}
+
+// Deletes a render whose image is missing from the image store, so the
+// scheduler builds it again. It does so only while the render still names
+// the image, so a build that replaced it in the meantime is kept.
+func (q *Queries) DeleteRenderWithImage(ctx context.Context, arg DeleteRenderWithImageParams) error {
+	_, err := q.db.ExecContext(ctx, deleteRenderWithImage, arg.ID, arg.Image)
+	return err
+}
+
 const getItemScreen = `-- name: GetItemScreen :one
 SELECT plugin_instance.name, recipe.refresh_interval,
-  render.rendered_at, render.attempted_at, render.error,
+  render.id AS render_id, render.rendered_at, render.attempted_at, render.error,
   render_image.image, render_image.bytes
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
 LEFT JOIN render ON render.instance_id = plugin_instance.id
-  AND render.width = ?1 AND render.height = ?2 AND render.palette = ?3
-LEFT JOIN render_image ON render_image.render_id = render.id AND render_image.layout = ?4
-WHERE plugin_instance.id = ?5
+  AND render.device_id IN (0, ?1)
+  AND render.width = ?2 AND render.height = ?3 AND render.palette = ?4
+LEFT JOIN render_image ON render_image.render_id = render.id AND render_image.layout = ?5
+WHERE plugin_instance.id = ?6
+ORDER BY render.device_id DESC
+LIMIT 1
 `
 
 type GetItemScreenParams struct {
+	DeviceID   int64  `json:"device_id"`
 	Width      int64  `json:"width"`
 	Height     int64  `json:"height"`
 	Palette    string `json:"palette"`
@@ -32,6 +66,7 @@ type GetItemScreenParams struct {
 type GetItemScreenRow struct {
 	Name            string  `json:"name"`
 	RefreshInterval int64   `json:"refresh_interval"`
+	RenderID        *int64  `json:"render_id"`
 	RenderedAt      *int64  `json:"rendered_at"`
 	AttemptedAt     *int64  `json:"attempted_at"`
 	Error           *string `json:"error"`
@@ -40,9 +75,13 @@ type GetItemScreenRow struct {
 }
 
 // What a device showing an instance gets: the instance's name and refresh
-// interval, and the render for the device's size and palette, if any.
+// interval, and the render for the device's size and palette, if any. A
+// recipe's renders are either shared (device 0) or all per device, so the
+// device's own render is the one that matches, and the shared one is the
+// fallback.
 func (q *Queries) GetItemScreen(ctx context.Context, arg GetItemScreenParams) (GetItemScreenRow, error) {
 	row := q.db.QueryRowContext(ctx, getItemScreen,
+		arg.DeviceID,
 		arg.Width,
 		arg.Height,
 		arg.Palette,
@@ -53,6 +92,7 @@ func (q *Queries) GetItemScreen(ctx context.Context, arg GetItemScreenParams) (G
 	err := row.Scan(
 		&i.Name,
 		&i.RefreshInterval,
+		&i.RenderID,
 		&i.RenderedAt,
 		&i.AttemptedAt,
 		&i.Error,
@@ -62,29 +102,67 @@ func (q *Queries) GetItemScreen(ctx context.Context, arg GetItemScreenParams) (G
 	return i, err
 }
 
-const getRender = `-- name: GetRender :one
-SELECT id, instance_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log FROM render
-WHERE instance_id = ? AND width = ? AND height = ? AND palette = ?
+const getRenderDevice = `-- name: GetRenderDevice :one
+SELECT device.friendly_id, device.fw_version, device_state.battery_v, device_state.rssi,
+  device_state.last_refresh_rate_sent
+FROM device
+LEFT JOIN device_state ON device_state.device_id = device.id
+WHERE device.id = ?
 `
 
-type GetRenderParams struct {
-	InstanceID int64  `json:"instance_id"`
-	Width      int64  `json:"width"`
-	Height     int64  `json:"height"`
-	Palette    string `json:"palette"`
+type GetRenderDeviceRow struct {
+	FriendlyID          string   `json:"friendly_id"`
+	FwVersion           string   `json:"fw_version"`
+	BatteryV            *float64 `json:"battery_v"`
+	Rssi                *int64   `json:"rssi"`
+	LastRefreshRateSent *int64   `json:"last_refresh_rate_sent"`
 }
 
-func (q *Queries) GetRender(ctx context.Context, arg GetRenderParams) (Render, error) {
-	row := q.db.QueryRowContext(ctx, getRender,
-		arg.InstanceID,
-		arg.Width,
-		arg.Height,
-		arg.Palette,
+// A device's values as of its last wake, which a per-device render shows
+// the recipe as trmnl.device.
+func (q *Queries) GetRenderDevice(ctx context.Context, id int64) (GetRenderDeviceRow, error) {
+	row := q.db.QueryRowContext(ctx, getRenderDevice, id)
+	var i GetRenderDeviceRow
+	err := row.Scan(
+		&i.FriendlyID,
+		&i.FwVersion,
+		&i.BatteryV,
+		&i.Rssi,
+		&i.LastRefreshRateSent,
 	)
-	var i Render
+	return i, err
+}
+
+const getRenderStatus = `-- name: GetRenderStatus :one
+SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette,
+  render.rendered_at, render.attempted_at, render.duration_ms, render.error, render.log
+FROM render
+LEFT JOIN device ON device.id = render.device_id
+WHERE render.id = ?
+`
+
+type GetRenderStatusRow struct {
+	ID          int64   `json:"id"`
+	InstanceID  int64   `json:"instance_id"`
+	Device      *string `json:"device"`
+	Width       int64   `json:"width"`
+	Height      int64   `json:"height"`
+	Palette     string  `json:"palette"`
+	RenderedAt  int64   `json:"rendered_at"`
+	AttemptedAt int64   `json:"attempted_at"`
+	DurationMs  int64   `json:"duration_ms"`
+	Error       string  `json:"error"`
+	Log         string  `json:"log"`
+}
+
+// One render target's status with its build log.
+func (q *Queries) GetRenderStatus(ctx context.Context, id int64) (GetRenderStatusRow, error) {
+	row := q.db.QueryRowContext(ctx, getRenderStatus, id)
+	var i GetRenderStatusRow
 	err := row.Scan(
 		&i.ID,
 		&i.InstanceID,
+		&i.Device,
 		&i.Width,
 		&i.Height,
 		&i.Palette,
@@ -97,9 +175,164 @@ func (q *Queries) GetRender(ctx context.Context, arg GetRenderParams) (Render, e
 	return i, err
 }
 
+const listDeviceWakes = `-- name: ListDeviceWakes :many
+SELECT device.id AS device_id, device.fw_model, device_state.width, device_state.height,
+  device_state.last_seen, device_state.last_refresh_rate_sent, device_cursor.item_id, device_cursor.item_started_at
+FROM device_state
+JOIN device ON device.id = device_state.device_id
+LEFT JOIN device_cursor ON device_cursor.device_id = device.id
+`
+
+type ListDeviceWakesRow struct {
+	DeviceID            int64  `json:"device_id"`
+	FwModel             string `json:"fw_model"`
+	Width               *int64 `json:"width"`
+	Height              *int64 `json:"height"`
+	LastSeen            int64  `json:"last_seen"`
+	LastRefreshRateSent int64  `json:"last_refresh_rate_sent"`
+	ItemID              *int64 `json:"item_id"`
+	ItemStartedAt       *int64 `json:"item_started_at"`
+}
+
+// What the scheduler needs to know about each device that has woken: its
+// size, when it last woke and how long it was told to sleep, and its
+// playlist cursor.
+func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDeviceWakes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceWakesRow{}
+	for rows.Next() {
+		var i ListDeviceWakesRow
+		if err := rows.Scan(
+			&i.DeviceID,
+			&i.FwModel,
+			&i.Width,
+			&i.Height,
+			&i.LastSeen,
+			&i.LastRefreshRateSent,
+			&i.ItemID,
+			&i.ItemStartedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRenderKeys = `-- name: ListRenderKeys :many
+SELECT id, instance_id, device_id, width, height, palette FROM render
+`
+
+type ListRenderKeysRow struct {
+	ID         int64  `json:"id"`
+	InstanceID int64  `json:"instance_id"`
+	DeviceID   int64  `json:"device_id"`
+	Width      int64  `json:"width"`
+	Height     int64  `json:"height"`
+	Palette    string `json:"palette"`
+}
+
+// Every render's target, for finding the ones no device needs.
+func (q *Queries) ListRenderKeys(ctx context.Context) ([]ListRenderKeysRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRenderKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRenderKeysRow{}
+	for rows.Next() {
+		var i ListRenderKeysRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceID,
+			&i.DeviceID,
+			&i.Width,
+			&i.Height,
+			&i.Palette,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRenderRows = `-- name: ListRenderRows :many
+SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, failures
+FROM render
+`
+
+type ListRenderRowsRow struct {
+	ID          int64  `json:"id"`
+	InstanceID  int64  `json:"instance_id"`
+	DeviceID    int64  `json:"device_id"`
+	Width       int64  `json:"width"`
+	Height      int64  `json:"height"`
+	Palette     string `json:"palette"`
+	RenderedAt  int64  `json:"rendered_at"`
+	AttemptedAt int64  `json:"attempted_at"`
+	DurationMs  int64  `json:"duration_ms"`
+	Error       string `json:"error"`
+	Failures    int64  `json:"failures"`
+}
+
+// Every render's row without its build log, which is large, for the
+// scheduler to decide in one read what is due.
+func (q *Queries) ListRenderRows(ctx context.Context) ([]ListRenderRowsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRenderRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRenderRowsRow{}
+	for rows.Next() {
+		var i ListRenderRowsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceID,
+			&i.DeviceID,
+			&i.Width,
+			&i.Height,
+			&i.Palette,
+			&i.RenderedAt,
+			&i.AttemptedAt,
+			&i.DurationMs,
+			&i.Error,
+			&i.Failures,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRenderTargets = `-- name: ListRenderTargets :many
-SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.refresh_interval,
-  device.fw_model, device_state.width, device_state.height
+SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
+  recipe.refresh_interval, device.id AS device_id, device.fw_model, device_state.width, device_state.height,
+  device_state.device_id IS NOT NULL AS woken
 FROM playlist_device
 JOIN device ON device.id = playlist_device.device_id
 LEFT JOIN device_state ON device_state.device_id = device.id
@@ -112,14 +345,19 @@ JOIN recipe ON recipe.id = plugin_instance.recipe_id
 type ListRenderTargetsRow struct {
 	InstanceID      int64  `json:"instance_id"`
 	Palette         string `json:"palette"`
+	RecipeID        int64  `json:"recipe_id"`
 	RefreshInterval int64  `json:"refresh_interval"`
+	DeviceID        int64  `json:"device_id"`
 	FwModel         string `json:"fw_model"`
 	Width           *int64 `json:"width"`
 	Height          *int64 `json:"height"`
+	Woken           bool   `json:"woken"`
 }
 
 // Every instance in a playlist linked to a device, with what the device
 // reported about itself, from which its render size and palette follow.
+// A recipe's device_id is the device the render is for, which the caller
+// drops for a recipe whose renders every device shares.
 func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listRenderTargets)
 	if err != nil {
@@ -132,10 +370,130 @@ func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow
 		if err := rows.Scan(
 			&i.InstanceID,
 			&i.Palette,
+			&i.RecipeID,
 			&i.RefreshInterval,
+			&i.DeviceID,
 			&i.FwModel,
 			&i.Width,
 			&i.Height,
+			&i.Woken,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRenders = `-- name: ListRenders :many
+SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette,
+  render.rendered_at, render.attempted_at, render.duration_ms, render.error
+FROM render
+LEFT JOIN device ON device.id = render.device_id
+ORDER BY render.instance_id, render.device_id, render.width, render.height, render.palette
+`
+
+type ListRendersRow struct {
+	ID          int64   `json:"id"`
+	InstanceID  int64   `json:"instance_id"`
+	Device      *string `json:"device"`
+	Width       int64   `json:"width"`
+	Height      int64   `json:"height"`
+	Palette     string  `json:"palette"`
+	RenderedAt  int64   `json:"rendered_at"`
+	AttemptedAt int64   `json:"attempted_at"`
+	DurationMs  int64   `json:"duration_ms"`
+	Error       string  `json:"error"`
+}
+
+// Every render target's status, without the build log. device is the
+// friendly ID of the device a per-device render is for, NULL for a shared
+// render.
+func (q *Queries) ListRenders(ctx context.Context) ([]ListRendersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRenders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRendersRow{}
+	for rows.Next() {
+		var i ListRendersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceID,
+			&i.Device,
+			&i.Width,
+			&i.Height,
+			&i.Palette,
+			&i.RenderedAt,
+			&i.AttemptedAt,
+			&i.DurationMs,
+			&i.Error,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listShownItems = `-- name: ListShownItems :many
+SELECT device.id AS device_id, playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette,
+  recipe.id AS recipe_id, recipe.refresh_interval
+FROM device
+JOIN playlist_item ON playlist_item.playlist_id = (
+  SELECT playlist_device.playlist_id FROM playlist_device
+  WHERE playlist_device.device_id = device.id
+  ORDER BY playlist_device.priority, playlist_device.playlist_id
+  LIMIT 1
+)
+JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
+JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
+JOIN recipe ON recipe.id = plugin_instance.recipe_id
+ORDER BY device.id, playlist_item.position
+`
+
+type ListShownItemsRow struct {
+	DeviceID        int64  `json:"device_id"`
+	ID              int64  `json:"id"`
+	Duration        int64  `json:"duration"`
+	InstanceID      int64  `json:"instance_id"`
+	Palette         string `json:"palette"`
+	RecipeID        int64  `json:"recipe_id"`
+	RefreshInterval int64  `json:"refresh_interval"`
+}
+
+// The items of the playlist each device shows, in order, as ListDeviceItems
+// gives them for one device, with the instance's recipe.
+func (q *Queries) ListShownItems(ctx context.Context) ([]ListShownItemsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listShownItems)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListShownItemsRow{}
+	for rows.Next() {
+		var i ListShownItemsRow
+		if err := rows.Scan(
+			&i.DeviceID,
+			&i.ID,
+			&i.Duration,
+			&i.InstanceID,
+			&i.Palette,
+			&i.RecipeID,
+			&i.RefreshInterval,
 		); err != nil {
 			return nil, err
 		}
@@ -151,17 +509,19 @@ func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow
 }
 
 const saveRenderFailure = `-- name: SaveRenderFailure :exec
-INSERT INTO render (instance_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log)
-VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
-ON CONFLICT (instance_id, width, height, palette) DO UPDATE SET
+INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, failures)
+VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
   error = excluded.error,
-  log = excluded.log
+  log = excluded.log,
+  failures = render.failures + excluded.failures
 `
 
 type SaveRenderFailureParams struct {
 	InstanceID  int64  `json:"instance_id"`
+	DeviceID    int64  `json:"device_id"`
 	Width       int64  `json:"width"`
 	Height      int64  `json:"height"`
 	Palette     string `json:"palette"`
@@ -169,12 +529,17 @@ type SaveRenderFailureParams struct {
 	DurationMs  int64  `json:"duration_ms"`
 	Error       string `json:"error"`
 	Log         string `json:"log"`
+	Failures    int64  `json:"failures"`
 }
 
 // Records a failed build, keeping the last good images and their time.
+// failures is 1 for a failure that counts toward the backoff and 0 for one
+// that does not, such as an unreachable renderer. It is added to the row's
+// count.
 func (q *Queries) SaveRenderFailure(ctx context.Context, arg SaveRenderFailureParams) error {
 	_, err := q.db.ExecContext(ctx, saveRenderFailure,
 		arg.InstanceID,
+		arg.DeviceID,
 		arg.Width,
 		arg.Height,
 		arg.Palette,
@@ -182,6 +547,7 @@ func (q *Queries) SaveRenderFailure(ctx context.Context, arg SaveRenderFailurePa
 		arg.DurationMs,
 		arg.Error,
 		arg.Log,
+		arg.Failures,
 	)
 	return err
 }
@@ -210,19 +576,21 @@ func (q *Queries) SaveRenderImage(ctx context.Context, arg SaveRenderImageParams
 }
 
 const saveRenderSuccess = `-- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log)
-VALUES (?, ?, ?, ?, ?, ?, ?, '', ?)
-ON CONFLICT (instance_id, width, height, palette) DO UPDATE SET
+INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?)
+ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
   error = '',
-  log = excluded.log
+  log = excluded.log,
+  failures = 0
 RETURNING id
 `
 
 type SaveRenderSuccessParams struct {
 	InstanceID  int64  `json:"instance_id"`
+	DeviceID    int64  `json:"device_id"`
 	Width       int64  `json:"width"`
 	Height      int64  `json:"height"`
 	Palette     string `json:"palette"`
@@ -235,6 +603,7 @@ type SaveRenderSuccessParams struct {
 func (q *Queries) SaveRenderSuccess(ctx context.Context, arg SaveRenderSuccessParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, saveRenderSuccess,
 		arg.InstanceID,
+		arg.DeviceID,
 		arg.Width,
 		arg.Height,
 		arg.Palette,

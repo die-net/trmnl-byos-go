@@ -97,12 +97,11 @@ func newHarness(t *testing.T, dialer ContextDialer) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := New(Config{
+	p := newServer(Config{
 		Dialer:      dialer,
 		Cache:       c,
 		CachedHosts: []string{"trmnl.com", "fonts.googleapis.com", "fonts.gstatic.com"},
-		Transport:   toOrigin(o),
-	})
+	}, toOrigin(o))
 	srv := httptest.NewServer(p)
 	t.Cleanup(srv.Close)
 	proxyURL, _ := url.Parse(srv.URL)

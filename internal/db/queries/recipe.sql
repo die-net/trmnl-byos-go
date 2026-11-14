@@ -3,9 +3,6 @@ INSERT INTO recipe (name, source, refresh_interval, installed_at)
 VALUES (?, ?, ?, ?)
 RETURNING *;
 
--- name: DeleteRecipe :exec
-DELETE FROM recipe WHERE id = ?;
-
 -- name: ListRecipes :many
 SELECT * FROM recipe ORDER BY id;
 
@@ -14,14 +11,23 @@ INSERT INTO plugin_instance (recipe_id, name, field_values, secret_values, palet
 VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
 
+-- name: SetInstanceSecrets :exec
+-- Stores an instance's sealed secrets, which are bound to its ID and so can
+-- be sealed only after the row exists.
+UPDATE plugin_instance SET secret_values = ? WHERE id = ?;
+
 -- name: GetInstance :one
 SELECT * FROM plugin_instance WHERE id = ?;
 
 -- name: ListInstances :many
-SELECT plugin_instance.id, plugin_instance.name, plugin_instance.palette, recipe.id AS recipe_id, recipe.name AS recipe_name
+SELECT sqlc.embed(plugin_instance), recipe.name AS recipe_name
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
 ORDER BY plugin_instance.id;
 
 -- name: GetRecipe :one
 SELECT * FROM recipe WHERE id = ?;
+
+-- name: DeleteInstance :execrows
+-- Also deletes the instance's renders and its playlist slots, by cascade.
+DELETE FROM plugin_instance WHERE id = ?;

@@ -44,9 +44,6 @@ type Config struct {
 	// CachedHosts are the hosts whose assets are cached. A plain-HTTP
 	// request to one is fetched upstream over HTTPS.
 	CachedHosts []string
-	// Transport, if set, replaces the transport built over Dialer, for
-	// tests.
-	Transport http.RoundTripper
 }
 
 // AssetHosts are the hosts whose assets recipes load and the proxy caches:
@@ -62,13 +59,15 @@ type Server struct {
 
 // New returns a proxy.
 func New(cfg Config) *Server {
+	return newServer(cfg, newTransport(cfg.Dialer))
+}
+
+// newServer returns a proxy that sends upstream requests through base. Tests
+// use it to point the proxy at a local origin.
+func newServer(cfg Config, base http.RoundTripper) *Server {
 	hosts := make(map[string]bool, len(cfg.CachedHosts))
 	for _, h := range cfg.CachedHosts {
 		hosts[h] = true
-	}
-	base := cfg.Transport
-	if base == nil {
-		base = newTransport(cfg.Dialer)
 	}
 	ct := &cachingTransport{base: base, cache: cfg.Cache, hosts: hosts, now: time.Now}
 	return &Server{dialer: cfg.Dialer, rp: newReverseProxy(ct, hosts)}

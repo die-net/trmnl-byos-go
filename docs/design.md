@@ -2,7 +2,7 @@
 
 ## Summary
 
-We will build a small Go + SQLite server that speaks the TRMNL device protocol, pre-renders every screen before the device wakes, and renders TRMNL recipes unmodified by driving trmnlp in an optional sidecar container. The first deployment is two 7.5" OG DIY kits on a Proxmox container, but nothing is hardcoded to that panel.
+We will build a small Go + SQLite server that speaks the TRMNL device protocol, pre-renders every screen before the device wakes, and renders TRMNL recipes unmodified by driving trmnlp in an optional, isolated renderer process. The first deployment is two 7.5" OG DIY kits on a Proxmox container, but nothing is hardcoded to that panel.
 
 **Goals**
 
@@ -35,23 +35,23 @@ No existing server combines faithful recipe rendering with a small footprint, so
 
 ## Architecture
 
-A Go server owns all state and answers devices from cached PNGs; an optional trmnlp container does the rendering, fed through shared volumes.
+A Go server owns all state and answers devices from cached PNGs; an optional renderer, trmnlp behind a small shim, does the rendering. The server streams each job to it, and the two share no files.
 
 ```mermaid
 flowchart LR
   devices["TRMNL devices"] -->|"/api/setup, /api/display, /api/log"| api
 
-  subgraph server["Server container (Go)"]
+  subgraph server["Server (Go)"]
     api["Device API"]
     sched["Scheduler"]
     store[("SQLite + PNG store")]
-    admin["Admin UI, JSON API, MCP"]
+    admin["Admin UI, JSON API, MCP (not built)"]
     api --> store
     sched --> store
     admin --> store
   end
 
-  subgraph renderer["Renderer container (optional)"]
+  subgraph renderer["Renderer (optional, isolated)"]
     shim["HTTP shim"] --> build["trmnlp build"]
   end
 
@@ -63,8 +63,9 @@ flowchart LR
 
 Device requests never wait on a render: the scheduler renders ahead, the shim runs one `trmnlp build` per job, and the PNG lands in the store by content hash.
 
-- **Server**: device API, scheduler, store, admin UI, JSON API, MCP server and webhook ingest in one binary.
-- **Renderer**: the `trmnl/trmnlp` image plus `trmnl-render`, a small Go shim (`deploy/renderer/Dockerfile`, `internal/render`). The server POSTs a build job as a multipart stream: a small JSON part (size, palette, secret values) and the recipe project as a tar. The shim extracts the tar into a fresh directory, confined with `os.Root`, runs `trmnlp build` as an unprivileged user with its temporary and cache directories inside that directory, and streams back a tar of the build log and the four PNGs. The renderer holds nothing between builds and shares no volume with the server. It sits on an internal network with no route out; its only way to the internet is the server's filtering proxy (see Security and privacy).
+- **Server**: device API, scheduler, store, and the CLI in one binary. The admin UI, the JSON API and the MCP server are not built. The scheduler and the asset cache sweep run only when `-render-url` is set.
+- **Renderer**: the `trmnl/trmnlp` image plus `trmnl-render`, a small Go shim (`deploy/renderer/Dockerfile`, `cmd/trmnl-render`, `internal/render`). The server POSTs a build job as one tar stream: the first member is `job.json` (size, palette, secret values) and the rest are the recipe project. The shim reads the job, then extracts the other members into a fresh directory, confined with `os.Root`, runs `trmnlp build` as an unprivileged user with its temporary and cache directories inside that directory, and streams back a tar of the build log and the four PNGs. If Xvfb exits, `trmnl-render` exits with an error, so the container restarts. A build gets at most 5 minutes from the server (the shim's own limit is 2). The renderer holds nothing between builds and shares no files with the server. How it is isolated depends on how it is deployed, but in every deployment its only way to the internet is the server's filtering proxy (see Renderer network).
+- **Shutdown.** `serve` runs both HTTP servers and the loops (image expiry, the scheduler, the asset cache sweep) in one `errgroup`. When the process is told to stop, or any of them fails, such as a server that cannot listen, the rest are stopped, and the database is closed only after all of them have returned. A render in flight is canceled, not finished.
 - **Asset cache**: the renderer's proxy caches the framework's CSS, JavaScript, fonts and images, Highcharts, and Google Fonts on the server's disk, so each is fetched from the internet once, and recipes pinned to old framework versions keep rendering.
 
 ## Device protocol and profiles
@@ -74,15 +75,18 @@ The server implements the three endpoints TRMNL firmware calls, and never render
 | Endpoint | Request | Response |
 | --- | --- | --- |
 | `GET /api/setup` | `ID` (MAC), `Model`, `FW-Version`, `Width`, `Height` | A new `api_key`, `friendly_id`, and an empty `image_url`, so the firmware draws its own screen with the friendly ID. Accepted only while the join window is open. |
-| `GET /api/display` | `Access-Token`, battery, RSSI, `Refresh-Rate`, `Update-Source`, `special_function`, `Wake-Time`, `Image-Cached`, `SENSORS`, `Width`/`Height` | `image_url`, `filename`, `refresh_rate` (a number), `special_function`, `update_firmware`/`firmware_url`, `reset_firmware`, `temperature_profile`, `maximum_compatibility` |
+| `GET /api/display` | `Access-Token`, battery, RSSI, `Refresh-Rate`, `Update-Source`, `special_function`, `Wake-Time`, `Image-Cached`, `SENSORS`, `Width`/`Height` | `image_url`, `filename`, `refresh_rate` (a number), `special_function`, `update_firmware` (always `false`, since firmware updates are not built), `reset_firmware`. The firmware also reads `temperature_profile` and `maximum_compatibility`, which the server does not send. |
 | `POST /api/log` | Firmware log entries | Stored per device with wake reason, heap and Wi-Fi state |
+
+**What is built.** The three endpoints above, the status codes below, profile resolution from step 2 on, the image size limit, gray calibration, the join window, and `reset_firmware` for a device whose key a later setup replaced. The rest of this section says what is not built where it comes up, and the list at the end of it gathers them.
 
 **Status codes.** The firmware reads the JSON `status` field, not the HTTP status, so `/api/setup` and `/api/display` answer HTTP 200 with the outcome in the body.
 
 - `/api/setup` sends 200 for a registered device. For an unknown MAC it sends 404 with an `image_url`, which the device shows before trying again every 5 minutes.
 - `/api/display` sends 0 for a normal response. The firmware ignores a response whose status is 200.
 - An unknown device or a wrong token gets 202. The device keeps its credentials, shows its own setup screen, and polls again soon.
-- Status 500 and `reset_firmware: true` both make the device erase its key, friendly ID, Wi-Fi settings and server URL, then start its setup portal. No response clears only the key. The server never sends 500. It sends `reset_firmware` to a deleted device, and to a registered MAC presenting a key that a later setup replaced. That device would otherwise keep its old key, never run setup again, and sit on its setup screen.
+- Status 500 and `reset_firmware: true` both make the device erase its key, friendly ID, Wi-Fi settings and server URL, then start its setup portal. No response clears only the key. The server never sends 500. Today it sends `reset_firmware` to a registered MAC presenting a key that a later setup replaced; device delete, which would also trigger it, is not built. That device would otherwise keep its old key, never run setup again, and sit on its setup screen.
+- An internal failure in `/api/display` (a lookup, drawing a screen, saving state) answers HTTP 200, status 0, no `image_url` and a `refresh_rate` of 5 minutes. In the firmware (`handleApiDisplayResponse` in `display_session.cpp`) that keeps the screen the device has and sleeps for `refresh_rate`. An HTTP error would instead be five quick retries in `HttpRetryRequest::execute`, then a 5 minute sleep, and a Wi-Fi error screen after an hour of failures (`requestErrorScreen`).
 - An unknown MAC, or a request with no `ID`, is never reset. It may mean the server lost its database or is reading the wrong data directory, and a reset then would wipe every display at once.
 
 **Device profile.** Each device resolves to a profile: width, height, rotation, offsets, scale factor, palette, plus the framework's CSS parameters (CSS screen size, pixel ratio, dither pixel ratio, density class). Resolution order:
@@ -98,8 +102,8 @@ The registry is a copy of `trmnl.com/api/models` and `/api/palettes` embedded in
 
 - Every stored image's size is known: the image store records it when the image is written, and each render row keeps it.
 - `/api/display` checks the size against the requesting device's limit every time it hands out an image, not only when the image is rendered. One render can be shared by devices with different limits, and a device's model can change after a firmware update.
-- An image over the limit is never handed out. The device gets a small "too large" screen naming the recipe, with a short `refresh_rate`, and the recipe's page shows the error. A device would otherwise fail the download on every wake and keep showing what it had.
-- The recipe's page shows its renders' sizes against the smallest limit among the devices that show it, and warns past 80%, before a device ever fails.
+- An image over the limit is never handed out. The device gets a small "too large" screen with the image's size, the device's limit and a hint to try a palette with fewer grays, and a short `refresh_rate`. A device would otherwise fail the download on every wake and keep showing what it had. Naming the recipe on that screen is not built.
+- Not built: a recipe page that shows its renders' sizes against the smallest limit among the devices that show it, and warns past 80%, before a device ever fails. Today `render_image.bytes` holds the sizes and the check runs at `/api/display`.
 
 Typical screens are far below either limit: 2 to 12 KB for the recipes tested. Size grows with dithering, which defeats PNG's compression, and with more levels per pixel, so dithered photos at 16 grays or in color on a device without PSRAM are the case to watch. A plugin instance set to a smaller palette is the fix a person chooses; the server does not quietly fall back to one.
 
@@ -115,30 +119,46 @@ The server draws its own screens as ink coverage and maps each pixel to the leve
 
 - A time-limited join window (default 10 minutes) admits devices; otherwise setup gets a "not registered" response. Until the admin UI exists, `trmnl-byos join` opens it.
 - A known MAC needs the window too, since anything on the LAN can see a MAC. A device that lost its credentials re-pairs while the window is open and keeps its friendly ID and settings. Each setup issues a new key and retires the old one.
-- A MAC blocklist rejects specific devices outright.
-- Deleting a device makes its next request return `reset_firmware: true`, so it forgets its credentials. It also forgets its Wi-Fi settings and server URL and needs the setup portal again. Delete keeps the device's MAC as a tombstone until then, since an unknown MAC is never reset.
+
+**Not built.** These are designed and nothing implements them yet:
+
+- Deleting a device. There is no command or route, and no tombstone. The design is that deleting a device makes its next request return `reset_firmware: true`, so it forgets its credentials, its Wi-Fi settings and its server URL and needs the setup portal again. Since an unknown MAC is never reset, delete would keep the device's MAC as a tombstone until then. Until it exists, the rule that a deleted device is reset has no case it applies to, and only a replaced key gets `reset_firmware`.
+- A MAC blocklist that rejects specific devices outright.
+- A per-device profile override (step 1 above), and with it the 4-color OG on firmware 1.8.10 and older.
+- Per-device settings: time zone, locale, button command, sleep window and `special_function` handling.
+- Sensor readings. `SENSORS` is not stored.
 
 ## Scheduling and pre-rendering
 
 Every screen a device might ask for is rendered before it wakes, and an unchanged screen costs the device one short request and no repaint.
 
-**What the firmware gives us.** If `filename` matches a file in its flash cache, the firmware skips the download. If that image is already on the panel, it also skips the repaint (`displayed_image.h`). It reports the previous wake's duration in `Wake-Time`, which the dashboard plots.
+**What the firmware gives us.** If `filename` matches a file in its flash cache, the firmware skips the download. If that image is already on the panel, it also skips the repaint (`displayed_image.h`). It reports the previous wake's duration in `Wake-Time`, which `trmnl-byos devices` and the JSON API show. A dashboard that plots it is not built.
 
 **Rules.**
 
 1. `filename` is the first 16 hex digits of the PNG's SHA-256. Same pixels, same name. The firmware keeps at most 31 characters of a filename as-is.
-2. `/api/display` is a SQLite lookup plus a static file. If nothing is ready (new device, cold start) it returns the last image, or a placeholder with a short `refresh_rate`.
-3. `refresh_rate` is chosen from content, not fixed: the seconds until the current playlist item ends, the next aligned wake a plugin asked for (on the minute, on the hour), or the next sleep-window edge, whichever comes first.
-4. Next wake = last request + the `refresh_rate` we sent. Renders are scheduled ahead of it with a lead time that covers render duration (seconds for trmnlp) plus deep-sleep clock drift.
-5. Each device always has three screens ready: current (for button and power-on wakes), next (for skip and touch-bar next) and a short history (for rewind).
+2. `/api/display` is a SQLite lookup plus a static file. If nothing is ready it shows a system screen: "Rendering" with a 60 second `refresh_rate` before an instance's first render, "Could not render" with the error and the retry rate after a failed first build, and "Out of date" once the last good render is past its stale limit (see Staleness). A device with an empty playlist gets a "Connected" screen.
+3. `refresh_rate` starts at the default (`-refresh`, 15 minutes) and is shortened to the seconds until the current playlist item ends, to 60 seconds while a first render is pending, to the retry rate after a failure or "Out of date", to the end of a calibration override, or to the short rate of a "too large" screen. Not built: aligned wakes a plugin asks for (on the minute, on the hour) and sleep-window edges.
+4. Next wake = last request + the `refresh_rate` we sent. A render is built ahead of the wake that would show it, with a lead time that covers two build durations (the target's last one, 30 seconds if none, and the same again for a build already running when it becomes due), the 30 seconds a wake may come early, and the scheduler's 30-second check interval.
+5. Not built: each device always has three screens ready, current (for button and power-on wakes), next (for skip and touch-bar next) and a short history (for rewind). There is no `device_screen` table. A device gets the newest render when it wakes.
 
 **Renders follow data, not wakes.** A plugin instance re-renders only when its `refresh_interval` comes due or its data changes. Wakes in between get the same filename. This matters because 8 of the top 25 recipes print the time or use randomness, so their output differs on every render.
 
-**Render cache key.** (plugin instance, width, height, palette), and one build makes all four layouts. Two OGs showing the same weather share one render. A recipe that references `trmnl.device.friendly_id` or battery fields will need (plugin instance, device) instead; that is not built yet.
+**Render cache key.** (plugin instance, device, width, height, palette), and one build makes all four layouts. For most recipes the device is 0, so two OGs showing the same weather share one render. A recipe with any file that contains `trmnl.device` (markup, a polling URL in `settings.yml`, or a transform) gets one render per device instead, built with that device's values. The scheduler scans an installed recipe's files once, since they never change, and remembers the answer in memory by recipe ID. The device API looks up the device's own render first and falls back to the shared one. The `render` table has no foreign key on `device_id`, because 0 is no device, so a trigger deletes a deleted device's renders and their images. An older database whose `render` table has no `device_id` has both render tables dropped at startup. The scheduler builds them again.
 
-**What is built.** The scheduler (`internal/scheduler`) checks every 30 seconds. For each instance in a playlist linked to a device, at the size and palette that device needs, it builds when there is no render, when the recipe's `refresh_interval` has passed since the last good one, or 5 minutes after a failed one. Builds run one at a time. A failed build records its error and log and keeps the last good images. Pre-rendering ahead of each wake (rules 4 and 5) is not built yet: a device gets the newest render when it wakes.
+**What is built.** The scheduler (`internal/scheduler`) scans for due targets, and sleeps 30 seconds only when a scan builds nothing. It looks at each instance in a playlist linked to a device, at the size and palette that device needs. A device's next wake is its `last_seen` plus the `refresh_rate` we sent. The item it shows then is what the playlist cursor gives for that time with no button press, and that item's targets are wanted at that wake. A per-device target is wanted only by its own device, and a shared one by every device that will show it. A target is due when:
 
-**Staleness.** A device shows an item's last good render until it is older than two refresh intervals plus an hour. After that it shows "Out of date" with the render's age and its last error, and wakes again in 5 minutes. Before an instance's first render it shows "Rendering", and wakes in a minute, or "Could not render" with the error. A configurable age, and skipping the item instead, are later work.
+- it has never been rendered;
+- its last build failed and its backoff has passed: 5 minutes after the first failure, doubling with each failure in a row, to at most an hour. `render.failures` counts them and a success resets it. A failure to reach the renderer (`render.ErrUnavailable`: a refused or reset connection, a timeout, a busy shim, a 5xx) is recorded but not counted, because it says nothing about the recipe. Otherwise every target would sit at the one hour wait after a long outage, and devices would stay stale for up to an hour after the renderer returned. While a failure is the latest result, nothing else makes it due;
+- it is wanted at a wake at which its last good render would be older than the recipe's `refresh_interval`, and that wake is less than the lead time away (or already past);
+- its last good render is two refresh intervals old, wanted or not. This bounds the age a button press can reach, and keeps every render younger than the age at which a device shows "Out of date", so scheduling never causes that screen;
+- no device showing it has woken yet and the refresh interval has passed;
+
+Each scan builds one target, the one wanted at the earliest wake, and then scans again at once if it recorded an outcome, so a target that becomes urgent while others are queued is built before them. Targets due only by the last two rules go after those. A scan reads every `render` row in one query (without the logs). The delay before a due target's build starts is the build in progress plus a scan, which is what the lead time allows for. If a scan or the write of an outcome fails, the scheduler waits for the next check instead of spinning. A failed build records its error and log and keeps the last good images. A target that cannot be built at all, such as one whose recipe directory is missing or unreadable, is recorded the same way without calling the renderer, with the reason as its error. Its devices show "Could not render", it is retried with the same backoff as any failure, and the other targets still build. A build that takes over 5 minutes is canceled and is recorded as a failure that does not count toward the backoff, like any timeout. Pruning keeps every render of an instance whose recipe could not be scanned in that pass, since it is not known which of them are per device.
+
+Before it builds, the scheduler deletes every `render` row that matches no target: an instance that left every playlist, or a size or palette that no device has now (a device of an unknown model that reported a new size, say). The images in `render_image` go with the row by cascade, so image expiry can delete them. A target is every item of every playlist a device is linked to, at the size the device last reported, so a device never loses a render it could show at its next wake. A removed instance that is added back is built again. Rule 5 (a current, next and history screen per device in `device_screen`) is not built: a device gets the newest render when it wakes. Aligned wakes and sleep windows are not built either, so a wake time is only what we sent.
+
+**Staleness.** A device shows an item's last good render until it is older than two refresh intervals plus an hour. After that it shows "Out of date" with the render's age in whole hours ("over 3 hours") and its last error, and wakes again in 5 minutes. The age is coarse so the screen, and its filename, stay the same from wake to wake and the device does not repaint. The server remembers the image name of at most 256 system screens, and forgets them all past that, which costs one redraw each. Before an instance's first render it shows "Rendering", and wakes in a minute, or "Could not render" with the error. A render whose image is missing from the image store is treated the same as one that does not exist yet: the device API deletes the row, if it still names that image, shows "Rendering", and the scheduler builds the target again at its next check. A configurable age, and skipping the item instead, are later work.
 
 ## Playlists, mashups and input
 
@@ -151,11 +171,11 @@ Rotation is time-based and tracked per device: each item shows for its own durat
 - Each item has a duration, or none. An item with no duration stays until a button or touch-bar press, with a long `refresh_rate`.
 - Items can carry their own schedule (days, time window, date range) and a hidden flag.
 
-**Cursor.** Stored per device as (current item, started at), in `device_state`. When a wake finds the duration elapsed, the cursor moves to the next item and the new start time is the old start plus the duration, so timing does not drift. A timer wake up to 30 seconds early counts as the end of the item, since deep-sleep clocks drift, so items last at least a minute. After a long sleep, whole turns through the playlist are skipped at once. A cursor on an item that was deleted, or is no longer in the device's playlist, starts the playlist over. `refresh_rate` is the device's usual rate, or the time left in the item if that is shorter.
+**Cursor.** Stored per device as (current item, started at), in `device_cursor`, a table of its own. A device that has no cursor has no row. `device_state` holds only what the device reported, so a row there means the device has woken, and a cursor never creates one. When a wake finds the duration elapsed, the cursor moves to the next item and the new start time is the old start plus the duration, so timing does not drift. A timer wake up to 30 seconds early counts as the end of the item, since deep-sleep clocks drift, so items last at least a minute. After a long sleep, whole turns through the playlist are skipped at once. A cursor on an item that was deleted, or is no longer in the device's playlist, starts the playlist over. `refresh_rate` is the device's usual rate, or the time left in the item if that is shorter.
 
 **What is built.** Minimal playlists (`internal/playlist`): a device shows its linked playlist with the lowest priority, items are full-layout instances with a duration or none, and a press (`button`, `EXT0` or `EXT1`) moves to the next item. Schedules, mashups, hidden items, the sleep window, `special_function`, and per-device button commands are not built yet. Playlists are edited with `trmnl-byos playlist`.
 
-**Input.** The headers say what woke the device; we never guess from timing.
+**Input (planned, mostly not built).** The headers say what woke the device; we never guess from timing. Built today: `playlist.Advance` treats any press (`button`, `EXT0`, `EXT1`) as next, and a timer wake advances when the duration has elapsed. The rest of this table and the paragraphs after it are design only.
 
 | Signal | Source | Action |
 | --- | --- | --- |
@@ -164,17 +184,17 @@ Rotation is time-based and tracked per device: each item shows for its own durat
 | `special_function` header | Double click, or the TRMNL X touch bar | `rewind` shows the previous screen from history, `restart_playlist` jumps to the first item; others as configured |
 | Touch bar right | TRMNL X | Next |
 
-The `special_function` value in our responses is a per-device setting, sent on every response as the docs require.
+Planned: the `special_function` value in our responses is a per-device setting, sent on every response as the docs require. Today it is always `none`, and the request header is not read.
 
-**Sleep window.** Per device, for example 23:00 to 06:30: show a sleep screen and set `refresh_rate` to the window's end.
+**Sleep window (not built).** Per device, for example 23:00 to 06:30: show a sleep screen and set `refresh_rate` to the window's end.
 
-**Mashups.** The framework renders a mashup as one page with mashup classes. trmnlp cannot put several recipes on one page: it renders each of a recipe's half and quadrant layouts on a full-size page, inside a one-slot mashup in the slot's position (the half-horizontal layout fills the top half). So the server composes a mashup by cropping each slot from its recipe's render and placing it, which keeps the framework's slot frame and spacing.
+**Mashups (not built).** Only the `playlist_slot` table and `playlist_item.layout` exist, and `AddItem` writes slot 0 and layout `full`. The plan: the framework renders a mashup as one page with mashup classes. trmnlp cannot put several recipes on one page: it renders each of a recipe's half and quadrant layouts on a full-size page, inside a one-slot mashup in the slot's position (the half-horizontal layout fills the top half). So the server composes a mashup by cropping each slot from its recipe's render and placing it, which keeps the framework's slot frame and spacing.
 
 ## Plugins and rendering
 
 The plugin format is the TRMNL recipe, unmodified, and the renderer is trmnlp driven through a small shim; the Go server never parses Liquid.
 
-**Recipe format.** A directory or the zip from `trmnl.com/api/plugin_settings/<id>/archive`: `settings.yml`, `full.liquid`, `half_horizontal.liquid`, `half_vertical.liquid`, `quadrant.liquid`, optional `shared.liquid` and `transform.{js,py,rb,php}`. Sources: the TRMNL gallery, the community catalog (`bnussbau/trmnl-recipe-catalog`), a git URL, or written locally and previewed with `trmnlp serve`.
+**Recipe format.** A directory or the zip from `trmnl.com/api/plugin_settings/<id>/archive`: `settings.yml`, `full.liquid`, `half_horizontal.liquid`, `half_vertical.liquid`, `quadrant.liquid`, optional `shared.liquid` and `transform.{js,py,rb,php}`. Built: a local directory or zip, installed with `trmnl-byos recipe add`, which can be written locally and previewed with `trmnlp serve`. Not built: installing from the TRMNL gallery, the community catalog (`bnussbau/trmnl-recipe-catalog`) or a git URL.
 
 **What the top 25 recipes need** (survey of trmnl.com by popularity):
 
@@ -185,24 +205,26 @@ The plugin format is the TRMNL recipe, unmodified, and the renderer is trmnlp dr
 | Transforms (4 JS, 1 Ruby, 1 Python) | 6 | trmnlp image ships Node, Python, Ruby, PHP |
 | JavaScript in the page (3 load Highcharts) | 6 | Browser in the trmnlp image |
 | Pinned framework version (7 distinct versions) | 24 | Asset cache |
-| `trmnl.device.*` in markup or URLs | 3 | Per-device project directory |
-| Webhook strategy | 1 | Our webhook endpoint writes the data file |
+| `trmnl.device.*` in markup or URLs | 3 | Per-device build with `variables.trmnl.device` |
+| Webhook strategy | 1 | Not built: our webhook endpoint writes the data file |
 | OAuth | 0 | Deferred |
 
 **Render path.**
 
-1. A recipe is installed into `recipes/<id>/` under the data directory, from a directory or zip that holds `settings.yml` at its top, in `src/`, or inside one top-level directory. Hidden files are skipped, names that would leave the directory are refused, and the server reads only `name` and `refresh_interval` from `settings.yml`; trmnlp fills in field defaults itself. For each build the server streams a project: the recipe's files under `src/`, and a `.trmnlp.yml` with the time zone (from `TZ`), the asset overrides, and each custom field set to `{{ env.FIELD_n }}`. The values travel in the build job. trmnlp runs every `custom_fields` value through Liquid, so a value written into the file would have any `{{` in it run as Liquid. Locale and the device's `trmnl` variables are not passed yet.
-2. For webhook recipes, the server stores pushed data, applies the merge mode (`replace`, `deep_merge`, `stream`) and writes the result into the project's `.trmnlp.yml` under `variables`, trmnlp's documented override for user data. trmnlp's own webhook store is a cache file keyed by a hash of the project path, which is an internal detail to stay away from. Tested with Top Hacker News Story: a `stories` list under `variables` reached the templates as a top-level merge variable, next to the usual `trmnl` variables.
+1. A recipe is installed into `recipes/<id>/` under the data directory (its row and the rename of its directory are one transaction, so a failed install leaves no row without a directory). A crash between the rename and the commit leaves a directory with no row, and row IDs are reused, so `serve` sweeps at startup, before the scheduler: it removes each `recipes/<id>` directory with no row, inside a write transaction so it cannot run between another process's rename and commit, and removes `.install-*` and `.upload-*.zip` in the recipes directory that are over an hour old, since a CLI install may be running. A zip member that fails its checksum is refused as invalid input (400). The source is a directory or zip that holds `settings.yml` at its top, in `src/`, or inside one top-level directory. Hidden files are skipped, names that would leave the directory are refused, and the server reads only `name` and `refresh_interval` from `settings.yml`; trmnlp fills in field defaults itself. For each build the server streams a project: the recipe's files under `src/`, and a `.trmnlp.yml` with the time zone (from `TZ`), the asset overrides, and each custom field set to `{{ env.FIELD_n }}`. The values travel in the build job. trmnlp runs every `custom_fields` value through Liquid, so a value written into the file would have any `{{` in it run as Liquid. For a recipe that reads `trmnl.device`, the `.trmnlp.yml` also has `variables.trmnl.device` with the device's `friendly_id`, `percent_charged`, `wifi_strength`, `firmware_version` and `refresh_interval_seconds`, from the device row and its state at its last wake. trmnlp does not run `variables` through Liquid, so these values go in the file as typed YAML and are only data. The MAC and api key are never passed. A field the device has not reported is left out, so trmnlp's placeholder shows. `percent_charged` and `wifi_strength` are estimates from the battery voltage (3.0 to 4.2 V) and RSSI (-100 to -50 dBm), not TRMNL's own conversion. The width, height and model come from the build's size, as before. Locale is not passed yet.
+2. For webhook recipes, the server stores pushed data, applies the merge mode (`replace`, `deep_merge`, `stream`) and writes the result into the project's `.trmnlp.yml` under `variables`, trmnlp's documented override for user data. trmnlp's own webhook store is a cache file keyed by a hash of the project path, which is an internal detail to stay away from. Tested with Top Hacker News Story: a `stories` list under `variables` reached the templates as a top-level merge variable, next to the usual `trmnl` variables. Not built: no route takes pushed data yet, and a build gets none.
 3. When a render is due, the server streams the project to the shim, which runs `trmnlp build --png --width W --height H --palette P` on it and streams the PNGs back. One build polls once and renders all four layouts; there is no option for one layout. A build runs in a process group of its own, and the whole group is killed when it ends or times out, since trmnlp starts Firefox and geckodriver. The container runs with an init process, which reaps what Firefox leaves behind.
-4. The server stores the PNG under its content hash and updates each affected device's ready screens.
+4. The server stores the PNG under its content hash. Updating each affected device's ready screens (`device_screen`) is not built.
 
-**Settings.** Forms are generated from `custom_fields` (`select` incl. multi-select, `string`, `number`, `lat_lon`; `author_bio` is metadata only). Time zone and locale are server-wide with per-device overrides; instances carry name, dark mode, icon and an optional framework version pin.
+**Settings.** An instance has a name, field values, secret values and a palette. Not built: forms generated from `custom_fields` (`select` incl. multi-select, `string`, `number`, `lat_lon`; `author_bio` is metadata only), per-device time zone or locale overrides, dark mode, icons and framework version pins. The time zone is the server's `TZ`, and locale is not passed.
 
-**Renderer interface.** Rendering sits behind one interface (`Render(job) -> PNG`). v1 has the trmnlp backend and a static-image backend for system screens (welcome, sleep, error, not registered). An image-URL backend (fetch a PNG such as a Grafana panel, quantize in Go) and a native Ogre backend are deferred.
+**Renderer interface (not built).** There is no `Render(job) -> PNG` interface and no static-image backend. The scheduler calls the shim client (`*render.Client`) directly, and `internal/screen` draws system screens in process. A pluggable interface is the plan, so other backends can be added. An image-URL backend (fetch a PNG such as a Grafana panel, quantize in Go) and a native Ogre backend are deferred.
 
 ## Firmware updates
 
 The server is the only thing preventing a wrong-board update, so it offers a firmware build only to devices whose exact firmware model it was built for, and only when asked to.
+
+**Not built.** There is no catalog, no image check, no offer and no download route yet. `/api/display` always sends `update_firmware: false`, and no device is told to update. What follows is the design the build must meet.
 
 **Why it has to be the server.** The firmware's OTA path (`firmware_update.cpp`) is `esp_ota_begin` / `esp_ota_write` / `esp_ota_end` with no board check. ESP-IDF's image verification rejects a different chip family (C3 vs S3) but not a different board on the same chip, and app rollback is disabled in the TRMNL X config we checked. A TRMNL X build sent to a XIAO S3 kit would install, boot with the wrong pins, and might need USB to recover.
 
@@ -220,31 +242,44 @@ The server is the only thing preventing a wrong-board update, so it offers a fir
 
 One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources live on disk next to it, addressed by hash.
 
+**What is built.** The tables in `internal/db/schema.sql`:
+
 | Table | Key fields |
 | --- | --- |
-| `device` | mac, api_key_hash, friendly_id, name, fw_model, fw_version, profile_override, palette_override, time_zone, locale, button_command, special_function, sleep_start, sleep_end, updates_enabled, fw_pin, blocked, screen_override, screen_override_until |
-| `device_state` | device_id, last_seen, last_refresh_rate_sent, last_image, battery_v, battery_pct, rssi, wake_time_ms, update_source, width, height, item_id, item_started_at |
-| `device_log` | device_id, received_at, device_at, level, message, detail (the entry as sent, with wake reason, heap and Wi-Fi state); the newest 1000 per device are kept |
-| `sensor_reading` | device_id, at, kind, value, unit (latest kept per kind, plus history) |
-| `model` / `palette` | Vendored registry rows plus the framework CSS parameters |
-| `recipe` | id, name, source (the path installed from), refresh_interval, installed_at; source_ref and source_hash come with updates from a source |
-| `outbound_host` | recipe_id, host, first_seen, last_seen, refused (from the renderer proxy's log) |
-| `plugin_instance` | recipe_id, name, field_values, secret_values (sealed), palette (empty for the device's own); later framework_pin, dark_mode, refresh_override, align, stale_after |
-| `instance_data` | instance_id, data (webhook payload), updated_at, last_error, last_success_at |
-| `playlist` | name; later a schedule (weekdays, from, until) |
+| `device` | mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until |
+| `device_state` | device_id, last_seen, last_refresh_rate_sent, last_image, battery_v, rssi, wake_time_ms, update_source, width, height. A row exists once the device has called `/api/display` |
+| `device_cursor` | device_id, item_id, item_started_at (the playlist cursor; deleted with the device) |
+| `device_log` | device_id, received_at, device_at, level, message, detail (the entry as sent, with wake reason, heap and Wi-Fi state); the newest 1000 per device are kept. Written by `POST /api/log`, and no command or route reads it yet; read it with `sqlite3` |
+| `recipe` | id, name, source (the path installed from, or `upload`), refresh_interval, installed_at |
+| `plugin_instance` | recipe_id, name, field_values, secret_values (sealed), palette (empty for the device's own), created_at |
+| `playlist` | name |
 | `playlist_device` | playlist_id, device_id, priority |
-| `playlist_item` | playlist_id, position, layout (full, or a mashup's), duration; later schedule, hidden |
-| `playlist_slot` | item_id, slot, instance_id |
-| `render` | instance_id, width, height, palette, rendered_at (last good build), attempted_at, duration_ms, error, log (latest build) |
+| `playlist_item` | playlist_id, position, layout, duration. `layout` is always `full` and nothing reads it, since mashups are not built |
+| `playlist_slot` | item_id, slot, instance_id. `slot` is always 0 until mashups, which put several instances in one item |
+| `render` | instance_id, device_id, width, height, palette, rendered_at (last good build), attempted_at, duration_ms, error, log (latest build), failures (builds failed in a row) |
 | `render_image` | render_id, layout, image, bytes |
-| `device_screen` | device_id, role (current, next, history n), png_hash |
-| `firmware` | fw_model, version, sha256, chip, idf_version, source, uploaded_at |
-| `firmware_rollout` | firmware_id, canary_device_id, state |
-| `setting` | key, value (join window, secrets key id, defaults) |
+| `setting` | key, value, updated_at. Only the join window (`join_until`) is kept here |
 
-Migrations are embedded in the binary and run at startup. A column added after its table first shipped is listed in `addedColumns` in `internal/db/client.go`, with a constant ALTER TABLE statement that runs when the column is missing.
+**Not built.** These tables and columns are designed and do not exist:
 
-**Image store.** A PNG is stored as `images/<first 2 hex digits>/<next 14>.png`. Storing bytes that already exist never rewrites the file. It refreshes the file's modification time, at most hourly, which keeps snapshot churn low on filesystems such as ZFS. An hourly sweep deletes images that no row names and that were last stored more than 24 hours ago. The rows that name images are `device_state.last_image` and `render_image`, and `device_screen` once it exists. The grace period covers an image written before the row naming it commits, and a device that fetches an image a moment after it is told the name.
+| Table or column | What it is for |
+| --- | --- |
+| `device`: profile_override, palette_override, time_zone, locale, button_command, special_function, sleep_start, sleep_end, blocked | Per-device overrides and settings, and the MAC blocklist. Device delete would add a tombstone. |
+| `device_state`: battery_pct | Battery as a percentage. |
+| `sensor_reading` | device_id, at, kind, value, unit (latest kept per kind, plus history). |
+| `model` / `palette` | Vendored registry rows. The registry is embedded in the binary as JSON and is not in the database. |
+| `recipe`: source_ref, source_hash | Updates from a source. |
+| `outbound_host` | recipe_id, host, first_seen, last_seen, refused, from the renderer proxy's log. |
+| `plugin_instance`: framework_pin, dark_mode, refresh_override, align, stale_after | Per-instance render settings. |
+| `instance_data`: last_error, last_success_at | Async polling. |
+| `playlist`: schedule (weekdays, from, until); `playlist_item`: schedule, hidden | Scheduled and hidden items. |
+| `device_screen` | device_id, role (current, next, history n), png_hash. |
+
+Migrations are embedded in the binary and run at startup, in one transaction, so a step that fails leaves the database as it was. The schema version is `PRAGMA user_version`, and `steps` in `internal/db/migrate.go` is the ordered list that takes a database from version n-1 to n. A new database gets `schema.sql` and is stamped with the latest version. A database with a newer version than the server knows is refused. A change to the schema is a new step plus the same change in `schema.sql`, and `TestMigrateMatchesSchema` fails if an upgraded database and a new one differ in tables, columns, indexes or triggers.
+
+Step 1 adopts a database made before versions were numbered, which has version 0 and tables. Those servers ran `schema.sql` at every start and added columns on demand, so step 1 probes what exists: it drops the render tables if `render` has no `device_id`, creates missing tables from a frozen copy of the schema (`baselineSchema`), and adds each missing column in `addedColumns`. It is the only step that probes, and once a database is stamped it never runs again.
+
+**Image store.** A PNG is stored as `images/<first 2 hex digits>/<next 14>.png`. Storing bytes that already exist never rewrites the file. It refreshes the file's modification time, at most hourly, which keeps snapshot churn low on filesystems such as ZFS. An hourly sweep deletes images that no row names and that were last stored more than 24 hours ago. The rows that name images are `device_state.last_image` and `render_image`, and `device_screen` once it exists. Scheduling deletes `render` rows that no device needs, which frees their images. A name handed out from a row is refreshed when it is handed out, since a render can replace the row before the device fetches the image. Before a new file is renamed into place its bytes are synced to disk, because a stored file is trusted by its name and never rewritten. After the rename the directory is synced too (and the store directory, when the rename made a new one), so the name is on disk before a row names it. A filesystem that cannot sync a directory is tolerated. If the directory sync fails, the file is removed and the write fails. The grace period covers an image written before the row naming it commits, and a device that fetches an image a moment after it is told the name.
 
 ## Admin UI, API and MCP
 
@@ -258,16 +293,21 @@ One JSON API backs the web UI, scripts and the MCP server, so anything you can c
 - Playlists: items, durations, schedules, mashups.
 - Firmware: catalog, upload, rollout state.
 
-**JSON API** (`/api/v1`, bearer token): devices, recipes, instances, playlists, renders, firmware. Narrow on purpose; no attempt at parity with Terminus.
+**JSON API** (`/api/v1`, bearer token): devices, recipes, instances, playlists, renders. Narrow on purpose; no attempt at parity with Terminus.
 
-**Inbound data.**
+**What is built.** The commands only (`devices`, `join`, `calibrate`, `recipe`, `instance`, `playlist`). Their logic is in the packages `recipe`, `playlist` and `device`, so the API can be a thin layer over them and share their validation. Their errors wrap one of four kinds from `internal/errkind` (invalid input, not found, conflict, too big), so a caller can map each kind to a status in one place.
 
-- `POST /api/custom_plugins/<uuid>` accepts `merge_variables` with `merge_strategy` (`replace`, `deep_merge`, `stream`), compatible with TRMNL's webhook shape, with a rate limit.
-- `POST /api/screen` accepts a full markup or PNG screen from a script.
+**Not built.** Everything below, and the Web UI above, is design only:
 
-**Alias endpoint.** `GET /api/alias/<uuid>?model=<name>` returns a plugin instance's current image for any model, for clients outside a playlist (a Home Assistant card, a web page).
+- The JSON API at `/api/v1` and its bearer tokens, with the routes and the `token` command that go with them.
+- `POST /api/custom_plugins/<uuid>`, which would accept `merge_variables` with `merge_strategy` (`replace`, `deep_merge`, `stream`), compatible with TRMNL's webhook shape, with a rate limit. It would store the data per instance and write it into each build's `.trmnlp.yml` under `variables`.
+- `POST /api/screen`, which would accept a full markup or PNG screen from a script.
+- `GET /api/alias/<uuid>?model=<name>`, which would return a plugin instance's current image for any model, for clients outside a playlist (a Home Assistant card, a web page).
+- The MCP server.
+- Admin password sessions (see Security and privacy).
+- Device delete and the MAC blocklist (see Device protocol).
 
-**MCP server** (`/mcp` over HTTP, plus stdio), tools:
+**MCP server** (not built; `/mcp` over HTTP, plus stdio), tools:
 
 - `list_recipes`, `get_recipe`, `create_recipe`, `update_recipe` (markup, settings, transform)
 - `render_preview` (instance, layout, model) returning the PNG
@@ -280,28 +320,38 @@ This lets an assistant write a recipe, render it, look at the result and iterate
 
 The device API is LAN-only and token-based; the admin side needs a login; and recipes are treated as untrusted code that talks to the internet.
 
-- **Admin auth.** One admin password (argon2id hash) with session cookies, or trust an identity header from a configured reverse proxy. API and MCP use bearer tokens created in the UI.
-- **Device auth.** Per-device `api_key` from setup, sent as `Access-Token`. Only its SHA-256 is stored, and the device is looked up by that hash, so neither a copy of the database nor request timing gives away a key. The key is 128 random bits, so a fast hash is enough. `ID` is optional for clients that leave it out, but must match the device when sent. Device endpoints can listen on a separate port bound to the LAN.
-- **Secrets at rest.** Custom fields marked secret (API keys, passwords) are sealed together with AES-256-GCM under `TRMNL_SECRET_KEY`, 32 random bytes in base64 from the environment (`internal/secrets`); the UI never shows them back. Recipes do not mark fields secret, so the person adding an instance chooses which are.
-- **Secrets at render time.** No field value goes into a project's files. The project's `.trmnlp.yml` sets each field to `{{ env.FIELD_n }}`, which trmnlp expands, and the value, decrypted if secret, travels in the build job, which the shim passes to that one build as an environment variable. Job variables must be named `FIELD_...`, so a job can never set one the build tools read, such as `LD_PRELOAD` or a proxy setting.
-- **Renderer network.** Recipes may reach any public host but nothing private: not the LAN, the Docker host, other containers, or cloud metadata. Nothing in trmnlp enforces that. Its poller only warns about a private address, and its Firefox fetched images from loopback and the container's own private address in a test. Transforms in four languages can open any connection. So it is enforced by the network:
-  - The trmnlp container runs on a Docker `--internal` network, which has no gateway. Nothing inside it reaches the internet or the LAN directly.
-  - The server joins that network too and runs an HTTP forward proxy there, with `CONNECT` for HTTPS. The proxy resolves each host itself, refuses any loopback, private, link-local, CGNAT, unique-local or otherwise non-public address, and connects to the address it checked, so a DNS answer that changes between check and connect gets nothing through. It uses the same check as the server's own outbound client.
-  - Each build gets `HTTP_PROXY` and `HTTPS_PROXY` pointing at the proxy, with credentials unique to that build. The proxy logs each host a build contacts and each refusal against its recipe, which the UI shows. Paperboy, for example, would show its third-party "battery" endpoint, which receives the device ID, battery level and a timestamp.
+- **Admin auth.** Not built. The design is one admin password (argon2id hash) with session cookies, or trusting an identity header from a configured reverse proxy. API and MCP use bearer tokens created in the UI.
+- **Device auth.** Per-device `api_key` from setup, sent as `Access-Token`. Only its SHA-256 is stored, and the device is looked up by that hash, so neither a copy of the database nor request timing gives away a key. The key is 128 random bits, so a fast hash is enough. `ID` is optional for clients that leave it out, but must match the device when sent. Device endpoints on a separate port bound to the LAN are not built: the server has one `-listen` address.
+- **Secrets at rest.** Custom fields marked secret (API keys, passwords) are sealed together with AES-256-GCM under `TRMNL_SECRET_KEY`, 32 random bytes in base64 from the environment (`internal/secrets`); the UI never shows them back. The instance ID is bound in as associated data, so a sealed value copied to another instance does not open. Recipes do not mark fields secret, so the person adding an instance chooses which are. A secret must be at least 6 characters. A shorter value is easy to guess, so sealing it protects nothing, and redacting it would hide its characters all over a build log. Such a value can be a plain field. Values sealed before the instance ID was bound in, or under another key, cannot be opened. There is no fallback decoder. The API shows `secret_fields` as null for such an instance and logs a warning with its ID, never the error. A render of it fails with a reason. The fix is to create the instance again with its secrets.
+- **Secrets at render time.** No field value goes into a project's files. The project's `.trmnlp.yml` sets each field to `{{ env.FIELD_n }}`, which trmnlp expands, and the value, decrypted if secret, travels in the build job, which the shim passes to that one build as an environment variable. A transform or a failed fetch can print a value, and the build log and the error line made from it are stored and shown, so the server replaces each secret field's value with `[redacted]` in the log before it saves either. It matches the value as written and in its two URL-encoded forms, `url.QueryEscape` (a space is `+`) and `url.PathEscape` (a space is `%20`), longest first. trmnlp 0.34.1 prints the full polling URL when a poll gets a 3xx or 4xx answer other than 429, or a body that is not JSON. A recipe that writes `{{ api_key }}` into the URL shows the raw value there, and one that uses `url_encode` shows the query-encoded form. Other encodings, such as base64 or JSON escaping, are not matched, and neither is a value split by the log's size cut. There is no minimum length, so a very short secret, such as `1`, hides every such character in the log. Job variables must be named `FIELD_...`, so a job can never set one the build tools read, such as `LD_PRELOAD` or a proxy setting.
+- **Renderer network.** Recipes may reach any public host but nothing private: not the LAN, the host, services running beside the server, the server's own listeners, or cloud metadata. Nothing in trmnlp enforces that. Its poller only warns about a private address, and its Firefox fetched images from loopback and the renderer's own private address in a test. Transforms in four languages can open any connection. So it is enforced around trmnlp, in two parts: the renderer can reach nothing but the server's proxy, and the proxy refuses non-public addresses.
+  - Isolation is something each deployment provides, not something only a container gives. Any way of running the renderer must give it these properties:
+    - It runs as its own user or in its own sandbox, with no access to the database, the secrets key, the data directory or the server's environment.
+    - Its only network path is the proxy's address. It cannot reach the internet, the LAN, services on the host's loopback, or the server's other listeners.
+    - Its process count, memory and privileges are limited, so a recipe cannot exhaust the host or gain privileges.
+  - Ways to provide them:
+    - Docker Compose, which ships today: the renderer is on an `internal: true` network (below). It does not yet meet every property (see the next bullet).
+    - systemd, not built: a renderer unit with its own `User=`, `IPAddressDeny=any` with `IPAddressAllow=` for the proxy's address, `ProtectSystem=strict`, `InaccessiblePaths=` for the data directory, and `TasksMax=` and `MemoryMax=`.
+    - A network namespace or another container runtime, such as Podman, set up the same way.
+    - A renderer run as the server's own user with no sandbox meets none of these. It is for development only.
+  - Not yet true for the server itself. In the shipped Compose file the server joins the render network and listens there on 8080 as well as the proxy's 3128, so a recipe's transform or page can connect to it directly. That exposes the device routes (behind a device key) and `/api/setup`, which gives a key to any MAC while the join window is open. Closing this, and limiting the renderer's processes, memory and privileges, wait on the deployment options design.
+  - In the shipped Compose file the renderer runs on a Docker `--internal` network, which has no gateway. Nothing inside it reaches the internet or the LAN directly.
+  - The server runs an HTTP forward proxy, with `CONNECT` for HTTPS, on an address the renderer can reach. In Compose that is on the internal network, which the server joins too. The proxy resolves each host itself, refuses any loopback, private, link-local, CGNAT, unique-local or otherwise non-public address, and connects to the address it checked, so a DNS answer that changes between check and connect gets nothing through. It uses the same check as the server's own outbound client.
+  - Each build gets `HTTP_PROXY` and `HTTPS_PROXY` pointing at the proxy, from the renderer's environment. Not built: credentials unique to each build, and a record of the hosts a build contacts and the requests refused, kept against its recipe and shown in the UI (the `outbound_host` table). Today the proxy writes refused or failed tunnels to the server log, and nothing says which recipe made them. The record would show, for example, Paperboy's third-party "battery" endpoint, which receives the device ID, battery level and a timestamp.
   - trmnlp's HTTP client, Python and the trmnlp image's Firefox honor the proxy variables; a test showed Firefox's page and image requests at the proxy. `NO_PROXY` must cover `localhost` and `127.0.0.1`, since trmnlp drives Firefox through a local WebDriver connection. Node's built-in `fetch` does not use a proxy, so a JavaScript transform that fetches on its own fails rather than leaking.
   - The proxy caches assets. A `CONNECT` tunnel hides what passes through it, so each project's `.trmnlp.yml` sets `framework_asset_host: http://trmnl.com` and `asset_overrides` that turn `https://` into `http://` for `trmnl.com`, `fonts.googleapis.com`, `fonts.gstatic.com` and `code.highcharts.com`. Firefox then sends those requests to the proxy in the clear, with their full URLs. The proxy serves them from the cache, or fetches them over HTTPS and stores them. Root-relative URLs in the framework's CSS resolve to `http://trmnl.com/...` and are cached the same way. Versioned paths (`/css/<version>/`, `/js/<version>/`, `/js/highcharts/<version>/`, Google's font files) are kept forever; anything else follows its `Cache-Control`, and a stale copy is served if the upstream fails. The proxy rewrites `https://fonts.gstatic.com/` to `http://` inside Google Fonts stylesheets, and keys those stylesheets by User-Agent, since Google picks the font format by it. It upgrades to HTTPS only for the cached hosts.
   - The proxy is built from the standard library and die-net code, not written from scratch:
-    - The server is conduit's `internal/proxy.HTTPProxyServer`. Plain-HTTP requests go through `net/http/httputil.ReverseProxy`, which streams bodies and handles hop-by-hop headers; its director turns a cached host's URL to `https://`, and its `Transport` is the caching round tripper below. `ReverseProxy` refuses `CONNECT`, and neither the standard library nor `golang.org/x/net` serves it (`x/net/proxy` and `x/net/http/httpproxy` are client side), so conduit hijacks the connection, dials, answers 200, and copies both ways with `internal/conn.CopyBidirectional`, which half-closes each direction and sets no deadlines so `io.Copy` can splice on Linux.
-    - The dialer is conduit's direct dialer (fully qualified lookups, TCP keepalive, one address family when the host has only one) with legwork's `guard` check in its `Control` hook. The check runs on the address each connection is about to use, so neither a redirect nor a DNS answer that changes between lookups gets around it. Recipes poll plain HTTP and other ports, so unlike legwork's client, any port on a public address is allowed.
-    - The cache is plainweb's `internal/cache`. An entry is one file: a JSON line with the request fields that matter and the response's status and headers, then the body. The file is named by the SHA-256 of those request fields, under a subdirectory of its first two hex digits. Entries are written to a temporary file and renamed into place. The modification time is when the entry was last known fresh, or for a versioned entry when it was last used, refreshed at most hourly. A janitor sweeps entries unused for 30 days, then the oldest past 2 GB. Reads and writes stream: a hit's body is the open file, and a miss's body is copied to the client and the cache entry at once, committed only if it was read to the end.
+    - The server is adapted from conduit's `internal/proxy.HTTPProxyServer` into `internal/renderproxy`. Plain-HTTP requests go through `net/http/httputil.ReverseProxy`, which streams bodies and handles hop-by-hop headers; its director turns a cached host's URL to `https://`, and its `Transport` is the caching round tripper below. `ReverseProxy` refuses `CONNECT`, and neither the standard library nor `golang.org/x/net` serves it (`x/net/proxy` and `x/net/http/httpproxy` are client side), so the server hijacks the connection, dials, answers 200, and copies both ways with a copy adapted from conduit's `internal/conn.CopyBidirectional`, which half-closes each direction and sets no deadlines so `io.Copy` can splice on Linux.
+    - The dialer is copied from conduit's direct dialer (fully qualified lookups, TCP keepalive, one address family when the host has only one) into `internal/guard`, which also holds the address check copied from legwork's `guard`, in the dialer's `Control` hook. The check runs on the address each connection is about to use, so neither a redirect nor a DNS answer that changes between lookups gets around it. Recipes poll plain HTTP and other ports, so unlike legwork's client, any port on a public address is allowed.
+    - The cache is copied from plainweb's `internal/cache` into `internal/cache`. An entry is one file: a JSON line with the request fields that matter and the response's status and headers, then the body. The file is named by the SHA-256 of those request fields, under a subdirectory of its first two hex digits. Entries are written to a temporary file and renamed into place. The modification time is when the entry was last known fresh, or for a versioned entry when it was last used, refreshed at most hourly. A janitor sweeps entries unused for 30 days, then the oldest past 2 GB. Reads and writes stream: a hit's body is the open file, and a miss's body is copied to the client and the cache entry at once, committed only if it was read to the end.
   - A test with trmnl-meteoswiss sent every framework asset through the cache and rendered the same image. `plugins.css` for framework 3.4.6 is 19 MB, and Firefox loads it once per layout, so the cache saves about 76 MB of downloads per build. What still goes out uncached: the recipe's own data, trmnlp's framework version list on `raw.githubusercontent.com`, two small `trmnl.com` API calls from the poller, and Firefox's own update and settings checks at Mozilla.
   - There is no per-host allowlist. Some hosts come from data, not markup: Top Hacker News Story shows each story's preview image, fetched from whatever site the story links to, so no install-time review could list them.
-- **Transforms and page JavaScript** run inside the trmnlp container, which has no access to the server's database or secrets volume and gets only its project directories. It is not a sandbox; the network is the boundary that matters.
+- **Transforms and page JavaScript** run inside the renderer, which gets only its project directories and must have no access to the server's database, secrets key or data directory (see Renderer network for how a deployment provides that). trmnlp itself is not a sandbox. The isolation around it is the boundary.
 - **Plain HTTP on the LAN** saves the ESP32 a TLS handshake per request. HTTPS via a reverse proxy remains an option.
 
 ## Deployment and footprint
 
-Two containers and three volumes; the server alone is small, and the renderer's size is the price of recipe fidelity.
+The deployment that ships is Docker Compose: two containers and two volumes. The server alone is small, and the renderer's size is the price of recipe fidelity. Other ways to run it, such as two systemd services, must give the renderer the isolation described in Renderer network. None ships yet.
 
 | Component | Contents | Size | Required |
 | --- | --- | --- | --- |
@@ -310,7 +360,7 @@ Two containers and three volumes; the server alone is small, and the renderer's 
 
 **Volumes.**
 
-- `data`: SQLite file, rendered PNGs, firmware files. Back up this one.
+- `data`: SQLite file, rendered PNGs. Back up this one.
 - `cache`: the asset cache. Only the server uses it, and deleting it costs only refetching.
 
 **Runtime.** Measured with trmnlp 0.34.1 (arm64) in Colima with 4 CPUs and 4 GB, on an Apple Silicon Mac, so slower hardware will take longer:
@@ -330,7 +380,7 @@ Two containers and three volumes; the server alone is small, and the renderer's 
 
 **Networks.** Compose defines two: the server's normal network, and an `internal: true` network shared by the server and the renderer. The renderer is on the internal one only.
 
-**Proxmox.** An LXC with Docker, or a small VM, works. Compose file and a single env file ship with the repo. Updates are `docker compose pull`; schema migrations run at startup.
+**Proxmox.** An LXC with Docker, or a small VM, works. The Compose file ships with the repo. No env file ships: you create `deploy/.env`, which git ignores (see the README). Both services are built from the repo with `build:` and no `image:`, so an update is `git pull` then `docker compose up -d --build`. Schema migrations run at startup.
 
 ## Deferred work
 
@@ -345,7 +395,7 @@ Each of these has a place in the design so it can land later without reshaping t
 | Async polling and Plugin Merge strategies | `instance_data` | Async: answer 202, accept a callback. Merge: one instance reads another's data. |
 | Multi-user accounts | `user` table, ownership columns | Keep the single-admin path as the default. |
 | Firmware hosting from TRMNL releases | `firmware` sync job | Same validation as uploads. |
-| Server-side sensors | `sensor_reading` with source = server | Device sensors via the `SENSORS` header are in v1. |
+| Server-side sensors | `sensor_reading` with source = server | Device sensors via the `SENSORS` header are not built either: nothing reads or stores the header. |
 
 ## Open questions and risks
 
@@ -357,8 +407,8 @@ The biggest risk is coupling to trmnlp, a 0.x development tool whose CLI and dir
 - [x] Do concurrent `trmnlp build` runs in different directories interfere? No: two in one container both finished, at about 1.1x the time of one, and memory adds up per build.
 - [x] Can framework assets avoid the internet on every build? Yes, through the proxy's cache (see Renderer network).
 - [ ] Does the firmware accept a plain `http://` server URL? The code says yes: `http_client.h` picks TLS by the URL's scheme. Confirm on a device.
-- [ ] Which firmware `Model` values map to which registry models? Build the table from `platformio.ini` and `config.h`.
-- [x] Should the trmnlp container get an egress allowlist built from approved hosts? No. It gets no route out except a proxy that refuses non-public addresses (see Renderer network).
+- [x] Which firmware `Model` values map to which registry models? Firmware updates, which are not built, need the chip, not the registry model, so they need a table of their own. `internal/profile` still has no registry model for `xiao_epaper_3clr`, `xiao_epaper_6clr`, `xiao_epaper_mini`, `lilygo_t5pro`, `m5_paper_color` and `waveshare_397`, so those get the fallback profile.
+- [x] Should the renderer get an egress allowlist built from approved hosts? No. It gets no route out except a proxy that refuses non-public addresses (see Renderer network).
 - [x] Does Firefox in the trmnlp image use `HTTP_PROXY` and `HTTPS_PROXY`? Yes, with `NO_PROXY` covering localhost.
 - [ ] Are measured gray levels firmware-specific? The OG was measured on 1.8.10. Firmware 1.8.19's bb_epaper reworks 4-gray on 7.5" panels and sets VCOM to −1.60 V, which can shift contrast. Re-measure after updating, and key the measured levels in `internal/profile` by firmware version, or by the `Panel-Vcom` header 1.8.19 sends, if the levels move.
 - [ ] Admin auth: built-in password login, reverse-proxy identity header, or both?

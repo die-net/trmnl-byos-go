@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,9 +15,8 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
-	"github.com/die-net/trmnl-byos-go/internal/deviceapi"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
-	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
@@ -114,8 +112,9 @@ func (f fieldFlag) Set(v string) error {
 
 func instances(ctx context.Context, args []string, out io.Writer) error {
 	return subcommand(ctx, "instance", args, out, map[string]func(context.Context, []string, io.Writer) error{
-		"add":  instanceAdd,
-		"list": instanceList,
+		"add":    instanceAdd,
+		"list":   instanceList,
+		"remove": instanceRemove,
 	})
 }
 
@@ -132,26 +131,9 @@ func instanceAdd(ctx context.Context, args []string, out io.Writer) error {
 	if *recipeID == 0 || fs.NArg() != 0 {
 		return errors.New("usage: trmnl-byos instance add [-data dir] -recipe ID [-name name] [-palette id] [-field k=v ...] [-secret k=v ...]")
 	}
-	if *palette != "" {
-		ok, err := profile.KnownPalette(*palette)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("unknown palette %q", *palette)
-		}
-	}
-	for k := range secretFields {
-		if _, ok := fields[k]; ok {
-			return fmt.Errorf("field %q is given as both -field and -secret", k)
-		}
-	}
 	key, err := secrets.FromEnv()
 	if err != nil {
 		return err
-	}
-	if len(secretFields) > 0 && key == nil {
-		return secrets.ErrNoKey
 	}
 
 	client, err := openDB(ctx, *data)
@@ -159,16 +141,6 @@ func instanceAdd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	rec, err := client.Read.GetRecipe(ctx, *recipeID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("no recipe %d", *recipeID)
-	}
-	if err != nil {
-		return fmt.Errorf("get recipe: %w", err)
-	}
-	if *name == "" {
-		*name = rec.Name
-	}
 	inst, err := recipe.CreateInstance(ctx, client, key, recipe.InstanceParams{
 		RecipeID: *recipeID,
 		Name:     *name,
@@ -202,15 +174,43 @@ func instanceList(ctx context.Context, args []string, out io.Writer) error {
 	}
 	for i := range rows {
 		r := &rows[i]
-		pal := r.Palette
+		pal := r.PluginInstance.Palette
 		if pal == "" {
 			pal = "device's"
 		}
-		if _, err := fmt.Fprintf(tw, "%d\t%s\t%d %s\t%s\n", r.ID, r.Name, r.RecipeID, r.RecipeName, pal); err != nil {
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%d %s\t%s\n", r.PluginInstance.ID, r.PluginInstance.Name, r.PluginInstance.RecipeID, r.RecipeName, pal); err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+func instanceRemove(ctx context.Context, args []string, out io.Writer) error {
+	return removeByID(ctx, args, out, "instance remove", "instance", recipe.DeleteInstance)
+}
+
+// removeByID runs a remove command that takes the ID of what to remove.
+// noun is what it removes, and remove does it.
+func removeByID(ctx context.Context, args []string, out io.Writer, name, noun string,
+	remove func(context.Context, *db.Client, int64) error,
+) error {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	data := dataFlag(fs)
+	_ = fs.Parse(args) // ExitOnError exits on a parse error.
+	id, err := strconv.ParseInt(fs.Arg(0), 10, 64)
+	if fs.NArg() != 1 || err != nil {
+		return fmt.Errorf("usage: trmnl-byos %s [-data dir] <%s ID>", name, noun)
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if err := remove(ctx, client, id); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Removed %s %d.\n", noun, id)
+	return err
 }
 
 func playlists(ctx context.Context, args []string, out io.Writer) error {
@@ -224,12 +224,12 @@ func playlists(ctx context.Context, args []string, out io.Writer) error {
 func playlistAdd(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("playlist add", flag.ExitOnError)
 	data := dataFlag(fs)
-	device := fs.String("device", "", "friendly ID or MAC of a device to show the playlist on")
+	deviceID := fs.String("device", "", "friendly ID or MAC of a device to show the playlist on")
 	name := fs.String("playlist", "", "playlist to add to, created if new (default: the device's friendly ID)")
 	instanceID := fs.Int64("instance", 0, "ID of the instance to show, from instance list")
-	duration := fs.Duration("duration", 15*time.Minute, "how long the item shows; 0 shows it until a button press")
+	duration := fs.Duration("duration", playlist.DefaultDuration, "how long the item shows; 0 shows it until a button press")
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
-	if *instanceID == 0 || (*device == "" && *name == "") || fs.NArg() != 0 {
+	if *instanceID == 0 || (*deviceID == "" && *name == "") || fs.NArg() != 0 {
 		return errors.New("usage: trmnl-byos playlist add [-data dir] -instance ID [-device ID] [-playlist name] [-duration d]")
 	}
 	client, err := openDB(ctx, *data)
@@ -238,44 +238,21 @@ func playlistAdd(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer client.Close()
 	var dev db.Device
-	if *device != "" {
-		if dev, err = deviceapi.FindDevice(ctx, client.Read, *device); err != nil {
+	if *deviceID != "" {
+		if dev, err = device.FindDevice(ctx, client.Read, *deviceID); err != nil {
 			return err
 		}
-		if *name == "" {
-			*name = dev.FriendlyID
-		}
 	}
-	item, err := playlist.AddItem(ctx, client, *name, dev.ID, *instanceID, *duration)
+	item, plName, err := playlist.AddItem(ctx, client, *name, dev.ID, *instanceID, *duration)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "Added item %d to playlist %q.\n", item.ID, *name)
+	_, err = fmt.Fprintf(out, "Added item %d to playlist %q.\n", item.ID, plName)
 	return err
 }
 
 func playlistRemove(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("playlist remove", flag.ExitOnError)
-	data := dataFlag(fs)
-	_ = fs.Parse(args) // ExitOnError exits on a parse error.
-	id, err := strconv.ParseInt(fs.Arg(0), 10, 64)
-	if fs.NArg() != 1 || err != nil {
-		return errors.New("usage: trmnl-byos playlist remove [-data dir] <item ID>")
-	}
-	client, err := openDB(ctx, *data)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	n, err := client.Write.DeletePlaylistItem(ctx, id)
-	if err != nil {
-		return fmt.Errorf("remove item: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf("no item %d", id)
-	}
-	_, err = fmt.Fprintf(out, "Removed item %d.\n", id)
-	return err
+	return removeByID(ctx, args, out, "playlist remove", "item", playlist.DeleteItem)
 }
 
 func playlistList(ctx context.Context, args []string, out io.Writer) error {

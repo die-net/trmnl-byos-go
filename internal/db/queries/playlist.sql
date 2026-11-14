@@ -54,3 +54,10 @@ FROM playlist_device
 JOIN playlist ON playlist.id = playlist_device.playlist_id
 JOIN device ON device.id = playlist_device.device_id
 ORDER BY playlist.name, device.friendly_id;
+
+-- name: ListInstanceItems :many
+-- The playlist items that show an instance in any slot.
+SELECT DISTINCT item_id FROM playlist_slot WHERE instance_id = ? ORDER BY item_id;
+
+-- name: ListPlaylists :many
+SELECT * FROM playlist ORDER BY name;

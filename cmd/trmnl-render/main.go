@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/die-net/trmnl-byos-go/internal/render"
 )
@@ -47,15 +50,14 @@ func run() int {
 }
 
 func serve(ctx context.Context, listen, trmnlp string, concurrency int, timeout time.Duration) error {
+	// Xvfb runs for the life of the process. If it exits, every build would
+	// fail, so its exit ends the process and the container restarts. The
+	// group's context also kills it when the server stops.
+	g, ctx := errgroup.WithContext(ctx)
 	xvfb, err := startXvfb(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = xvfb.Process.Kill()
-		_ = xvfb.Wait()
-	}()
-
 	shim := render.NewShim(trmnlp, buildEnv(os.Environ()), timeout, concurrency)
 	srv := &http.Server{
 		Addr:              listen,
@@ -65,20 +67,37 @@ func serve(ctx context.Context, listen, trmnlp string, concurrency int, timeout 
 		// streams the result.
 		WriteTimeout: time.Duration(concurrency+1)*timeout + time.Minute,
 	}
-	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
 	slog.Info("trmnl-render: serving", "listen", listen, "concurrency", concurrency)
-	select {
-	case err := <-errc:
-		return fmt.Errorf("listen: %w", err)
-	case <-ctx.Done():
-	}
-	shutdown, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("shutdown: %w", err)
-	}
-	return nil
+	return supervise(ctx, g, srv, xvfb.Wait, timeout)
+}
+
+// supervise runs srv and waits for the virtual display with xvfbWait, and
+// returns when either ends. An exit of the display before ctx is done is an
+// error, and stops the server.
+func supervise(ctx context.Context, g *errgroup.Group, srv *http.Server, xvfbWait func() error, grace time.Duration) error {
+	g.Go(func() error {
+		err := xvfbWait()
+		if ctx.Err() != nil {
+			return nil // Killed because the process is stopping.
+		}
+		return fmt.Errorf("xvfb exited: %w", cmp.Or(err, errors.New("exit status 0")))
+	})
+	g.Go(func() error {
+		errc := make(chan error, 1)
+		go func() { errc <- srv.ListenAndServe() }()
+		select {
+		case err := <-errc:
+			return fmt.Errorf("listen: %w", err)
+		case <-ctx.Done():
+		}
+		shutdown, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("shutdown: %w", err)
+		}
+		return nil
+	})
+	return g.Wait()
 }
 
 // startXvfb starts the virtual display and waits for its socket.

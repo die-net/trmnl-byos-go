@@ -24,11 +24,15 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/die-net/trmnl-byos-go/internal/cache"
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/deviceapi"
 	"github.com/die-net/trmnl-byos-go/internal/guard"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
+	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/render"
 	"github.com/die-net/trmnl-byos-go/internal/renderproxy"
 	"github.com/die-net/trmnl-byos-go/internal/scheduler"
@@ -131,49 +135,72 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// Before anything that installs a recipe or starts the scheduler: clear
+	// what a crash during an install or an upload left behind.
+	if err := recipe.Sweep(ctx, client, recipesDir(*data), time.Now()); err != nil {
+		return fmt.Errorf("sweep leftovers: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, RefreshRate: *refresh}).Register(mux)
-	servers := []*http.Server{{
+	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       2 * time.Minute,
-	}}
+	}
 
-	go expireLoop(ctx, client, images)
+	// Everything that runs for the life of the process is in one group, so
+	// that when any part fails, such as a server that cannot listen, the
+	// rest stop. The database is closed by the deferred Close above, which
+	// runs only after g.Wait has returned, so no loop is left writing to it.
+	g, ctx := errgroup.WithContext(ctx)
 	if *renderURL != "" {
-		proxy, err := startRendering(ctx, client, images, key, *data, *renderURL, *cacheDir)
+		// It fails before it starts anything, so returning here leaves
+		// nothing running.
+		proxy, err := startRendering(ctx, g, client, images, key, *data, *renderURL, *cacheDir)
 		if err != nil {
 			return err
 		}
 		// No read or write timeout: a CONNECT tunnel lasts as long as the
 		// build uses it, and the renderer kills a build that runs too long.
-		servers = append(servers, &http.Server{Addr: *proxyListen, Handler: proxy, ReadHeaderTimeout: 10 * time.Second})
+		psrv := &http.Server{Addr: *proxyListen, Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
+		g.Go(func() error { return listenAndServe(ctx, psrv, shutdownGrace) })
 	} else {
 		slog.Warn("no -render-url: playlists that show recipes will wait for renders")
 	}
-
-	errc := make(chan error, len(servers))
-	for _, srv := range servers {
-		go func() { errc <- srv.ListenAndServe() }()
-	}
+	g.Go(func() error { return listenAndServe(ctx, srv, shutdownGrace) })
+	g.Go(func() error {
+		expireLoop(ctx, client, images)
+		return nil
+	})
 	slog.Info("serving", "listen", *listen, "data", *data, "render_url", *renderURL)
+	return g.Wait()
+}
+
+// shutdownGrace is how long a server waits for requests in flight when the
+// process is stopping.
+const shutdownGrace = 10 * time.Second
+
+// listenAndServe runs srv until ctx is done, then shuts it down, waiting up
+// to grace for requests in flight. It returns at once with an error if srv
+// cannot listen, so a caller that cancels ctx on error stops the rest.
+func listenAndServe(ctx context.Context, srv *http.Server, grace time.Duration) error {
+	errc := make(chan error, 1)
+	go func() { errc <- srv.ListenAndServe() }()
 	select {
 	case err := <-errc:
-		return fmt.Errorf("listen: %w", err)
+		return fmt.Errorf("listen %s: %w", srv.Addr, err)
 	case <-ctx.Done():
 	}
-	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdown, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
-	var errs []error
-	for _, srv := range servers {
-		if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errs = append(errs, fmt.Errorf("shutdown %s: %w", srv.Addr, err))
-		}
+	if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("shutdown %s: %w", srv.Addr, err)
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // Asset cache limits: entries unused for a month go, and the oldest go
@@ -184,28 +211,35 @@ const (
 	cacheMaxBytes   = 2 << 30
 )
 
-// startRendering starts the scheduler, which renders through the renderer
-// at renderURL, and returns the proxy the renderer's builds reach the
-// internet through.
-func startRendering(ctx context.Context, client *db.Client, images *imagestore.Store, key *secrets.Key,
+// startRendering starts the scheduler and the asset cache's janitor in g.
+// The scheduler renders through the renderer at renderURL. It returns the
+// proxy the renderer's builds reach the internet through. If it fails, it
+// has started nothing.
+func startRendering(ctx context.Context, g *errgroup.Group, client *db.Client, images *imagestore.Store, key *secrets.Key,
 	data, renderURL, cacheDir string,
 ) (http.Handler, error) {
 	assets, err := cache.New(cacheDir)
 	if err != nil {
 		return nil, err
 	}
-	go assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
+	g.Go(func() error {
+		assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
+		return nil
+	})
 	sched := scheduler.New(scheduler.Config{
 		DB:         client,
 		Images:     images,
-		Renderer:   &render.Client{URL: renderURL, HTTP: &http.Client{Timeout: 10 * time.Minute}},
+		Renderer:   &render.Client{URL: renderURL, HTTP: &http.Client{}},
 		RecipesDir: recipesDir(data),
 		Secrets:    key,
 		// TZ is the standard way to give a process its time zone.
 		TimeZone:   os.Getenv("TZ"),
 		AssetHosts: renderproxy.AssetHosts,
 	})
-	go sched.Run(ctx)
+	g.Go(func() error {
+		sched.Run(ctx)
+		return nil
+	})
 	return renderproxy.New(renderproxy.Config{
 		Dialer:      guard.NewDialer(10 * time.Second),
 		Cache:       assets,
@@ -244,8 +278,8 @@ func expireLoop(ctx context.Context, client *db.Client, images *imagestore.Store
 // expireImages deletes images that no row names and that were last stored
 // more than imageGrace before now. The rows are read before the files are
 // listed. That is safe because whatever hands out an image name stores the
-// image first, which refreshes its time, so an image named after the read
-// is too new to delete.
+// image first, or refreshes it when the name comes from a row, so an image
+// named after the read is too new to delete.
 func expireImages(ctx context.Context, client *db.Client, images *imagestore.Store, now time.Time) (int, error) {
 	names, err := client.Read.ListReferencedImages(ctx)
 	if err != nil {
@@ -270,7 +304,7 @@ func join(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer client.Close()
 	until := time.Now().Add(*window)
-	if err := deviceapi.SetJoinWindow(ctx, client, until); err != nil {
+	if err := device.SetJoinWindow(ctx, client, until); err != nil {
 		return err
 	}
 	if *window <= 0 {
@@ -284,11 +318,10 @@ func join(ctx context.Context, args []string, out io.Writer) error {
 func calibrate(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("calibrate", flag.ExitOnError)
 	data := dataFlag(fs)
-	window := fs.Duration("for", 30*time.Minute, "how long the device shows the calibration screen")
+	window := fs.Duration("for", device.DefaultCalibration, "how long the device shows the calibration screen")
 	dot := fs.Int("dot", 1, "dither dot size in pixels: 1 or 2")
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
-	override := map[int]string{1: deviceapi.ScreenCalibrate, 2: deviceapi.ScreenCalibrate2x2}[*dot]
-	if fs.NArg() != 1 || *window <= 0 || override == "" {
+	if fs.NArg() != 1 {
 		return errors.New("usage: trmnl-byos calibrate [-data dir] [-for duration] [-dot 1|2] <friendly ID or MAC>")
 	}
 
@@ -297,8 +330,7 @@ func calibrate(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	until := time.Now().Add(*window)
-	dev, err := deviceapi.ShowScreen(ctx, client, fs.Arg(0), override, until)
+	dev, until, err := device.Calibrate(ctx, client, fs.Arg(0), *dot, *window, time.Now())
 	if err != nil {
 		return err
 	}

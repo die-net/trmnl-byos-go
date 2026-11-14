@@ -157,6 +157,34 @@ func (q *Queries) ListDeviceItems(ctx context.Context, deviceID int64) ([]ListDe
 	return items, nil
 }
 
+const listInstanceItems = `-- name: ListInstanceItems :many
+SELECT DISTINCT item_id FROM playlist_slot WHERE instance_id = ? ORDER BY item_id
+`
+
+// The playlist items that show an instance in any slot.
+func (q *Queries) ListInstanceItems(ctx context.Context, instanceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listInstanceItems, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var item_id int64
+		if err := rows.Scan(&item_id); err != nil {
+			return nil, err
+		}
+		items = append(items, item_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlaylistDevices = `-- name: ListPlaylistDevices :many
 SELECT playlist.name AS playlist, device.friendly_id, playlist_device.priority
 FROM playlist_device
@@ -231,6 +259,33 @@ func (q *Queries) ListPlaylistItems(ctx context.Context) ([]ListPlaylistItemsRow
 			&i.InstanceID,
 			&i.InstanceName,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlaylists = `-- name: ListPlaylists :many
+SELECT id, name FROM playlist ORDER BY name
+`
+
+func (q *Queries) ListPlaylists(ctx context.Context) ([]Playlist, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylists)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Playlist{}
+	for rows.Next() {
+		var i Playlist
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

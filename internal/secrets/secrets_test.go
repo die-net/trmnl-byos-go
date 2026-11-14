@@ -21,22 +21,28 @@ func newKey(t *testing.T) *Key {
 
 func TestSealOpen(t *testing.T) {
 	k := newKey(t)
-	sealed, err := k.Seal([]byte("hunter2"))
+	sealed, err := k.Seal([]byte("hunter2"), []byte("1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(sealed, []byte("hunter2")) {
 		t.Fatal("sealed value holds the plaintext")
 	}
-	got, err := k.Open(sealed)
+	got, err := k.Open(sealed, []byte("1"))
 	if err != nil || string(got) != "hunter2" {
 		t.Fatalf("Open = %q, %v", got, err)
 	}
-	if _, err := newKey(t).Open(sealed); err == nil {
+	if _, err := newKey(t).Open(sealed, []byte("1")); err == nil {
 		t.Error("another key opened the value")
 	}
+	if _, err := k.Open(sealed, []byte("2")); err == nil {
+		t.Error("other associated data opened the value")
+	}
+	if _, err := k.Open(sealed, nil); err == nil {
+		t.Error("missing associated data opened the value")
+	}
 	sealed[len(sealed)-1] ^= 1
-	if _, err := k.Open(sealed); err == nil {
+	if _, err := k.Open(sealed, []byte("1")); err == nil {
 		t.Error("a changed value opened")
 	}
 }
@@ -51,10 +57,10 @@ func TestBadKeys(t *testing.T) {
 		}
 	}
 	var none *Key
-	if _, err := none.Seal([]byte("x")); !errors.Is(err, ErrNoKey) {
+	if _, err := none.Seal([]byte("x"), nil); !errors.Is(err, ErrNoKey) {
 		t.Errorf("nil key Seal: %v", err)
 	}
-	if _, err := none.Open([]byte("x")); !errors.Is(err, ErrNoKey) {
+	if _, err := none.Open([]byte("x"), nil); !errors.Is(err, ErrNoKey) {
 		t.Errorf("nil key Open: %v", err)
 	}
 }

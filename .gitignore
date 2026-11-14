@@ -1,5 +1,6 @@
 # Binaries
 /trmnl-byos
+/trmnl-render
 *.test
 
 # Local state

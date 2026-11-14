@@ -7,10 +7,11 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
 // EnvVar is the environment variable holding the key: 32 random bytes in
@@ -18,7 +19,7 @@ import (
 const EnvVar = "TRMNL_SECRET_KEY"
 
 // ErrNoKey means a value had to be sealed or opened without a key.
-var ErrNoKey = errors.New(EnvVar + " is not set")
+var ErrNoKey = errkind.New(errkind.ErrInvalid, EnvVar+" is not set")
 
 // Key seals and opens values. A nil Key does neither and returns ErrNoKey.
 type Key struct {
@@ -60,22 +61,25 @@ func Parse(s string) (*Key, error) {
 }
 
 // Seal encrypts plaintext with a random nonce, which the result carries.
-func (k *Key) Seal(plaintext []byte) ([]byte, error) {
+// The associated data is authenticated but not stored, so Open must be given
+// the same bytes. Callers pass what the value belongs to, such as an
+// instance ID, so a sealed value copied to another owner fails to open.
+func (k *Key) Seal(plaintext, associated []byte) ([]byte, error) {
 	if k == nil {
 		return nil, ErrNoKey
 	}
 	// The AEAD makes a random nonce for each Seal and puts it in the
 	// result; the nil here is the nonce argument it requires to be empty.
-	return k.aead.Seal(nil, nil, plaintext, nil), nil //nolint:gosec // G407: NewGCMWithRandomNonce generates the nonce, and gosec cannot see that.
+	return k.aead.Seal(nil, nil, plaintext, associated), nil //nolint:gosec // G407: NewGCMWithRandomNonce generates the nonce, and gosec cannot see that.
 }
 
 // Open decrypts what Seal returned. It fails if the value was sealed with
-// another key or changed since.
-func (k *Key) Open(sealed []byte) ([]byte, error) {
+// another key or other associated data, or changed since.
+func (k *Key) Open(sealed, associated []byte) ([]byte, error) {
 	if k == nil {
 		return nil, ErrNoKey
 	}
-	plain, err := k.aead.Open(nil, nil, sealed, nil)
+	plain, err := k.aead.Open(nil, nil, sealed, associated)
 	if err != nil {
 		return nil, fmt.Errorf("open secret: %w", err)
 	}

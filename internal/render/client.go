@@ -2,13 +2,13 @@ package render
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,7 +25,8 @@ type Client struct {
 // Build sends job to the shim with the project writeProject writes, and
 // calls png for each layout's PNG as it streams back. It returns the build
 // log, cut to a bound. A build trmnlp failed returns its log and an error
-// matching ErrBuildFailed.
+// matching ErrBuildFailed. A renderer that cannot be reached or does not
+// answer with a result returns an error matching ErrUnavailable.
 func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writer) error,
 	png func(layout string, r io.Reader) error,
 ) (string, error) {
@@ -33,25 +34,24 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		return "", err
 	}
 	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
 	go func() {
-		pw.CloseWithError(writeRequest(mw, job, writeProject))
+		pw.CloseWithError(writeRequest(pw, job, writeProject))
 	}()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.URL, "/")+"/build", pr)
 	if err != nil {
 		_ = pr.CloseWithError(err)
 		return "", fmt.Errorf("render request: %w", err)
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Content-Type", "application/x-tar")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		_ = pr.CloseWithError(err)
-		return "", fmt.Errorf("render request: %w", err)
+		return "", fmt.Errorf("render request: %w: %w", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnprocessableEntity {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", fmt.Errorf("render request: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return "", fmt.Errorf("render request: %w: %s: %s", ErrUnavailable, resp.Status, strings.TrimSpace(string(msg)))
 	}
 
 	var log strings.Builder
@@ -89,26 +89,20 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 	return log.String(), nil
 }
 
-func writeRequest(mw *multipart.Writer, job Job, writeProject func(*tar.Writer) error) error {
-	jw, err := mw.CreateFormField(partJob)
+// writeRequest writes the request tar: the job, then the project.
+func writeRequest(w io.Writer, job Job, writeProject func(*tar.Writer) error) error {
+	enc, err := json.Marshal(job)
 	if err != nil {
+		return fmt.Errorf("encode job: %w", err)
+	}
+	tw := tar.NewWriter(w)
+	if err := AddFile(tw, jobMember, int64(len(enc)), bytes.NewReader(enc)); err != nil {
 		return err
 	}
-	if err := json.NewEncoder(jw).Encode(job); err != nil {
-		return err
-	}
-	fw, err := mw.CreateFormFile(partProject, "project.tar")
-	if err != nil {
-		return err
-	}
-	tw := tar.NewWriter(fw)
 	if err := writeProject(tw); err != nil {
 		return err
 	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	return mw.Close()
+	return tw.Close()
 }
 
 // AddDir streams the regular files under dir into tw, under prefix.

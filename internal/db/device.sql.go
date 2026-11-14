@@ -62,6 +62,28 @@ func (q *Queries) FriendlyIDExists(ctx context.Context, friendlyID string) (int6
 	return column_1, err
 }
 
+const getDevice = `-- name: GetDevice :one
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until FROM device WHERE id = ?
+`
+
+func (q *Queries) GetDevice(ctx context.Context, id int64) (Device, error) {
+	row := q.db.QueryRowContext(ctx, getDevice, id)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.Mac,
+		&i.ApiKeyHash,
+		&i.FriendlyID,
+		&i.Name,
+		&i.FwModel,
+		&i.FwVersion,
+		&i.CreatedAt,
+		&i.ScreenOverride,
+		&i.ScreenOverrideUntil,
+	)
+	return i, err
+}
+
 const getDeviceByAPIKeyHash = `-- name: GetDeviceByAPIKeyHash :one
 SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until FROM device WHERE api_key_hash = ?
 `
@@ -129,19 +151,61 @@ func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error
 }
 
 const getDeviceCursor = `-- name: GetDeviceCursor :one
-SELECT item_id, item_started_at FROM device_state WHERE device_id = ?
+SELECT item_id, item_started_at FROM device_cursor WHERE device_id = ?
 `
 
 type GetDeviceCursorRow struct {
-	ItemID        *int64 `json:"item_id"`
-	ItemStartedAt *int64 `json:"item_started_at"`
+	ItemID        int64 `json:"item_id"`
+	ItemStartedAt int64 `json:"item_started_at"`
 }
 
-// The playlist item a device is showing, and when it started.
+// The playlist item a device is showing, and when it started. A device with
+// no cursor has no row.
 func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDeviceCursorRow, error) {
 	row := q.db.QueryRowContext(ctx, getDeviceCursor, deviceID)
 	var i GetDeviceCursorRow
 	err := row.Scan(&i.ItemID, &i.ItemStartedAt)
+	return i, err
+}
+
+const getDeviceStatus = `-- name: GetDeviceStatus :one
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
+FROM device
+LEFT JOIN device_state s ON s.device_id = device.id
+WHERE device.id = ?
+`
+
+type GetDeviceStatusRow struct {
+	Device              Device   `json:"device"`
+	LastSeen            *int64   `json:"last_seen"`
+	BatteryV            *float64 `json:"battery_v"`
+	Rssi                *int64   `json:"rssi"`
+	WakeTimeMs          *int64   `json:"wake_time_ms"`
+	UpdateSource        *string  `json:"update_source"`
+	LastRefreshRateSent *int64   `json:"last_refresh_rate_sent"`
+}
+
+func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatusRow, error) {
+	row := q.db.QueryRowContext(ctx, getDeviceStatus, id)
+	var i GetDeviceStatusRow
+	err := row.Scan(
+		&i.Device.ID,
+		&i.Device.Mac,
+		&i.Device.ApiKeyHash,
+		&i.Device.FriendlyID,
+		&i.Device.Name,
+		&i.Device.FwModel,
+		&i.Device.FwVersion,
+		&i.Device.CreatedAt,
+		&i.Device.ScreenOverride,
+		&i.Device.ScreenOverrideUntil,
+		&i.LastSeen,
+		&i.BatteryV,
+		&i.Rssi,
+		&i.WakeTimeMs,
+		&i.UpdateSource,
+		&i.LastRefreshRateSent,
+	)
 	return i, err
 }
 
@@ -202,44 +266,6 @@ func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, 
 	return items, nil
 }
 
-const listDevices = `-- name: ListDevices :many
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until FROM device ORDER BY name, id
-`
-
-func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
-	rows, err := q.db.QueryContext(ctx, listDevices)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Device{}
-	for rows.Next() {
-		var i Device
-		if err := rows.Scan(
-			&i.ID,
-			&i.Mac,
-			&i.ApiKeyHash,
-			&i.FriendlyID,
-			&i.Name,
-			&i.FwModel,
-			&i.FwVersion,
-			&i.CreatedAt,
-			&i.ScreenOverride,
-			&i.ScreenOverrideUntil,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const setDeviceAPIKeyHash = `-- name: SetDeviceAPIKeyHash :exec
 UPDATE device SET api_key_hash = ? WHERE id = ?
 `
@@ -255,29 +281,23 @@ func (q *Queries) SetDeviceAPIKeyHash(ctx context.Context, arg SetDeviceAPIKeyHa
 }
 
 const setDeviceCursor = `-- name: SetDeviceCursor :exec
-INSERT INTO device_state (device_id, last_seen, last_refresh_rate_sent, item_id, item_started_at)
-VALUES (?, ?, 0, ?, ?)
+INSERT INTO device_cursor (device_id, item_id, item_started_at)
+VALUES (?, ?, ?)
 ON CONFLICT (device_id) DO UPDATE SET
   item_id = excluded.item_id,
   item_started_at = excluded.item_started_at
 `
 
 type SetDeviceCursorParams struct {
-	DeviceID      int64  `json:"device_id"`
-	LastSeen      int64  `json:"last_seen"`
-	ItemID        *int64 `json:"item_id"`
-	ItemStartedAt *int64 `json:"item_started_at"`
+	DeviceID      int64 `json:"device_id"`
+	ItemID        int64 `json:"item_id"`
+	ItemStartedAt int64 `json:"item_started_at"`
 }
 
-// Moves a device's playlist cursor. A device that has no state yet gets a
-// row, which its first wake's state then fills in.
+// Moves a device's playlist cursor. It does not touch device_state, so it
+// says nothing about whether the device has woken.
 func (q *Queries) SetDeviceCursor(ctx context.Context, arg SetDeviceCursorParams) error {
-	_, err := q.db.ExecContext(ctx, setDeviceCursor,
-		arg.DeviceID,
-		arg.LastSeen,
-		arg.ItemID,
-		arg.ItemStartedAt,
-	)
+	_, err := q.db.ExecContext(ctx, setDeviceCursor, arg.DeviceID, arg.ItemID, arg.ItemStartedAt)
 	return err
 }
 
@@ -297,7 +317,7 @@ func (q *Queries) SetScreenOverride(ctx context.Context, arg SetScreenOverridePa
 }
 
 const updateDeviceFirmware = `-- name: UpdateDeviceFirmware :exec
-UPDATE device SET fw_model = ?, fw_version = ? WHERE id = ?
+UPDATE device SET fw_model = COALESCE(NULLIF(CAST(?1 AS TEXT), ''), fw_model), fw_version = COALESCE(NULLIF(CAST(?2 AS TEXT), ''), fw_version) WHERE id = ?3
 `
 
 type UpdateDeviceFirmwareParams struct {
@@ -306,6 +326,7 @@ type UpdateDeviceFirmwareParams struct {
 	ID        int64  `json:"id"`
 }
 
+// An empty model or version keeps the stored one.
 func (q *Queries) UpdateDeviceFirmware(ctx context.Context, arg UpdateDeviceFirmwareParams) error {
 	_, err := q.db.ExecContext(ctx, updateDeviceFirmware, arg.FwModel, arg.FwVersion, arg.ID)
 	return err

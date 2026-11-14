@@ -1,8 +1,8 @@
 // Package render runs trmnlp builds. The server's Client sends a build job
 // to the Shim, which runs inside the renderer container, and gets the
-// rendered PNGs back. Both directions stream: the request is a multipart
-// body of a small JSON job and the recipe project as a tar, and the
-// response is a tar of the build log and the PNGs.
+// rendered PNGs back. Both directions stream: the request body is a tar
+// whose first member is the JSON job and whose other members are the recipe
+// project, and the response is a tar of the build log and the PNGs.
 package render
 
 import (
@@ -11,11 +11,11 @@ import (
 	"regexp"
 )
 
-// Multipart part names and tar member names of the protocol.
+// Tar member names of the protocol. jobMember is the first member of a
+// request. Every member after it is a project file, by its own name.
 const (
-	partJob     = "job"
-	partProject = "project"
-	logMember   = "build.log"
+	jobMember = "job.json"
+	logMember = "build.log"
 )
 
 // Layouts are the views trmnlp renders for every recipe, by file name.
@@ -23,7 +23,8 @@ var Layouts = []string{"full", "half_horizontal", "half_vertical", "quadrant"}
 
 // Limits on a job, which the shim enforces.
 const (
-	maxJobBytes     = 64 << 10
+	maxJobBytes = 64 << 10
+	// maxProjectBytes bounds the whole request body, the job included.
 	maxProjectBytes = 16 << 20
 	maxDimension    = 4096
 	// maxLogBytes bounds the build log a client keeps.
@@ -51,6 +52,12 @@ var (
 // ErrBuildFailed means trmnlp ran but did not produce the screens. The
 // build log says why.
 var ErrBuildFailed = errors.New("trmnlp build failed")
+
+// ErrUnavailable means the renderer could not be reached or did not answer
+// the request with a build result: a refused or reset connection, a timeout,
+// a busy shim, or a server error. It says nothing about the recipe, so it
+// does not count toward a render's backoff.
+var ErrUnavailable = errors.New("renderer unavailable")
 
 func (j Job) validate() error {
 	if j.Width < 1 || j.Height < 1 || j.Width > maxDimension || j.Height > maxDimension {

@@ -77,13 +77,17 @@ func (q *Queries) CreateRecipe(ctx context.Context, arg CreateRecipeParams) (Rec
 	return i, err
 }
 
-const deleteRecipe = `-- name: DeleteRecipe :exec
-DELETE FROM recipe WHERE id = ?
+const deleteInstance = `-- name: DeleteInstance :execrows
+DELETE FROM plugin_instance WHERE id = ?
 `
 
-func (q *Queries) DeleteRecipe(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, deleteRecipe, id)
-	return err
+// Also deletes the instance's renders and its playlist slots, by cascade.
+func (q *Queries) DeleteInstance(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteInstance, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getInstance = `-- name: GetInstance :one
@@ -123,18 +127,15 @@ func (q *Queries) GetRecipe(ctx context.Context, id int64) (Recipe, error) {
 }
 
 const listInstances = `-- name: ListInstances :many
-SELECT plugin_instance.id, plugin_instance.name, plugin_instance.palette, recipe.id AS recipe_id, recipe.name AS recipe_name
+SELECT plugin_instance.id, plugin_instance.recipe_id, plugin_instance.name, plugin_instance.field_values, plugin_instance.secret_values, plugin_instance.palette, plugin_instance.created_at, recipe.name AS recipe_name
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
 ORDER BY plugin_instance.id
 `
 
 type ListInstancesRow struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Palette    string `json:"palette"`
-	RecipeID   int64  `json:"recipe_id"`
-	RecipeName string `json:"recipe_name"`
+	PluginInstance PluginInstance `json:"plugin_instance"`
+	RecipeName     string         `json:"recipe_name"`
 }
 
 func (q *Queries) ListInstances(ctx context.Context) ([]ListInstancesRow, error) {
@@ -147,10 +148,13 @@ func (q *Queries) ListInstances(ctx context.Context) ([]ListInstancesRow, error)
 	for rows.Next() {
 		var i ListInstancesRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.Palette,
-			&i.RecipeID,
+			&i.PluginInstance.ID,
+			&i.PluginInstance.RecipeID,
+			&i.PluginInstance.Name,
+			&i.PluginInstance.FieldValues,
+			&i.PluginInstance.SecretValues,
+			&i.PluginInstance.Palette,
+			&i.PluginInstance.CreatedAt,
 			&i.RecipeName,
 		); err != nil {
 			return nil, err
@@ -197,4 +201,20 @@ func (q *Queries) ListRecipes(ctx context.Context) ([]Recipe, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const setInstanceSecrets = `-- name: SetInstanceSecrets :exec
+UPDATE plugin_instance SET secret_values = ? WHERE id = ?
+`
+
+type SetInstanceSecretsParams struct {
+	SecretValues []byte `json:"secret_values"`
+	ID           int64  `json:"id"`
+}
+
+// Stores an instance's sealed secrets, which are bound to its ID and so can
+// be sealed only after the row exists.
+func (q *Queries) SetInstanceSecrets(ctx context.Context, arg SetInstanceSecretsParams) error {
+	_, err := q.db.ExecContext(ctx, setInstanceSecrets, arg.SecretValues, arg.ID)
+	return err
 }

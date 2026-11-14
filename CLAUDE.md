@@ -22,9 +22,9 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 
 ## Security
 
-- Recipes are untrusted code from the internet. Their transforms and page scripts run only in the renderer container, which never gets the database, the secrets key, or the data volume.
+- Recipes are untrusted code from the internet. Their transforms and page scripts run only in the renderer, which never gets the database, the secrets key, or the data directory. Security comes from properties every deployment provides (its own user or sandbox, and no network path but the proxy), not from Docker alone. Docker must not be the only way to run the server securely.
 - Recipes may reach public hosts only. The renderer has no route out except the server's proxy, which refuses non-public addresses. A URL the server itself fetches that came from a recipe, its settings, or a webhook goes through the outbound client that makes the same check, never through `http.DefaultClient` or a client built for the call.
-- SQL lives in `internal/db/queries/` and runs through sqlc. A query sqlc cannot handle, such as a migration, may bypass it: it lives in `internal/db` as a constant string with `?` parameters, and a comment says why sqlc cannot take it. No SQL is built from strings anywhere.
+- SQL lives in `internal/db/queries/` and runs through sqlc. A query sqlc cannot handle, such as a migration, may bypass it: it lives in `internal/db` as a constant string with `?` parameters, and a comment says why sqlc cannot take it. No SQL is built from strings, so no input can become SQL. The one exception is an integer the code itself chooses, in a statement that takes no `?` parameters, such as `PRAGMA user_version`. A comment says why.
 - A command runs through `exec.CommandContext` with an argument list, never through a shell such as `sh -c`.
 - A file name or path from a recipe, an upload, or a request is cleaned and checked to stay inside its directory before it reaches the filesystem.
 - A secret custom field is stored encrypted and never shown back or logged. Neither is a device `api_key`, an admin token, or a password hash.

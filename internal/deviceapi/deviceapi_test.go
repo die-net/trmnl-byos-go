@@ -2,6 +2,7 @@ package deviceapi
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,12 +14,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 )
@@ -71,6 +74,8 @@ type testServer struct {
 	srv *Server
 	db  *db.Client
 	now time.Time
+	// imagesDir is where the image store keeps its files.
+	imagesDir string
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -85,7 +90,7 @@ func newTestServer(t *testing.T) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := &testServer{db: client, now: time.Unix(1_800_000_000, 0)}
+	ts := &testServer{db: client, now: time.Unix(1_800_000_000, 0), imagesDir: filepath.Join(dir, "images")}
 	ts.srv = New(client, images, Config{RefreshRate: 15 * time.Minute})
 	ts.srv.now = func() time.Time { return ts.now }
 	mux := http.NewServeMux()
@@ -134,7 +139,7 @@ func (ts *testServer) getJSON(t *testing.T, path string, headers map[string]stri
 
 func (ts *testServer) openJoinWindow(t *testing.T) {
 	t.Helper()
-	if err := SetJoinWindow(t.Context(), ts.db, ts.now.Add(10*time.Minute)); err != nil {
+	if err := device.SetJoinWindow(t.Context(), ts.db, ts.now.Add(10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -215,12 +220,12 @@ func TestSetupJoinWindow(t *testing.T) {
 		t.Fatalf("key after a refused setup: %v", m)
 	}
 
-	devices, err := ts.db.Read.ListDevices(t.Context())
-	if err != nil || len(devices) != 1 || devices[0].Mac != testMAC || devices[0].FwModel != "xiao_epaper_display" {
+	devices, err := ts.db.Read.ListDeviceStatus(t.Context())
+	if err != nil || len(devices) != 1 || devices[0].Device.Mac != testMAC || devices[0].Device.FwModel != "xiao_epaper_display" {
 		t.Fatalf("devices = %+v, %v", devices, err)
 	}
-	if !bytes.Equal(devices[0].ApiKeyHash, hashKey(newKey)) {
-		t.Fatalf("stored %x, want the hash of the new key", devices[0].ApiKeyHash)
+	if !bytes.Equal(devices[0].Device.ApiKeyHash, hashKey(newKey)) {
+		t.Fatalf("stored %x, want the hash of the new key", devices[0].Device.ApiKeyHash)
 	}
 }
 
@@ -437,7 +442,7 @@ func TestShowScreenCalibrate(t *testing.T) {
 	key := ts.register(t)
 	usual := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))["filename"]
 
-	dev, err := ShowScreen(t.Context(), ts.db, strings.ToLower(testMAC), ScreenCalibrate, ts.now.Add(20*time.Minute))
+	dev, err := device.ShowScreen(t.Context(), ts.db, strings.ToLower(testMAC), device.ScreenCalibrate, ts.now.Add(20*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +463,7 @@ func TestShowScreenCalibrate(t *testing.T) {
 	}
 
 	// The 2x2 calibration screen is a different image.
-	if _, err := ShowScreen(t.Context(), ts.db, testMAC, ScreenCalibrate2x2, ts.now.Add(time.Minute)); err != nil {
+	if _, err := device.ShowScreen(t.Context(), ts.db, testMAC, device.ScreenCalibrate2x2, ts.now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	m2 := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
@@ -467,11 +472,11 @@ func TestShowScreenCalibrate(t *testing.T) {
 	}
 
 	// The friendly ID works too, in any case.
-	if _, err := ShowScreen(t.Context(), ts.db, strings.ToLower(dev.FriendlyID), ScreenCalibrate, ts.now.Add(time.Minute)); err != nil {
+	if _, err := device.ShowScreen(t.Context(), ts.db, strings.ToLower(dev.FriendlyID), device.ScreenCalibrate, ts.now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ShowScreen(t.Context(), ts.db, "NOSUCH", ScreenCalibrate, ts.now.Add(time.Minute)); !errors.Is(err, ErrNoDevice) {
-		t.Fatalf("unknown device: %v, want ErrNoDevice", err)
+	if _, err := device.ShowScreen(t.Context(), ts.db, "NOSUCH", device.ScreenCalibrate, ts.now.Add(time.Minute)); !errors.Is(err, device.ErrNoDevice) {
+		t.Fatalf("unknown device: %v, want device.ErrNoDevice", err)
 	}
 }
 
@@ -551,25 +556,44 @@ func bitsFor(colors int) uint8 {
 
 // TestDisplayTooLarge checks that an image over the device's size limit is
 // never handed out: the device gets a "too large" screen that fits, and
-// wakes again soon.
+// wakes again soon. The "og" model takes at most 90000 bytes, and the
+// render is noise, which a PNG cannot shrink.
 func TestDisplayTooLarge(t *testing.T) {
 	ts := newTestServer(t)
-	key := ts.register(t)
-	usual := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
-	_, size := ts.imageOf(t, usual)
+	key, first, _ := ts.playlistDevice(t)
+	h := displayHeaders(testMAC, key)
+	h["Model"] = "og"
+	p := profile.Resolve("og", nil, nil)
 
-	limit := int64(size - 1)
-	ts.srv.resolve = func(fwModel string, width, height *int64) (profile.Profile, error) {
-		p, err := profile.Resolve(fwModel, width, height)
-		p.ImageSizeLimit = limit
-		return p, err
+	noise := image.NewGray(image.Rect(0, 0, p.Width, p.Height))
+	if _, err := rand.Read(noise.Pix); err != nil {
+		t.Fatal(err)
 	}
-	m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
-	if m["filename"] == usual["filename"] || m["refresh_rate"] != float64(tooLargeRefresh) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, noise); err != nil {
+		t.Fatal(err)
+	}
+	name, size, err := ts.srv.images.Put(&buf)
+	if err != nil || size <= p.ImageSizeLimit {
+		t.Fatalf("noise image is %d bytes, %v; want over %d", size, err, p.ImageSizeLimit)
+	}
+	id, err := ts.db.Write.SaveRenderSuccess(t.Context(), db.SaveRenderSuccessParams{
+		InstanceID: first, Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""),
+		RenderedAt: ts.now.Unix(), AttemptedAt: ts.now.Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.db.Write.SaveRenderImage(t.Context(), db.SaveRenderImageParams{RenderID: id, Layout: "full", Image: name, Bytes: size}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := ts.getJSON(t, "/api/display", h)
+	if m["filename"] == name || m["refresh_rate"] != float64(tooLargeRefresh) {
 		t.Fatalf("over the limit: %v", m)
 	}
-	if _, got := ts.imageOf(t, m); int64(got) > limit {
-		t.Fatalf("the too-large screen is %d bytes, over the %d limit", got, limit)
+	if _, got := ts.imageOf(t, m); int64(got) > p.ImageSizeLimit {
+		t.Fatalf("the too-large screen is %d bytes, over the %d limit", got, p.ImageSizeLimit)
 	}
 }
 
@@ -581,10 +605,54 @@ func TestCalibrateTwoLevels(t *testing.T) {
 	h := displayHeaders(testMAC, key)
 	h["Model"] = "mystery"
 	usual := ts.getJSON(t, "/api/display", h)["filename"]
-	if _, err := ShowScreen(t.Context(), ts.db, testMAC, ScreenCalibrate, ts.now.Add(time.Hour)); err != nil {
+	if _, err := device.ShowScreen(t.Context(), ts.db, testMAC, device.ScreenCalibrate, ts.now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if m := ts.getJSON(t, "/api/display", h); m["filename"] != usual {
 		t.Fatalf("2-level panel during calibration: %v, want the usual screen", m)
+	}
+}
+
+// TestDisplayInternalFailure checks that a failure inside /api/display
+// answers HTTP 200 with status 0, no image and a short refresh_rate, which
+// the firmware takes as "keep the screen and wake again soon", and never an
+// HTTP error or a JSON status 500, which would reset the device.
+func TestDisplayInternalFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		breakIt func(t *testing.T, ts *testServer)
+	}{
+		// Fails in authenticate, the first read.
+		{"database", func(_ *testing.T, ts *testServer) { _ = ts.db.Close() }},
+		// A file where the image store's directory was fails the write of the
+		// "Connected" screen, so the device has nothing to show.
+		{"render screen", func(t *testing.T, ts *testServer) {
+			if err := os.RemoveAll(ts.imagesDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(ts.imagesDir, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		// Authentication and the screen succeed, and the write of the device's
+		// state that follows fails.
+		{"save state", func(t *testing.T, ts *testServer) {
+			_, err := ts.db.Writer.ExecContext(t.Context(),
+				`CREATE TRIGGER fail_state BEFORE INSERT ON device_state BEGIN SELECT RAISE(ABORT, 'test failure'); END`)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := newTestServer(t)
+			key := ts.register(t)
+			tc.breakIt(t, ts)
+			m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+			if m["status"] != float64(statusOK) || m["image_url"] != nil || m["reset_firmware"] != false ||
+				m["refresh_rate"] != float64(retryRefresh) {
+				t.Fatalf("response = %v", m)
+			}
+		})
 	}
 }

@@ -21,6 +21,13 @@ var schema string
 
 const busyTimeout = 5 * time.Second
 
+// RenderRetryAfter is how long after a failed render build the next one is
+// tried. The scheduler doubles it for each further failure in a row, and a
+// device whose render failed wakes after it to look for a new one. It is
+// here because the scheduler and the device API both read the render table
+// and must agree on it.
+const RenderRetryAfter = 5 * time.Minute
+
 // Client is the read-write store for devices, recipes, playlists, renders,
 // and firmware.
 //
@@ -48,7 +55,7 @@ func Open(ctx context.Context, path string) (*Client, error) {
 		return nil, err
 	}
 	client := &Client{Writer: writer, Write: New(writer)}
-	if err := client.applySchema(ctx); err != nil {
+	if err := client.migrate(ctx); err != nil {
 		_ = writer.Close()
 		return nil, err
 	}
@@ -125,55 +132,4 @@ func (c *Client) Close() error {
 		errs = append(errs, c.Writer.Close())
 	}
 	return errors.Join(errs...)
-}
-
-// addedColumns are columns added to a table after it first shipped. schema.sql
-// creates them in a new database. In an older one, CREATE TABLE IF NOT EXISTS
-// leaves the table alone, so applySchema runs each one's ALTER TABLE when the
-// column is missing. Each definition matches the column's in schema.sql.
-var addedColumns = []struct {
-	table, column, alter string
-}{
-	{"device", "screen_override", `ALTER TABLE device ADD COLUMN screen_override TEXT NOT NULL DEFAULT ''`},
-	{"device", "screen_override_until", `ALTER TABLE device ADD COLUMN screen_override_until INTEGER NOT NULL DEFAULT 0`},
-	{"device_state", "width", `ALTER TABLE device_state ADD COLUMN width INTEGER`},
-	{"device_state", "height", `ALTER TABLE device_state ADD COLUMN height INTEGER`},
-	{"device_state", "item_id", `ALTER TABLE device_state ADD COLUMN item_id INTEGER`},
-	{"device_state", "item_started_at", `ALTER TABLE device_state ADD COLUMN item_started_at INTEGER`},
-}
-
-// applySchema creates and migrates the schema in one transaction, so a
-// migration that fails partway is tried again from the start on the next
-// Open. Both drivers run every statement in a multi-statement Exec. This
-// bypasses sqlc, which generates queries against the finished schema, not
-// changes to it.
-func (c *Client) applySchema(ctx context.Context) error {
-	return c.InTx(ctx, func(q *Queries) error {
-		if _, err := q.db.ExecContext(ctx, schema); err != nil {
-			return fmt.Errorf("apply schema: %w", err)
-		}
-		for _, col := range addedColumns {
-			if err := addColumn(ctx, q.db, col.table, col.column, col.alter); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// addColumn runs alter, which adds column to table, unless the table has the
-// column already.
-func addColumn(ctx context.Context, tx DBTX, table, column, alter string) error {
-	var n int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
-	if err != nil {
-		return fmt.Errorf("inspect %s: %w", table, err)
-	}
-	if n > 0 {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, alter); err != nil {
-		return fmt.Errorf("add %s.%s: %w", table, column, err)
-	}
-	return nil
 }

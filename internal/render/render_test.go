@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -125,27 +124,30 @@ func TestBuildFails(t *testing.T) {
 }
 
 // TestShimRejects checks that a bad job or a project that would write
-// outside its directory is refused before trmnlp runs.
+// outside its directory, or a request without the job first, is refused before trmnlp runs.
 func TestShimRejects(t *testing.T) {
 	c := newShimServer(t, 10*time.Second)
 	for _, tc := range []struct {
 		name    string
+		first   string
 		job     string
 		entries []tar.Header
 	}{
-		{"bad palette", `{"width":800,"height":480,"palette":"../x"}`, nil},
-		{"bad size", `{"width":0,"height":480,"palette":"bw"}`, nil},
-		{"env not FIELD_", `{"width":800,"height":480,"palette":"bw","env":{"LD_PRELOAD":"/x"}}`, nil},
-		{"path escape", `{"width":800,"height":480,"palette":"bw"}`, []tar.Header{{Name: "../escape", Typeflag: tar.TypeReg, Size: 1, Mode: 0o600}}},
-		{"absolute path", `{"width":800,"height":480,"palette":"bw"}`, []tar.Header{{Name: "/tmp/escape", Typeflag: tar.TypeReg, Size: 1, Mode: 0o600}}},
-		{"symlink", `{"width":800,"height":480,"palette":"bw"}`, []tar.Header{{Name: "src/link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"}}},
+		{"no job", "", "", nil},
+		{"job not first", "src/job.json", `{"width":800,"height":480,"palette":"bw"}`, nil},
+		{"bad palette", jobMember, `{"width":800,"height":480,"palette":"../x"}`, nil},
+		{"bad size", jobMember, `{"width":0,"height":480,"palette":"bw"}`, nil},
+		{"env not FIELD_", jobMember, `{"width":800,"height":480,"palette":"bw","env":{"LD_PRELOAD":"/x"}}`, nil},
+		{"path escape", jobMember, `{"width":800,"height":480,"palette":"bw"}`, []tar.Header{{Name: "../escape", Typeflag: tar.TypeReg, Size: 1, Mode: 0o600}}},
+		{"absolute path", jobMember, `{"width":800,"height":480,"palette":"bw"}`, []tar.Header{{Name: "/tmp/escape", Typeflag: tar.TypeReg, Size: 1, Mode: 0o600}}},
+		{"symlink", jobMember, `{"width":800,"height":480,"palette":"bw"}`, []tar.Header{{Name: "src/link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"}}},
 	} {
 		var body bytes.Buffer
-		mw := multipart.NewWriter(&body)
-		jw, _ := mw.CreateFormField(partJob)
-		_, _ = io.WriteString(jw, tc.job)
-		fw, _ := mw.CreateFormFile(partProject, "project.tar")
-		tw := tar.NewWriter(fw)
+		tw := tar.NewWriter(&body)
+		if tc.first != "" {
+			_ = tw.WriteHeader(&tar.Header{Name: tc.first, Typeflag: tar.TypeReg, Size: int64(len(tc.job)), Mode: 0o600})
+			_, _ = io.WriteString(tw, tc.job)
+		}
 		for _, h := range tc.entries {
 			_ = tw.WriteHeader(&h)
 			if h.Size > 0 {
@@ -153,12 +155,11 @@ func TestShimRejects(t *testing.T) {
 			}
 		}
 		_ = tw.Close()
-		_ = mw.Close()
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.URL+"/build", &body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("Content-Type", "application/x-tar")
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -207,5 +208,36 @@ func TestAddDir(t *testing.T) {
 	}
 	if len(got) != 3 || got["src/settings.yml"] != "s" || got["src/sub/x.txt"] != "x" {
 		t.Fatalf("tar holds %v", got)
+	}
+}
+
+// TestUnavailable checks that a renderer that is not listening or that
+// answers 503 returns ErrUnavailable and not ErrBuildFailed, and that the
+// shim's 422 is ErrBuildFailed and not ErrUnavailable.
+func TestUnavailable(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closedURL := closed.URL
+	closed.Close()
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(busy.Close)
+	shim := newShimServer(t, time.Second)
+
+	for _, tc := range []struct {
+		name        string
+		c           *Client
+		marker      string
+		unavailable bool
+		buildFailed bool
+	}{
+		{"closed port", &Client{URL: closedURL, HTTP: http.DefaultClient}, "", true, false},
+		{"503", &Client{URL: busy.URL, HTTP: busy.Client()}, "", true, false},
+		{"422", shim, "fail", false, true},
+	} {
+		_, err := tc.c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(tc.marker), collect(map[string]string{}))
+		if errors.Is(err, ErrUnavailable) != tc.unavailable || errors.Is(err, ErrBuildFailed) != tc.buildFailed {
+			t.Errorf("%s: err %v", tc.name, err)
+		}
 	}
 }

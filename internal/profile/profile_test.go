@@ -26,14 +26,8 @@ func TestResolve(t *testing.T) {
 		{"unknown, no size", "", nil, nil, "", 800, 480, FallbackImageSizeLimit, 2, false},
 		{"unknown, absurd size", "mystery", ptr(100000), ptr(1), "", 800, 480, FallbackImageSizeLimit, 2, false},
 	} {
-		p, err := Resolve(tc.fwModel, tc.width, tc.height)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		levels, err := p.GrayLevels()
-		if err != nil {
-			t.Fatal(err)
-		}
+		p := Resolve(tc.fwModel, tc.width, tc.height)
+		levels := p.GrayLevels()
 		if p.Model != tc.model || p.Width != tc.w || p.Height != tc.h || p.ImageSizeLimit != tc.limit ||
 			levels != tc.levels || (p.Light != nil) != tc.measured {
 			t.Errorf("%s: %+v with %d levels", tc.name, p, levels)
@@ -48,10 +42,7 @@ func TestResolve(t *testing.T) {
 // maps names a model in the vendored registry, so a registry update that
 // renames one is caught.
 func TestFirmwareModelsInRegistry(t *testing.T) {
-	reg, err := loadRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	reg := loadRegistry()
 	for fw, m := range firmwareModels {
 		if _, ok := reg.models[m.registry]; !ok {
 			t.Errorf("firmware model %q maps to %q, which the registry lacks", fw, m.registry)

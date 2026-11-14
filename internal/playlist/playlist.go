@@ -10,7 +10,11 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
+
+// DefaultDuration is how long an item shows when no time is given.
+const DefaultDuration = 15 * time.Minute
 
 // MinDuration is the shortest time an item may show. A device spends
 // seconds on each wake, and the cursor treats an item as over WakeSlack
@@ -101,16 +105,39 @@ func Pressed(updateSource string) bool {
 	}
 }
 
+// Errors that say why a request is refused, which the admin API turns into
+// HTTP statuses. Each is wrapped with detail that is safe to show.
+var (
+	// ErrNoItem means no playlist item has the ID.
+	ErrNoItem = errkind.New(errkind.ErrNotFound, "no such playlist item")
+)
+
 // AddItem appends an item showing one instance on the whole screen to the
 // named playlist, creating the playlist if it does not exist, and links
-// the device to it when deviceID is not 0. duration is 0, to show the item
-// until a button press, or at least MinDuration.
-func AddItem(ctx context.Context, client *db.Client, name string, deviceID, instanceID int64, duration time.Duration) (db.PlaylistItem, error) {
+// the device to it when deviceID is not 0. An empty name is the device's
+// friendly ID, so the device needs to be given then. duration is 0, to show
+// the item until a button press, or at least MinDuration.
+func AddItem(ctx context.Context, client *db.Client, name string, deviceID, instanceID int64, duration time.Duration) (db.PlaylistItem, string, error) {
 	if duration != 0 && duration < MinDuration {
-		return db.PlaylistItem{}, fmt.Errorf("duration %v is under %v", duration, MinDuration)
+		return db.PlaylistItem{}, "", fmt.Errorf("%w: duration %v is under %v", errkind.ErrInvalid, duration, MinDuration)
+	}
+	if name == "" && deviceID == 0 {
+		return db.PlaylistItem{}, "", fmt.Errorf("%w: give a playlist name or a device", errkind.ErrInvalid)
 	}
 	var item db.PlaylistItem
 	err := client.InTx(ctx, func(q *db.Queries) error {
+		if _, err := q.GetInstance(ctx, instanceID); errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: no such instance %d", errkind.ErrNotFound, instanceID)
+		} else if err != nil {
+			return fmt.Errorf("get instance: %w", err)
+		}
+		if name == "" {
+			dev, err := q.GetDevice(ctx, deviceID)
+			if err != nil {
+				return fmt.Errorf("get device: %w", err)
+			}
+			name = dev.FriendlyID
+		}
 		pl, err := q.GetPlaylistByName(ctx, name)
 		if errors.Is(err, sql.ErrNoRows) {
 			pl, err = q.CreatePlaylist(ctx, name)
@@ -141,5 +168,18 @@ func AddItem(ctx context.Context, client *db.Client, name string, deviceID, inst
 		}
 		return nil
 	})
-	return item, err
+	return item, name, err
+}
+
+// DeleteItem removes a playlist item, with its slots. It returns an error
+// wrapping ErrNoItem if there is no such item.
+func DeleteItem(ctx context.Context, client *db.Client, id int64) error {
+	n, err := client.Write.DeletePlaylistItem(ctx, id)
+	if err != nil {
+		return fmt.Errorf("remove item: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %d", ErrNoItem, id)
+	}
+	return nil
 }

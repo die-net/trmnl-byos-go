@@ -17,6 +17,12 @@ type Device struct {
 	ScreenOverrideUntil int64  `json:"screen_override_until"`
 }
 
+type DeviceCursor struct {
+	DeviceID      int64 `json:"device_id"`
+	ItemID        int64 `json:"item_id"`
+	ItemStartedAt int64 `json:"item_started_at"`
+}
+
 type DeviceLog struct {
 	ID         int64  `json:"id"`
 	DeviceID   int64  `json:"device_id"`
@@ -38,8 +44,6 @@ type DeviceState struct {
 	LastImage           string   `json:"last_image"`
 	Width               *int64   `json:"width"`
 	Height              *int64   `json:"height"`
-	ItemID              *int64   `json:"item_id"`
-	ItemStartedAt       *int64   `json:"item_started_at"`
 }
 
 type Playlist struct {
@@ -88,6 +92,7 @@ type Recipe struct {
 type Render struct {
 	ID          int64  `json:"id"`
 	InstanceID  int64  `json:"instance_id"`
+	DeviceID    int64  `json:"device_id"`
 	Width       int64  `json:"width"`
 	Height      int64  `json:"height"`
 	Palette     string `json:"palette"`
@@ -96,6 +101,7 @@ type Render struct {
 	DurationMs  int64  `json:"duration_ms"`
 	Error       string `json:"error"`
 	Log         string `json:"log"`
+	Failures    int64  `json:"failures"`
 }
 
 type RenderImage struct {

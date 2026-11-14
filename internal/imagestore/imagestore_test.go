@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -248,5 +249,51 @@ func assertNoTemp(t *testing.T, dir string) {
 		if strings.HasPrefix(e.Name(), tmpPrefix) {
 			t.Errorf("temporary file %s left behind", e.Name())
 		}
+	}
+}
+
+// TestCommitSyncsDirectory checks what a test can about the directory sync
+// after the rename: Commit works, a new image's shard directory is synced
+// too, and an error from opening the directory is returned and leaves no
+// file under the name, so a retry syncs again. A power loss cannot be
+// tested portably, so that the sync reaches the disk is not.
+func TestCommitSyncsDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any directory, so the open cannot fail")
+	}
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(strings.NewReader("ok")); err != nil {
+		t.Fatalf("Put = %v", err)
+	}
+	// A shard directory that can be written and searched, but not opened to
+	// read, so the rename works and the open for the sync fails.
+	const data = "unsyncable"
+	name := nameOf([]byte(data))
+	shard := filepath.Dir(s.path(name))
+	// It is left empty, so the temporary directory can still be removed.
+	if err := os.Mkdir(shard, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Put(strings.NewReader(data)); err == nil {
+		t.Fatal("Put succeeded although the directory could not be synced")
+	}
+	if _, err := os.Stat(s.path(name)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("image kept after a failed sync: %v", err)
+	}
+	assertNoTemp(t, dir)
+}
+
+// TestSyncDir checks that syncDir works on a directory and returns the error
+// for one that cannot be opened.
+func TestSyncDir(t *testing.T) {
+	if err := syncDir(t.TempDir()); err != nil {
+		t.Fatalf("syncDir on a directory = %v", err)
+	}
+	if err := syncDir(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("syncDir on a missing directory succeeded")
 	}
 }
