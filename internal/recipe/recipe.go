@@ -494,9 +494,13 @@ type trmnlpConfig struct {
 }
 
 // variables is .trmnlp.yml's variables, which trmnlp merges over a
-// template's data. It has the server's trmnl values.
+// template's data. It has the server's trmnl values, and the instance's
+// pushed data at the top level next to them.
 type variables struct {
 	Trmnl *trmnlVariables `yaml:"trmnl,omitempty"`
+	// Data is what a script pushed to the instance. Its shape is the
+	// script's, so it is a map. It never has a trmnl key.
+	Data map[string]any `yaml:",inline"`
 }
 
 // trmnlVariables is the part of the trmnl variables the server sets.
@@ -555,8 +559,8 @@ func (p Project) WithDevice(d Device) Project {
 }
 
 // clone returns a copy of v, which may be nil, that a caller can set fields
-// of without changing v. The copy is shallow: a caller replaces Trmnl, and
-// does not change what it points to.
+// of without changing v. The copy is shallow: a caller replaces Trmnl and
+// Data, and does not change what they point to.
 func (v *variables) clone() *variables {
 	if v == nil {
 		return &variables{}

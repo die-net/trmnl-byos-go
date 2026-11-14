@@ -25,7 +25,8 @@ import (
 
 // fakeTrmnlp stands in for trmnlp behind the real shim. Each "PNG" names
 // its layout, size, palette and first field value, and the friendly_id the
-// project's trmnl.device has, if it has one. It fails while
+// project's trmnl.device has, if it has one, and the headline pushed to the
+// instance, if there is one. It fails while
 // FAIL_FILE exists, and fails if a secret reached the project's files.
 const fakeTrmnlp = `#!/bin/sh
 while [ $# -gt 0 ]; do
@@ -41,9 +42,10 @@ test -f "$LEAK_FILE" && { echo "fetching https://api.example/?key=$FIELD_0"; ech
 test -f "$FAIL_FILE" && { echo "starting"; echo "data source said 401" >&2; exit 3; }
 grep -rq hunter2 "$dir" && { echo "a secret is in the project" >&2; exit 4; }
 dev=$(sed -n 's/^ *friendly_id: //p' "$dir/.trmnlp.yml")
+hl=$(sed -n 's/^ *headline: //p' "$dir/.trmnlp.yml")
 mkdir -p "$dir/_build"
 for v in full half_horizontal half_vertical quadrant; do
-  printf '%s%s %sx%s %s %s' "$v" "${dev:+@$dev}" "$w" "$h" "$p" "$FIELD_0" > "$dir/_build/$v.png"
+  printf '%s%s %sx%s %s %s' "$v" "${dev:+@$dev}" "$w" "$h" "$p" "$FIELD_0${hl:+ hl=$hl}" > "$dir/_build/$v.png"
 done
 `
 
@@ -379,8 +381,11 @@ func TestDue(t *testing.T) {
 		r      *db.Render
 		wanted []time.Duration // Offsets from now.
 		woken  bool
-		want   bool
-		by     time.Duration // Offset of the expected sort key, if want and it is wanted.
+		// data is the updated_at of the instance's data, and built the
+		// data_at its last render recorded. Both are 0 for none.
+		data, built int64
+		want        bool
+		by          time.Duration // Offset of the expected sort key, if want and it is wanted.
 	}{
 		{name: "never rendered", r: nil, woken: true, want: true},
 		{name: "never rendered and wanted", r: nil, wanted: []time.Duration{time.Hour}, woken: true, want: true, by: time.Hour},
@@ -404,6 +409,14 @@ func TestDue(t *testing.T) {
 		{name: "not yet twice the interval, nobody wants it", r: good(2*time.Hour - time.Second), woken: true},
 		{name: "no device has woken, interval not passed", r: good(59 * time.Minute)},
 		{name: "no device has woken, interval passed", r: good(time.Hour), want: true},
+		{name: "data newer than the last build read", r: good(10 * time.Minute), data: 6, built: 5, woken: true, want: true},
+		{name: "data and nothing read", r: good(10 * time.Minute), data: 6, woken: true, want: true},
+		{name: "data newer, and wanted", r: good(10 * time.Minute), data: 6, built: 5, wanted: []time.Duration{time.Hour}, woken: true, want: true, by: time.Hour},
+		{name: "build read the latest data", r: good(10 * time.Minute), data: 5, built: 5, woken: true},
+		{name: "build read newer data than it has", r: good(10 * time.Minute), data: 4, built: 5, woken: true},
+		{name: "data newer after a failed build, inside RetryAfter", r: failed(db.RenderRetryAfter - time.Second), data: 6, built: 5, woken: true},
+		{name: "data newer after a failed build, past RetryAfter", r: failed(db.RenderRetryAfter), data: 6, built: 5, woken: true, want: true},
+		{name: "data and never rendered", r: nil, data: 6, woken: true, want: true},
 		{name: "a device has woken but wants nothing", r: good(time.Hour), woken: true},
 		{
 			name: "a long build lengthens the lead", r: &db.Render{RenderedAt: now.Add(-59 * time.Minute).Unix(), DurationMs: 120_000},
@@ -415,7 +428,12 @@ func TestDue(t *testing.T) {
 		for _, d := range tc.wanted {
 			wanted = append(wanted, now.Add(d))
 		}
-		got, by := due(tgt, tc.r, wanted, tc.woken, now)
+		if tc.r != nil {
+			r := *tc.r
+			r.DataAt = tc.built
+			tc.r = &r
+		}
+		got, by := due(tgt, tc.r, wanted, tc.woken, tc.data, now)
 		if got != tc.want {
 			t.Errorf("%s: due is %v, want %v", tc.name, got, tc.want)
 		}
@@ -597,6 +615,115 @@ func TestDueTargetsOrder(t *testing.T) {
 	if want := []int64{other.ID, 1}; !slices.Equal(instances, want) {
 		t.Errorf("due %v, want %v", instances, want)
 	}
+}
+
+// push stores data for the harness's instance as a push at the harness's
+// time would.
+func (h *harness) push(t *testing.T, data string) {
+	t.Helper()
+	_, err := recipe.PushData(t.Context(), h.db, recipe.PushParams{
+		InstanceID: 1, Add: mustData(t, data),
+	}, h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustData(t *testing.T, s string) recipe.Data {
+	t.Helper()
+	d, err := recipe.ParseData(strings.NewReader(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// TestRenderOnPush checks that pushed data reaches the build, and makes
+// the target due at the next check although its interval has not passed. The
+// clock never moves between a push and the build that follows, so a build
+// that read the latest data must not be due again even in the same second.
+func TestRenderOnPush(t *testing.T) {
+	h := newHarness(t)
+	h.renderDue(t, 1)
+	if got := h.screenBody(t, 1, 1); strings.Contains(got, "hl=") {
+		t.Fatalf("image before a push: %q", got)
+	}
+	if r := h.render(t); r.DataAt != 0 {
+		t.Fatalf("data_at %d before a push", r.DataAt)
+	}
+
+	h.now = h.now.Add(time.Minute)
+	h.renderDue(t, 1) // Nothing is due yet.
+	h.push(t, `{"headline": "{{ env.FIELD_0 }}"}`)
+	h.renderDue(t, 2)
+	if got := h.screenBody(t, 1, 1); !strings.HasSuffix(got, ` hl='{{ env.FIELD_0 }}'`) {
+		t.Errorf("image after a push: %q", got)
+	}
+	if r := h.render(t); r.DataAt != h.now.Unix() {
+		t.Errorf("data_at %d, want %d", r.DataAt, h.now.Unix())
+	}
+	// The build read the latest data, so it is not due again, with the clock
+	// frozen or moving.
+	for range 3 {
+		h.renderDue(t, 2)
+	}
+	h.now = h.now.Add(time.Minute)
+	h.renderDue(t, 2)
+}
+
+// TestRenderOnPushSameSecond checks that a push in the same second as a
+// build that already read the data is newer, and is built, and that the
+// build after it is not repeated.
+func TestRenderOnPushSameSecond(t *testing.T) {
+	h := newHarness(t)
+	h.renderDue(t, 1)
+	h.now = h.now.Add(time.Minute)
+	h.push(t, `{"headline": "one"}`)
+	h.renderDue(t, 2)
+	// Another push in the same second, after that build read the data.
+	h.push(t, `{"headline": "two"}`)
+	h.renderDue(t, 3)
+	if got := h.screenBody(t, 1, 1); !strings.HasSuffix(got, " hl=two") {
+		t.Errorf("image after the second push: %q", got)
+	}
+	h.renderDue(t, 3)
+	// The stored time rose, so the second push is not the first's second.
+	row, err := h.db.Read.GetInstanceData(t.Context(), 1)
+	if err != nil || row.UpdatedAt != h.now.Unix()+1 {
+		t.Errorf("updated_at %d, %v, want %d", row.UpdatedAt, err, h.now.Unix()+1)
+	}
+	if r := h.render(t); r.DataAt != row.UpdatedAt {
+		t.Errorf("data_at %d, want %d", r.DataAt, row.UpdatedAt)
+	}
+}
+
+// TestRenderOnPushAfterFailure checks that a failed build still waits
+// RetryAfter when data is pushed after it.
+func TestRenderOnPushAfterFailure(t *testing.T) {
+	h := newHarness(t)
+	h.renderDue(t, 1)
+	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.now = h.now.Add(time.Minute)
+	h.push(t, `{"headline": "one"}`)
+	h.renderDue(t, 2) // The build fails.
+
+	// Data that arrives after the failure waits for RetryAfter.
+	h.now = h.now.Add(time.Minute)
+	h.push(t, `{"headline": "two"}`)
+	h.renderDue(t, 2)
+	h.now = h.now.Add(db.RenderRetryAfter - time.Minute - time.Second)
+	h.renderDue(t, 2)
+	if err := os.Remove(h.failFile); err != nil {
+		t.Fatal(err)
+	}
+	h.now = h.now.Add(time.Second)
+	h.renderDue(t, 3)
+	if got := h.screenBody(t, 1, 1); !strings.HasSuffix(got, " hl=two") {
+		t.Errorf("image after the retry: %q", got)
+	}
+	h.renderDue(t, 3)
 }
 
 // TestRenderMissingRecipeDir checks that a target whose recipe directory is

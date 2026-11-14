@@ -176,7 +176,7 @@ const preColumnsState = `CREATE TABLE device_state (
   last_image TEXT NOT NULL DEFAULT ''
 )`
 
-// The render table as it was before failures. The tables it refers to
+// The render table as it was before data_at. The tables it refers to
 // are not made, so the foreign keys are off to insert a row.
 const preColumnsRender = `CREATE TABLE render (
   id INTEGER PRIMARY KEY,
@@ -271,13 +271,14 @@ func TestMigrateAddedColumns(t *testing.T) {
 			t.Fatalf("open %d: device = %+v, %v", i, dev, err)
 		}
 		_, curErr := client.Read.GetDeviceCursor(ctx, dev.ID)
-		// The render keeps its row, and its failures column starts at 0.
+		// The render keeps its row, and its data_at is 0 until a build sets it,
+		// which the first Open's save does. Its failures column starts at 0.
 		renders, qerr := client.Read.ListRenderRows(ctx)
-		if qerr != nil || len(renders) != 1 || renders[0].Failures != 0 {
+		if qerr != nil || len(renders) != 1 || renders[0].DataAt != int64(i)*7 || renders[0].Failures != 0 {
 			t.Fatalf("open %d: renders %+v, %v", i, renders, qerr)
 		}
 		if _, serr := client.Write.SaveRenderSuccess(ctx, SaveRenderSuccessParams{
-			InstanceID: 1, Width: 800, Height: 480, Palette: "bw", RenderedAt: 6, AttemptedAt: 6,
+			InstanceID: 1, Width: 800, Height: 480, Palette: "bw", RenderedAt: 6, AttemptedAt: 6, DataAt: 7,
 		}); serr != nil {
 			t.Fatalf("open %d: save render: %v", i, serr)
 		}
@@ -524,7 +525,7 @@ func TestMigrateRefusesUnadoptable(t *testing.T) {
 // made before versions were numbered, so an edit, even one that matches an
 // edit to schema.sql, never reaches a database that is already stamped.
 func TestBaselineFrozen(t *testing.T) {
-	const want = "37006d9cc10bf5ed18cd72faaf3639ad54c0e9d80941c0b3a57805840e102dd9"
+	const want = "4b05a773d214902cd943fc158411c89d1bffbd51f96a23c5fa8d00037a7c4d00"
 	sum := sha256.Sum256([]byte(baselineSchema))
 	if got := hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("baselineSchema hash = %s, want %s. The baseline must never change. Add a migration step for the schema change instead.", got, want)

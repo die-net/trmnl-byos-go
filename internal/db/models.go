@@ -54,6 +54,12 @@ type DeviceState struct {
 	Height              *int64   `json:"height"`
 }
 
+type InstanceDatum struct {
+	InstanceID int64  `json:"instance_id"`
+	Data       string `json:"data"`
+	UpdatedAt  int64  `json:"updated_at"`
+}
+
 type Playlist struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
@@ -109,6 +115,7 @@ type Render struct {
 	DurationMs  int64  `json:"duration_ms"`
 	Error       string `json:"error"`
 	Log         string `json:"log"`
+	DataAt      int64  `json:"data_at"`
 	Failures    int64  `json:"failures"`
 }
 

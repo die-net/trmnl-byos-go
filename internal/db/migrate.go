@@ -86,6 +86,7 @@ var addedColumns = []struct {
 	{"device_state", "height", `ALTER TABLE device_state ADD COLUMN height INTEGER`},
 	{"device_state", "item_id", `ALTER TABLE device_state ADD COLUMN item_id INTEGER`},
 	{"device_state", "item_started_at", `ALTER TABLE device_state ADD COLUMN item_started_at INTEGER`},
+	{"render", "data_at", `ALTER TABLE render ADD COLUMN data_at INTEGER NOT NULL DEFAULT 0`},
 	{"render", "failures", `ALTER TABLE render ADD COLUMN failures INTEGER NOT NULL DEFAULT 0`},
 }
 

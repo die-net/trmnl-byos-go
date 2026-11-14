@@ -734,6 +734,7 @@ func TestFailStatus(t *testing.T) {
 		{"recipe missing", fmt.Errorf("%w: 1", recipe.ErrNoRecipe), http.StatusNotFound},
 		{"instance missing", fmt.Errorf("%w: 1", recipe.ErrNoInstance), http.StatusNotFound},
 		{"instance in use", fmt.Errorf("%w: 1", recipe.ErrInstanceInUse), http.StatusConflict},
+		{"instance data", fmt.Errorf("%w of 5 bytes", recipe.ErrDataTooBig), http.StatusRequestEntityTooLarge},
 		{"no secrets key", secrets.ErrNoKey, http.StatusBadRequest},
 		{"no kind", errors.New("disk on fire"), http.StatusInternalServerError},
 	} {

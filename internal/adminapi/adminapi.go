@@ -48,6 +48,8 @@ type Server struct {
 	db  *db.Client
 	cfg Config
 	now func() time.Time
+	// pushes rate limits pushes of data to instances.
+	pushes pushLimiters
 }
 
 // New returns a Server that keeps state in client.
@@ -55,9 +57,10 @@ func New(client *db.Client, cfg Config) *Server {
 	return &Server{db: client, cfg: cfg, now: time.Now}
 }
 
-// Register adds the /api/v1 routes to mux. Each one needs a bearer token,
-// including a /api/v1 path that matches no route, so the API never says what
-// exists to a caller without one.
+// Register adds the /api/v1 routes to mux, and the /api/custom_plugins
+// routes that scripts push data to, which keep TRMNL's path. Each one needs
+// a bearer token, including a /api/v1 path that matches no route, so the API
+// never says what exists to a caller without one.
 func (s *Server) Register(mux *http.ServeMux) {
 	routes := []struct {
 		pattern string
@@ -78,6 +81,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET /api/v1/playlists", handle(http.StatusOK, s.listPlaylists)},
 		{"POST /api/v1/playlists/items", handle(http.StatusCreated, s.addPlaylistItem)},
 		{"DELETE /api/v1/playlists/items/{id}", handleNoContent(s.deletePlaylistItem)},
+		{"GET /api/custom_plugins/{id}", handle(http.StatusOK, s.getData)},
+		{"POST /api/custom_plugins/{id}", handle(http.StatusOK, s.pushData)},
 		{"GET /api/v1/renders", handle(http.StatusOK, s.listRenders)},
 		{"GET /api/v1/renders/{id}", handle(http.StatusOK, s.getRender)},
 		{"/api/v1/", func(w http.ResponseWriter, _ *http.Request) {

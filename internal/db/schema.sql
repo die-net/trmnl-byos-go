@@ -155,6 +155,18 @@ CREATE TABLE IF NOT EXISTS playlist_slot (
 
 CREATE INDEX IF NOT EXISTS playlist_slot_instance ON playlist_slot (instance_id);
 
+-- instance_data is the JSON object a script pushed to an instance, after
+-- merging each push into the last. The renderer sees it as the top level of
+-- .trmnlp.yml's variables. updated_at is when the latest push changed it,
+-- in Unix seconds, and always rises with a push: a push in the same second
+-- as the last one is stored one second later, so a build that recorded
+-- the value it read can tell a newer push from the one it read.
+CREATE TABLE IF NOT EXISTS instance_data (
+  instance_id INTEGER PRIMARY KEY REFERENCES plugin_instance (id) ON DELETE CASCADE,
+  data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 -- render is the latest build of an instance at one size and palette, the
 -- render target. device_id is 0 for a render every device shares, and a
 -- device's ID for a recipe that reads trmnl.device, which is built once per
@@ -179,6 +191,10 @@ CREATE TABLE IF NOT EXISTS render (
   error TEXT NOT NULL DEFAULT '',
   -- log is the latest build's log, cut to a bound.
   log TEXT NOT NULL DEFAULT '',
+  -- data_at is the updated_at of the instance_data the latest build read,
+  -- 0 if it read none. The instance's data is newer than the render when
+  -- its updated_at is greater.
+  data_at INTEGER NOT NULL DEFAULT 0,
   -- failures is how many builds in a row have failed, 0 after a success.
   -- The scheduler waits longer to retry the more there are.
   failures INTEGER NOT NULL DEFAULT 0,
