@@ -36,6 +36,73 @@ type DeviceState struct {
 	UpdateSource        *string  `json:"update_source"`
 	LastRefreshRateSent int64    `json:"last_refresh_rate_sent"`
 	LastImage           string   `json:"last_image"`
+	Width               *int64   `json:"width"`
+	Height              *int64   `json:"height"`
+	ItemID              *int64   `json:"item_id"`
+	ItemStartedAt       *int64   `json:"item_started_at"`
+}
+
+type Playlist struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+type PlaylistDevice struct {
+	DeviceID   int64 `json:"device_id"`
+	PlaylistID int64 `json:"playlist_id"`
+	Priority   int64 `json:"priority"`
+}
+
+type PlaylistItem struct {
+	ID         int64  `json:"id"`
+	PlaylistID int64  `json:"playlist_id"`
+	Position   int64  `json:"position"`
+	Layout     string `json:"layout"`
+	Duration   int64  `json:"duration"`
+}
+
+type PlaylistSlot struct {
+	ItemID     int64 `json:"item_id"`
+	Slot       int64 `json:"slot"`
+	InstanceID int64 `json:"instance_id"`
+}
+
+type PluginInstance struct {
+	ID           int64  `json:"id"`
+	RecipeID     int64  `json:"recipe_id"`
+	Name         string `json:"name"`
+	FieldValues  string `json:"field_values"`
+	SecretValues []byte `json:"secret_values"`
+	Palette      string `json:"palette"`
+	CreatedAt    int64  `json:"created_at"`
+}
+
+type Recipe struct {
+	ID              int64  `json:"id"`
+	Name            string `json:"name"`
+	Source          string `json:"source"`
+	RefreshInterval int64  `json:"refresh_interval"`
+	InstalledAt     int64  `json:"installed_at"`
+}
+
+type Render struct {
+	ID          int64  `json:"id"`
+	InstanceID  int64  `json:"instance_id"`
+	Width       int64  `json:"width"`
+	Height      int64  `json:"height"`
+	Palette     string `json:"palette"`
+	RenderedAt  int64  `json:"rendered_at"`
+	AttemptedAt int64  `json:"attempted_at"`
+	DurationMs  int64  `json:"duration_ms"`
+	Error       string `json:"error"`
+	Log         string `json:"log"`
+}
+
+type RenderImage struct {
+	RenderID int64  `json:"render_id"`
+	Layout   string `json:"layout"`
+	Image    string `json:"image"`
+	Bytes    int64  `json:"bytes"`
 }
 
 type Setting struct {

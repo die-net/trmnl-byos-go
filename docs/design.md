@@ -64,7 +64,7 @@ flowchart LR
 Device requests never wait on a render: the scheduler renders ahead, the shim runs one `trmnlp build` per job, and the PNG lands in the store by content hash.
 
 - **Server**: device API, scheduler, store, admin UI, JSON API, MCP server and webhook ingest in one binary.
-- **Renderer**: the `trmnl/trmnlp` image plus a small HTTP shim. It sees only the `projects` volume, never the database or secrets. It sits on an internal network with no route out; its only way to the internet is the server's filtering proxy (see Security and privacy).
+- **Renderer**: the `trmnl/trmnlp` image plus `trmnl-render`, a small Go shim (`deploy/renderer/Dockerfile`, `internal/render`). The server POSTs a build job as a multipart stream: a small JSON part (size, palette, secret values) and the recipe project as a tar. The shim extracts the tar into a fresh directory, confined with `os.Root`, runs `trmnlp build` as an unprivileged user with its temporary and cache directories inside that directory, and streams back a tar of the build log and the four PNGs. The renderer holds nothing between builds and shares no volume with the server. It sits on an internal network with no route out; its only way to the internet is the server's filtering proxy (see Security and privacy).
 - **Asset cache**: the renderer's proxy caches the framework's CSS, JavaScript, fonts and images, Highcharts, and Google Fonts on the server's disk, so each is fetched from the internet once, and recipes pinned to old framework versions keep rendering.
 
 ## Device protocol and profiles
@@ -134,9 +134,11 @@ Every screen a device might ask for is rendered before it wakes, and an unchange
 
 **Renders follow data, not wakes.** A plugin instance re-renders only when its `refresh_interval` comes due or its data changes. Wakes in between get the same filename. This matters because 8 of the top 25 recipes print the time or use randomness, so their output differs on every render.
 
-**Render cache key.** (plugin instance, layout, device profile) by default. (plugin instance, layout, device) when the recipe references `trmnl.device.friendly_id` or battery fields. Two OGs showing the same weather share one render.
+**Render cache key.** (plugin instance, width, height, palette), and one build makes all four layouts. Two OGs showing the same weather share one render. A recipe that references `trmnl.device.friendly_id` or battery fields will need (plugin instance, device) instead; that is not built yet.
 
-**Staleness.** Each instance records its last successful fetch. Past a configurable age the item is skipped in rotation, or shows a stale marker, instead of silently showing old data.
+**What is built.** The scheduler (`internal/scheduler`) checks every 30 seconds. For each instance in a playlist linked to a device, at the size and palette that device needs, it builds when there is no render, when the recipe's `refresh_interval` has passed since the last good one, or 5 minutes after a failed one. Builds run one at a time. A failed build records its error and log and keeps the last good images. Pre-rendering ahead of each wake (rules 4 and 5) is not built yet: a device gets the newest render when it wakes.
+
+**Staleness.** A device shows an item's last good render until it is older than two refresh intervals plus an hour. After that it shows "Out of date" with the render's age and its last error, and wakes again in 5 minutes. Before an instance's first render it shows "Rendering", and wakes in a minute, or "Could not render" with the error. A configurable age, and skipping the item instead, are later work.
 
 ## Playlists, mashups and input
 
@@ -149,7 +151,9 @@ Rotation is time-based and tracked per device: each item shows for its own durat
 - Each item has a duration, or none. An item with no duration stays until a button or touch-bar press, with a long `refresh_rate`.
 - Items can carry their own schedule (days, time window, date range) and a hidden flag.
 
-**Cursor.** Stored per device as (current item, started at). When a wake finds the duration elapsed, the cursor moves to the next eligible item and the new start time is the old start plus the duration, so timing does not drift. A changed playlist sets a pending flag that resets the cursor on the next wake.
+**Cursor.** Stored per device as (current item, started at), in `device_state`. When a wake finds the duration elapsed, the cursor moves to the next item and the new start time is the old start plus the duration, so timing does not drift. A timer wake up to 30 seconds early counts as the end of the item, since deep-sleep clocks drift, so items last at least a minute. After a long sleep, whole turns through the playlist are skipped at once. A cursor on an item that was deleted, or is no longer in the device's playlist, starts the playlist over. `refresh_rate` is the device's usual rate, or the time left in the item if that is shorter.
+
+**What is built.** Minimal playlists (`internal/playlist`): a device shows its linked playlist with the lowest priority, items are full-layout instances with a duration or none, and a press (`button`, `EXT0` or `EXT1`) moves to the next item. Schedules, mashups, hidden items, the sleep window, `special_function`, and per-device button commands are not built yet. Playlists are edited with `trmnl-byos playlist`.
 
 **Input.** The headers say what woke the device; we never guess from timing.
 
@@ -187,9 +191,9 @@ The plugin format is the TRMNL recipe, unmodified, and the renderer is trmnlp dr
 
 **Render path.**
 
-1. The server keeps a trmnlp project directory per plugin instance (per device when the recipe reads device fields): the recipe's `src/`, plus a `.trmnlp.yml` with custom field values, time zone, locale and the device's `trmnl` variables as overrides.
+1. A recipe is installed into `recipes/<id>/` under the data directory, from a directory or zip that holds `settings.yml` at its top, in `src/`, or inside one top-level directory. Hidden files are skipped, names that would leave the directory are refused, and the server reads only `name` and `refresh_interval` from `settings.yml`; trmnlp fills in field defaults itself. For each build the server streams a project: the recipe's files under `src/`, and a `.trmnlp.yml` with the time zone (from `TZ`), the asset overrides, and each custom field set to `{{ env.FIELD_n }}`. The values travel in the build job. trmnlp runs every `custom_fields` value through Liquid, so a value written into the file would have any `{{` in it run as Liquid. Locale and the device's `trmnl` variables are not passed yet.
 2. For webhook recipes, the server stores pushed data, applies the merge mode (`replace`, `deep_merge`, `stream`) and writes the result into the project's `.trmnlp.yml` under `variables`, trmnlp's documented override for user data. trmnlp's own webhook store is a cache file keyed by a hash of the project path, which is an internal detail to stay away from. Tested with Top Hacker News Story: a `stories` list under `variables` reached the templates as a top-level merge variable, next to the usual `trmnl` variables.
-3. When a render is due, the server calls the shim, which runs `trmnlp build --png --width W --height H --palette P` in that directory and returns the PNGs. One build polls once and renders all four layouts; there is no option for one layout.
+3. When a render is due, the server streams the project to the shim, which runs `trmnlp build --png --width W --height H --palette P` on it and streams the PNGs back. One build polls once and renders all four layouts; there is no option for one layout. A build runs in a process group of its own, and the whole group is killed when it ends or times out, since trmnlp starts Firefox and geckodriver. The container runs with an init process, which reaps what Firefox leaves behind.
 4. The server stores the PNG under its content hash and updates each affected device's ready screens.
 
 **Settings.** Forms are generated from `custom_fields` (`select` incl. multi-select, `string`, `number`, `lat_lon`; `author_bio` is metadata only). Time zone and locale are server-wide with per-device overrides; instances carry name, dark mode, icon and an optional framework version pin.
@@ -219,19 +223,20 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 | Table | Key fields |
 | --- | --- |
 | `device` | mac, api_key_hash, friendly_id, name, fw_model, fw_version, profile_override, palette_override, time_zone, locale, button_command, special_function, sleep_start, sleep_end, updates_enabled, fw_pin, blocked, screen_override, screen_override_until |
-| `device_state` | device_id, last_seen, last_refresh_rate_sent, last_image, battery_v, battery_pct, rssi, wake_time_ms, update_source, playlist_id, item_id, item_started_at, pending_reset |
+| `device_state` | device_id, last_seen, last_refresh_rate_sent, last_image, battery_v, battery_pct, rssi, wake_time_ms, update_source, width, height, item_id, item_started_at |
 | `device_log` | device_id, received_at, device_at, level, message, detail (the entry as sent, with wake reason, heap and Wi-Fi state); the newest 1000 per device are kept |
 | `sensor_reading` | device_id, at, kind, value, unit (latest kept per kind, plus history) |
 | `model` / `palette` | Vendored registry rows plus the framework CSS parameters |
-| `recipe` | id, source (gallery, catalog, git, local), source_ref, source_hash, settings (parsed) |
+| `recipe` | id, name, source (the path installed from), refresh_interval, installed_at; source_ref and source_hash come with updates from a source |
 | `outbound_host` | recipe_id, host, first_seen, last_seen, refused (from the renderer proxy's log) |
-| `plugin_instance` | recipe_id, name, field_values, secret_values (encrypted), framework_pin, palette (empty for the device's own), dark_mode, refresh_override, align, stale_after |
+| `plugin_instance` | recipe_id, name, field_values, secret_values (sealed), palette (empty for the device's own); later framework_pin, dark_mode, refresh_override, align, stale_after |
 | `instance_data` | instance_id, data (webhook payload), updated_at, last_error, last_success_at |
-| `playlist` | name, schedule (weekdays, from, until), priority |
-| `playlist_device` | playlist_id, device_id |
-| `playlist_item` | playlist_id, position, kind (single or mashup), layout, duration_s, schedule, hidden |
+| `playlist` | name; later a schedule (weekdays, from, until) |
+| `playlist_device` | playlist_id, device_id, priority |
+| `playlist_item` | playlist_id, position, layout (full, or a mashup's), duration; later schedule, hidden |
 | `playlist_slot` | item_id, slot, instance_id |
-| `render` | key (instance, layout, profile or device), png_hash, png_bytes, rendered_at, data_hash, duration_ms, error |
+| `render` | instance_id, width, height, palette, rendered_at (last good build), attempted_at, duration_ms, error, log (latest build) |
+| `render_image` | render_id, layout, image, bytes |
 | `device_screen` | device_id, role (current, next, history n), png_hash |
 | `firmware` | fw_model, version, sha256, chip, idf_version, source, uploaded_at |
 | `firmware_rollout` | firmware_id, canary_device_id, state |
@@ -239,7 +244,7 @@ One SQLite file (WAL mode) holds all state; rendered PNGs and recipe sources liv
 
 Migrations are embedded in the binary and run at startup. A column added after its table first shipped is listed in `addedColumns` in `internal/db/client.go`, with a constant ALTER TABLE statement that runs when the column is missing.
 
-**Image store.** A PNG is stored as `images/<first 2 hex digits>/<next 14>.png`. Storing bytes that already exist never rewrites the file. It refreshes the file's modification time, at most hourly, which keeps snapshot churn low on filesystems such as ZFS. An hourly sweep deletes images that no row names and that were last stored more than 24 hours ago. The rows that name images are `device_state.last_image` now, and `render` and `device_screen` once they exist. The grace period covers an image written before the row naming it commits, and a device that fetches an image a moment after it is told the name.
+**Image store.** A PNG is stored as `images/<first 2 hex digits>/<next 14>.png`. Storing bytes that already exist never rewrites the file. It refreshes the file's modification time, at most hourly, which keeps snapshot churn low on filesystems such as ZFS. An hourly sweep deletes images that no row names and that were last stored more than 24 hours ago. The rows that name images are `device_state.last_image` and `render_image`, and `device_screen` once it exists. The grace period covers an image written before the row naming it commits, and a device that fetches an image a moment after it is told the name.
 
 ## Admin UI, API and MCP
 
@@ -277,8 +282,8 @@ The device API is LAN-only and token-based; the admin side needs a login; and re
 
 - **Admin auth.** One admin password (argon2id hash) with session cookies, or trust an identity header from a configured reverse proxy. API and MCP use bearer tokens created in the UI.
 - **Device auth.** Per-device `api_key` from setup, sent as `Access-Token`. Only its SHA-256 is stored, and the device is looked up by that hash, so neither a copy of the database nor request timing gives away a key. The key is 128 random bits, so a fast hash is enough. `ID` is optional for clients that leave it out, but must match the device when sent. Device endpoints can listen on a separate port bound to the LAN.
-- **Secrets at rest.** Custom fields marked secret (API keys, passwords) are encrypted in SQLite with a key from the environment; the UI never shows them back.
-- **Secrets at render time.** A secret field never goes into a project directory in the clear. The project's `.trmnlp.yml` sets the field to `{{ env.NAME }}`, which trmnlp expands, and the shim passes the decrypted value as that environment variable to the one build container that needs it.
+- **Secrets at rest.** Custom fields marked secret (API keys, passwords) are sealed together with AES-256-GCM under `TRMNL_SECRET_KEY`, 32 random bytes in base64 from the environment (`internal/secrets`); the UI never shows them back. Recipes do not mark fields secret, so the person adding an instance chooses which are.
+- **Secrets at render time.** No field value goes into a project's files. The project's `.trmnlp.yml` sets each field to `{{ env.FIELD_n }}`, which trmnlp expands, and the value, decrypted if secret, travels in the build job, which the shim passes to that one build as an environment variable. Job variables must be named `FIELD_...`, so a job can never set one the build tools read, such as `LD_PRELOAD` or a proxy setting.
 - **Renderer network.** Recipes may reach any public host but nothing private: not the LAN, the Docker host, other containers, or cloud metadata. Nothing in trmnlp enforces that. Its poller only warns about a private address, and its Firefox fetched images from loopback and the container's own private address in a test. Transforms in four languages can open any connection. So it is enforced by the network:
   - The trmnlp container runs on a Docker `--internal` network, which has no gateway. Nothing inside it reaches the internet or the LAN directly.
   - The server joins that network too and runs an HTTP forward proxy there, with `CONNECT` for HTTPS. The proxy resolves each host itself, refuses any loopback, private, link-local, CGNAT, unique-local or otherwise non-public address, and connects to the address it checked, so a DNS answer that changes between check and connect gets nothing through. It uses the same check as the server's own outbound client.
@@ -288,7 +293,7 @@ The device API is LAN-only and token-based; the admin side needs a login; and re
   - The proxy is built from the standard library and die-net code, not written from scratch:
     - The server is conduit's `internal/proxy.HTTPProxyServer`. Plain-HTTP requests go through `net/http/httputil.ReverseProxy`, which streams bodies and handles hop-by-hop headers; its director turns a cached host's URL to `https://`, and its `Transport` is the caching round tripper below. `ReverseProxy` refuses `CONNECT`, and neither the standard library nor `golang.org/x/net` serves it (`x/net/proxy` and `x/net/http/httpproxy` are client side), so conduit hijacks the connection, dials, answers 200, and copies both ways with `internal/conn.CopyBidirectional`, which half-closes each direction and sets no deadlines so `io.Copy` can splice on Linux.
     - The dialer is conduit's direct dialer (fully qualified lookups, TCP keepalive, one address family when the host has only one) with legwork's `guard` check in its `Control` hook. The check runs on the address each connection is about to use, so neither a redirect nor a DNS answer that changes between lookups gets around it. Recipes poll plain HTTP and other ports, so unlike legwork's client, any port on a public address is allowed.
-    - The cache is plainweb's `internal/cache`. An entry is one file: a JSON line with the request fields that matter and the response's status and headers, then the body. The file is named by the SHA-256 of those request fields, under a subdirectory of its first two hex digits. Entries are written to a temporary file and renamed into place, the modification time is when the entry was last known fresh, and a janitor sweeps by age and total size. Reads and writes stream: a hit's body is the open file, and a miss's body is copied to the client and the cache entry at once, committed only if it was read to the end.
+    - The cache is plainweb's `internal/cache`. An entry is one file: a JSON line with the request fields that matter and the response's status and headers, then the body. The file is named by the SHA-256 of those request fields, under a subdirectory of its first two hex digits. Entries are written to a temporary file and renamed into place. The modification time is when the entry was last known fresh, or for a versioned entry when it was last used, refreshed at most hourly. A janitor sweeps entries unused for 30 days, then the oldest past 2 GB. Reads and writes stream: a hit's body is the open file, and a miss's body is copied to the client and the cache entry at once, committed only if it was read to the end.
   - A test with trmnl-meteoswiss sent every framework asset through the cache and rendered the same image. `plugins.css` for framework 3.4.6 is 19 MB, and Firefox loads it once per layout, so the cache saves about 76 MB of downloads per build. What still goes out uncached: the recipe's own data, trmnlp's framework version list on `raw.githubusercontent.com`, two small `trmnl.com` API calls from the poller, and Firefox's own update and settings checks at Mozilla.
   - There is no per-host allowlist. Some hosts come from data, not markup: Top Hacker News Story shows each story's preview image, fetched from whatever site the story links to, so no install-time review could list them.
 - **Transforms and page JavaScript** run inside the trmnlp container, which has no access to the server's database or secrets volume and gets only its project directories. It is not a sandbox; the network is the boundary that matters.
@@ -300,13 +305,12 @@ Two containers and three volumes; the server alone is small, and the renderer's 
 
 | Component | Contents | Size | Required |
 | --- | --- | --- | --- |
-| Server | Static Go binary, embedded UI and migrations, system-screen fonts | ~20 to 30 MB (estimate) | Yes |
+| Server | Static Go binary on distroless, embedded migrations, system-screen fonts (`deploy/server/Dockerfile`) | 36 MB uncompressed | Yes |
 | Renderer | `trmnl/trmnlp` (Ruby, Firefox ESR, Node, Python, PHP, ImageMagick) + the shim | ~580 MB compressed (Docker Hub, v0.34.1) | Only for recipes |
 
 **Volumes.**
 
 - `data`: SQLite file, rendered PNGs, firmware files. Back up this one.
-- `projects`: trmnlp project directories, shared with the renderer. Rebuildable from `data`.
 - `cache`: the asset cache. Only the server uses it, and deleting it costs only refetching.
 
 **Runtime.** Measured with trmnlp 0.34.1 (arm64) in Colima with 4 CPUs and 4 GB, on an Apple Silicon Mac, so slower hardware will take longer:

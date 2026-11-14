@@ -167,11 +167,26 @@ func TestMigrateAddedColumns(t *testing.T) {
   fw_version TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 )`
-	if _, err := old.ExecContext(ctx, v1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := old.ExecContext(ctx, `INSERT INTO device (mac, api_key_hash, friendly_id, created_at) VALUES ('m', x'00', 'F', 1)`); err != nil {
-		t.Fatal(err)
+	// The device_state table as it first shipped.
+	const stateV1 = `CREATE TABLE device_state (
+  device_id INTEGER PRIMARY KEY REFERENCES device (id) ON DELETE CASCADE,
+  last_seen INTEGER NOT NULL,
+  battery_v REAL,
+  rssi INTEGER,
+  wake_time_ms INTEGER,
+  update_source TEXT,
+  last_refresh_rate_sent INTEGER NOT NULL,
+  last_image TEXT NOT NULL DEFAULT ''
+)`
+	for _, stmt := range []string{
+		v1,
+		stateV1,
+		`INSERT INTO device (mac, api_key_hash, friendly_id, created_at) VALUES ('m', x'00', 'F', 1)`,
+		`INSERT INTO device_state (device_id, last_seen, last_refresh_rate_sent, last_image) VALUES (1, 5, 900, 'img')`,
+	} {
+		if _, err := old.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
@@ -183,11 +198,16 @@ func TestMigrateAddedColumns(t *testing.T) {
 			t.Fatalf("open %d: %v", i, err)
 		}
 		dev, err := client.Read.GetDeviceByFriendlyID(ctx, "F")
+		if err != nil || dev.Mac != "m" || dev.ScreenOverride != "" || dev.ScreenOverrideUntil != 0 {
+			t.Fatalf("open %d: device = %+v, %v", i, dev, err)
+		}
+		cur, err := client.Read.GetDeviceCursor(ctx, dev.ID)
+		refs, rerr := client.Read.ListReferencedImages(ctx)
 		if cerr := client.Close(); err == nil {
 			err = cerr
 		}
-		if err != nil || dev.Mac != "m" || dev.ScreenOverride != "" || dev.ScreenOverrideUntil != 0 {
-			t.Fatalf("open %d: device = %+v, %v", i, dev, err)
+		if err != nil || rerr != nil || cur.ItemID != nil || len(refs) != 1 || refs[0] != "img" {
+			t.Fatalf("open %d: cursor %+v, %v; images %v, %v", i, cur, err, refs, rerr)
 		}
 	}
 }

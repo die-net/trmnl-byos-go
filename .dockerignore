@@ -1,0 +1,5 @@
+.git
+data
+_oneoffs
+docs
+*.db*

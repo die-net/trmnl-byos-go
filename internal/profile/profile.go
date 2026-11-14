@@ -8,6 +8,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 )
 
@@ -209,4 +210,24 @@ func (p Profile) GrayLevels() (int, error) {
 // Fits reports whether an image of size bytes is one the device accepts.
 func (p Profile) Fits(size int64) bool {
 	return p.ImageSizeLimit == 0 || size <= p.ImageSizeLimit
+}
+
+// RenderPalette is the palette a render for the device uses: want, the
+// palette a plugin instance asks for, when the panel takes it, and the
+// panel's default otherwise.
+func (p Profile) RenderPalette(want string) string {
+	if want != "" && slices.Contains(p.Palettes, want) {
+		return want
+	}
+	return p.DefaultPalette
+}
+
+// KnownPalette reports whether id is a palette in TRMNL's registry.
+func KnownPalette(id string) (bool, error) {
+	reg, err := loadRegistry()
+	if err != nil {
+		return false, err
+	}
+	_, ok := reg.palettes[id]
+	return ok, nil
 }

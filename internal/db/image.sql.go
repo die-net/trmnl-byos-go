@@ -10,7 +10,9 @@ import (
 )
 
 const listReferencedImages = `-- name: ListReferencedImages :many
-SELECT DISTINCT last_image FROM device_state WHERE last_image != ''
+SELECT last_image AS image FROM device_state WHERE last_image != ''
+UNION
+SELECT image FROM render_image
 `
 
 // Every image name a row refers to, which image expiry must keep.
@@ -22,11 +24,11 @@ func (q *Queries) ListReferencedImages(ctx context.Context) ([]string, error) {
 	defer rows.Close()
 	items := []string{}
 	for rows.Next() {
-		var last_image string
-		if err := rows.Scan(&last_image); err != nil {
+		var image string
+		if err := rows.Scan(&image); err != nil {
 			return nil, err
 		}
-		items = append(items, last_image)
+		items = append(items, image)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

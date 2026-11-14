@@ -128,6 +128,23 @@ func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error
 	return i, err
 }
 
+const getDeviceCursor = `-- name: GetDeviceCursor :one
+SELECT item_id, item_started_at FROM device_state WHERE device_id = ?
+`
+
+type GetDeviceCursorRow struct {
+	ItemID        *int64 `json:"item_id"`
+	ItemStartedAt *int64 `json:"item_started_at"`
+}
+
+// The playlist item a device is showing, and when it started.
+func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDeviceCursorRow, error) {
+	row := q.db.QueryRowContext(ctx, getDeviceCursor, deviceID)
+	var i GetDeviceCursorRow
+	err := row.Scan(&i.ItemID, &i.ItemStartedAt)
+	return i, err
+}
+
 const listDeviceStatus = `-- name: ListDeviceStatus :many
 SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
 FROM device
@@ -237,6 +254,33 @@ func (q *Queries) SetDeviceAPIKeyHash(ctx context.Context, arg SetDeviceAPIKeyHa
 	return err
 }
 
+const setDeviceCursor = `-- name: SetDeviceCursor :exec
+INSERT INTO device_state (device_id, last_seen, last_refresh_rate_sent, item_id, item_started_at)
+VALUES (?, ?, 0, ?, ?)
+ON CONFLICT (device_id) DO UPDATE SET
+  item_id = excluded.item_id,
+  item_started_at = excluded.item_started_at
+`
+
+type SetDeviceCursorParams struct {
+	DeviceID      int64  `json:"device_id"`
+	LastSeen      int64  `json:"last_seen"`
+	ItemID        *int64 `json:"item_id"`
+	ItemStartedAt *int64 `json:"item_started_at"`
+}
+
+// Moves a device's playlist cursor. A device that has no state yet gets a
+// row, which its first wake's state then fills in.
+func (q *Queries) SetDeviceCursor(ctx context.Context, arg SetDeviceCursorParams) error {
+	_, err := q.db.ExecContext(ctx, setDeviceCursor,
+		arg.DeviceID,
+		arg.LastSeen,
+		arg.ItemID,
+		arg.ItemStartedAt,
+	)
+	return err
+}
+
 const setScreenOverride = `-- name: SetScreenOverride :exec
 UPDATE device SET screen_override = ?, screen_override_until = ? WHERE id = ?
 `
@@ -268,8 +312,8 @@ func (q *Queries) UpdateDeviceFirmware(ctx context.Context, arg UpdateDeviceFirm
 }
 
 const upsertDeviceState = `-- name: UpsertDeviceState :exec
-INSERT INTO device_state (device_id, last_seen, battery_v, rssi, wake_time_ms, update_source, last_refresh_rate_sent, last_image)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO device_state (device_id, last_seen, battery_v, rssi, wake_time_ms, update_source, last_refresh_rate_sent, last_image, width, height)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (device_id) DO UPDATE SET
   last_seen = excluded.last_seen,
   battery_v = excluded.battery_v,
@@ -277,7 +321,9 @@ ON CONFLICT (device_id) DO UPDATE SET
   wake_time_ms = excluded.wake_time_ms,
   update_source = excluded.update_source,
   last_refresh_rate_sent = excluded.last_refresh_rate_sent,
-  last_image = excluded.last_image
+  last_image = excluded.last_image,
+  width = excluded.width,
+  height = excluded.height
 `
 
 type UpsertDeviceStateParams struct {
@@ -289,6 +335,8 @@ type UpsertDeviceStateParams struct {
 	UpdateSource        *string  `json:"update_source"`
 	LastRefreshRateSent int64    `json:"last_refresh_rate_sent"`
 	LastImage           string   `json:"last_image"`
+	Width               *int64   `json:"width"`
+	Height              *int64   `json:"height"`
 }
 
 func (q *Queries) UpsertDeviceState(ctx context.Context, arg UpsertDeviceStateParams) error {
@@ -301,6 +349,8 @@ func (q *Queries) UpsertDeviceState(ctx context.Context, arg UpsertDeviceStatePa
 		arg.UpdateSource,
 		arg.LastRefreshRateSent,
 		arg.LastImage,
+		arg.Width,
+		arg.Height,
 	)
 	return err
 }

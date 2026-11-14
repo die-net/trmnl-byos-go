@@ -4,6 +4,9 @@
 //	trmnl-byos join       let new devices register for a while
 //	trmnl-byos devices    list registered devices
 //	trmnl-byos calibrate  show a device the gray calibration screen
+//	trmnl-byos recipe     install and list recipes
+//	trmnl-byos instance   create and list plugin instances
+//	trmnl-byos playlist   edit what devices show
 package main
 
 import (
@@ -21,9 +24,15 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/die-net/trmnl-byos-go/internal/cache"
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/deviceapi"
+	"github.com/die-net/trmnl-byos-go/internal/guard"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
+	"github.com/die-net/trmnl-byos-go/internal/render"
+	"github.com/die-net/trmnl-byos-go/internal/renderproxy"
+	"github.com/die-net/trmnl-byos-go/internal/scheduler"
+	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
 const usage = `usage: trmnl-byos <command> [flags]
@@ -33,6 +42,9 @@ commands:
   join       let new devices register for a while
   devices    list registered devices
   calibrate  show a device the gray calibration screen
+  recipe     install and list recipes: add, list
+  instance   create and list plugin instances: add, list
+  playlist   edit what devices show: add, remove, list
 
 Run "trmnl-byos <command> -h" for a command's flags.
 `
@@ -60,6 +72,12 @@ func run() int {
 		err = devices(ctx, args, os.Stdout)
 	case "calibrate":
 		err = calibrate(ctx, args, os.Stdout)
+	case "recipe":
+		err = recipes(ctx, args, os.Stdout)
+	case "instance":
+		err = instances(ctx, args, os.Stdout)
+	case "playlist":
+		err = playlists(ctx, args, os.Stdout)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		return 2
@@ -86,6 +104,9 @@ func serve(ctx context.Context, args []string) error {
 	listen := fs.String("listen", ":8080", "address to listen on")
 	publicURL := fs.String("public-url", "", "base URL devices reach this server at, such as http://192.168.1.10:8080 (default: from each request)")
 	refresh := fs.Duration("refresh", 15*time.Minute, "how long devices sleep between wakes")
+	renderURL := fs.String("render-url", "", "URL of the renderer, such as http://renderer:8081 (default: recipes are not rendered)")
+	proxyListen := fs.String("proxy-listen", ":3128", "address the renderer's proxy listens on, when -render-url is set; never publish it")
+	cacheDir := fs.String("cache", "cache", "directory holding the renderer's asset cache")
 	debug := fs.Bool("debug", false, "log at debug level, including device request headers")
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
 
@@ -94,6 +115,10 @@ func serve(ctx context.Context, args []string) error {
 	}
 	if *refresh < time.Second {
 		return fmt.Errorf("-refresh %v is under a second", *refresh)
+	}
+	key, err := secrets.FromEnv()
+	if err != nil {
+		return err
 	}
 
 	client, err := openDB(ctx, *data)
@@ -108,19 +133,33 @@ func serve(ctx context.Context, args []string) error {
 
 	mux := http.NewServeMux()
 	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, RefreshRate: *refresh}).Register(mux)
-	srv := &http.Server{
+	servers := []*http.Server{{
 		Addr:              *listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       2 * time.Minute,
-	}
+	}}
 
 	go expireLoop(ctx, client, images)
-	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("serving", "listen", *listen, "data", *data)
+	if *renderURL != "" {
+		proxy, err := startRendering(ctx, client, images, key, *data, *renderURL, *cacheDir)
+		if err != nil {
+			return err
+		}
+		// No read or write timeout: a CONNECT tunnel lasts as long as the
+		// build uses it, and the renderer kills a build that runs too long.
+		servers = append(servers, &http.Server{Addr: *proxyListen, Handler: proxy, ReadHeaderTimeout: 10 * time.Second})
+	} else {
+		slog.Warn("no -render-url: playlists that show recipes will wait for renders")
+	}
+
+	errc := make(chan error, len(servers))
+	for _, srv := range servers {
+		go func() { errc <- srv.ListenAndServe() }()
+	}
+	slog.Info("serving", "listen", *listen, "data", *data, "render_url", *renderURL)
 	select {
 	case err := <-errc:
 		return fmt.Errorf("listen: %w", err)
@@ -128,10 +167,50 @@ func serve(ctx context.Context, args []string) error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("shutdown: %w", err)
+	var errs []error
+	for _, srv := range servers {
+		if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs = append(errs, fmt.Errorf("shutdown %s: %w", srv.Addr, err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// Asset cache limits: entries unused for a month go, and the oldest go
+// first past the size limit.
+const (
+	cacheSweepEvery = time.Hour
+	cacheMaxAge     = 30 * 24 * time.Hour
+	cacheMaxBytes   = 2 << 30
+)
+
+// startRendering starts the scheduler, which renders through the renderer
+// at renderURL, and returns the proxy the renderer's builds reach the
+// internet through.
+func startRendering(ctx context.Context, client *db.Client, images *imagestore.Store, key *secrets.Key,
+	data, renderURL, cacheDir string,
+) (http.Handler, error) {
+	assets, err := cache.New(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+	go assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
+	sched := scheduler.New(scheduler.Config{
+		DB:         client,
+		Images:     images,
+		Renderer:   &render.Client{URL: renderURL, HTTP: &http.Client{Timeout: 10 * time.Minute}},
+		RecipesDir: recipesDir(data),
+		Secrets:    key,
+		// TZ is the standard way to give a process its time zone.
+		TimeZone:   os.Getenv("TZ"),
+		AssetHosts: renderproxy.AssetHosts,
+	})
+	go sched.Run(ctx)
+	return renderproxy.New(renderproxy.Config{
+		Dialer:      guard.NewDialer(10 * time.Second),
+		Cache:       assets,
+		CachedHosts: renderproxy.AssetHosts,
+	}), nil
 }
 
 const (

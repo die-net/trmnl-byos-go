@@ -22,3 +22,6 @@ go.work.sum
 # Editor
 *~
 .DS_Store
+
+# Deployment settings, which hold secrets
+.env

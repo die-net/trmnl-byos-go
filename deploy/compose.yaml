@@ -1,0 +1,54 @@
+# trmnl-byos with its renderer. From the repository root:
+#
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# Settings come from the environment or deploy/.env:
+#
+#   PUBLIC_URL        base URL devices reach the server at, such as
+#                     http://192.168.1.10:8080 (default: from each request)
+#   TZ                time zone recipes render in, such as Europe/Zurich
+#   TRMNL_SECRET_KEY  key for secret recipe fields: openssl rand -base64 32
+#
+# The renderer is on an internal network with no route out. Its builds reach
+# the internet only through the server's proxy on port 3128, which refuses
+# private addresses. Never publish that port.
+name: trmnl-byos
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/server/Dockerfile
+    restart: unless-stopped
+    command: ["serve", "-render-url", "http://renderer:8081", "-public-url", "${PUBLIC_URL:-}"]
+    environment:
+      TZ: ${TZ:-UTC}
+      TRMNL_SECRET_KEY: ${TRMNL_SECRET_KEY:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      - data:/srv/data
+      - cache:/srv/cache
+    networks: [default, render]
+
+  renderer:
+    build:
+      context: ..
+      dockerfile: deploy/renderer/Dockerfile
+    restart: unless-stopped
+    # Reaps the helper processes Firefox leaves behind.
+    init: true
+    environment:
+      HTTP_PROXY: http://server:3128
+      HTTPS_PROXY: http://server:3128
+    # A build peaks at about 1 GB, Firefox included.
+    mem_limit: 2g
+    networks: [render]
+
+networks:
+  render:
+    internal: true
+
+volumes:
+  data:
+  cache:

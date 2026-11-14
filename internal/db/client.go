@@ -136,6 +136,10 @@ var addedColumns = []struct {
 }{
 	{"device", "screen_override", `ALTER TABLE device ADD COLUMN screen_override TEXT NOT NULL DEFAULT ''`},
 	{"device", "screen_override_until", `ALTER TABLE device ADD COLUMN screen_override_until INTEGER NOT NULL DEFAULT 0`},
+	{"device_state", "width", `ALTER TABLE device_state ADD COLUMN width INTEGER`},
+	{"device_state", "height", `ALTER TABLE device_state ADD COLUMN height INTEGER`},
+	{"device_state", "item_id", `ALTER TABLE device_state ADD COLUMN item_id INTEGER`},
+	{"device_state", "item_started_at", `ALTER TABLE device_state ADD COLUMN item_started_at INTEGER`},
 }
 
 // applySchema creates and migrates the schema in one transaction, so a

@@ -24,7 +24,9 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
+	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
+	"github.com/die-net/trmnl-byos-go/internal/scheduler"
 	"github.com/die-net/trmnl-byos-go/internal/screen"
 )
 
@@ -118,16 +120,8 @@ func ShowScreen(ctx context.Context, client *db.Client, device, screenName strin
 	var dev db.Device
 	err := client.InTx(ctx, func(q *db.Queries) error {
 		var err error
-		if mac, ok := parseMAC(device); ok {
-			dev, err = q.GetDeviceByMAC(ctx, mac)
-		} else {
-			dev, err = q.GetDeviceByFriendlyID(ctx, strings.ToUpper(device))
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: %s", ErrNoDevice, device)
-		}
-		if err != nil {
-			return fmt.Errorf("get device: %w", err)
+		if dev, err = FindDevice(ctx, q, device); err != nil {
+			return err
 		}
 		dev.ScreenOverride, dev.ScreenOverrideUntil = screenName, until.Unix()
 		err = q.SetScreenOverride(ctx, db.SetScreenOverrideParams{
@@ -141,6 +135,24 @@ func ShowScreen(ctx context.Context, client *db.Client, device, screenName strin
 		return nil
 	})
 	return dev, err
+}
+
+// FindDevice returns the device named by its friendly ID or MAC.
+func FindDevice(ctx context.Context, q *db.Queries, device string) (db.Device, error) {
+	var dev db.Device
+	var err error
+	if mac, ok := parseMAC(device); ok {
+		dev, err = q.GetDeviceByMAC(ctx, mac)
+	} else {
+		dev, err = q.GetDeviceByFriendlyID(ctx, strings.ToUpper(device))
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.Device{}, fmt.Errorf("%w: %s", ErrNoDevice, device)
+	}
+	if err != nil {
+		return db.Device{}, fmt.Errorf("get device: %w", err)
+	}
+	return dev, nil
 }
 
 // SetJoinWindow lets devices with unknown MACs register through /api/setup
@@ -356,14 +368,18 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		// Wake when the override ends, so the usual screen comes back on time.
 		refresh = min(refresh, left)
 	} else {
-		name, size, err = s.screenSized(sp, []screen.Line{
-			{Text: "Connected", Size: 44, Bold: true},
-			{Text: dev.FriendlyID, Size: 64, Bold: true},
-			{Text: "Nothing is scheduled for this display yet.", Size: 22},
-			{Swatches: true, Size: 36},
-			{Text: fmt.Sprintf("Each box above should be a different shade, %d in all.", sp.Levels), Size: 16},
-			{Text: model + " · firmware " + version, Size: 18},
-		})
+		var shown bool
+		name, size, refresh, shown, err = s.playlistScreen(ctx, dev, p, sp, playlist.Pressed(r.Header.Get("Update-Source")), refresh)
+		if err == nil && !shown {
+			name, size, err = s.screenSized(sp, []screen.Line{
+				{Text: "Connected", Size: 44, Bold: true},
+				{Text: dev.FriendlyID, Size: 64, Bold: true},
+				{Text: "Nothing is scheduled for this display yet.", Size: 22},
+				{Swatches: true, Size: 36},
+				{Text: fmt.Sprintf("Each box above should be a different shade, %d in all.", sp.Levels), Size: 16},
+				{Text: model + " · firmware " + version, Size: 18},
+			})
+		}
 	}
 	if err == nil && !p.Fits(size) {
 		// The firmware would fail the download on every wake and keep
@@ -399,6 +415,8 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 			UpdateSource:        headerString(r, "Update-Source"),
 			LastRefreshRateSent: refresh,
 			LastImage:           name,
+			Width:               headerInt(r, "Width"),
+			Height:              headerInt(r, "Height"),
 		})
 		if err != nil {
 			return fmt.Errorf("save device state: %w", err)
@@ -418,6 +436,141 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		RefreshRate:     refresh,
 		SpecialFunction: "none",
 	})
+}
+
+// Refresh rates, in seconds, for a device whose playlist item has no
+// image yet: soon while its first render is under way, and at the
+// scheduler's retry interval after a render failed.
+const (
+	pendingRefresh = 60
+	retryRefresh   = int64(scheduler.RetryAfter / time.Second)
+)
+
+// staleAfter is how old an instance's last good render may be before the
+// device shows that it is out of date instead: two refresh intervals and
+// an hour, which allows for a failed build or two.
+func staleAfter(refresh time.Duration) time.Duration {
+	return 2*refresh + time.Hour
+}
+
+// playlistScreen picks what a device shows from its playlist, moving its
+// cursor first. It returns the image, its size, and the refresh rate,
+// shortened to wake the device when the item ends or a render is ready.
+// shown is false when the device's playlist has no items.
+func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, pressed bool, refresh int64) (name string, size, newRefresh int64, shown bool, err error) {
+	item, started, ok, err := s.advance(ctx, dev.ID, pressed)
+	if err != nil || !ok {
+		return "", 0, refresh, false, err
+	}
+	now := s.now()
+	if item.Duration > 0 {
+		left := started.Add(time.Duration(item.Duration) * time.Second).Sub(now)
+		refresh = min(refresh, max(int64(left/time.Second), 1))
+	}
+	row, err := s.db.Read.GetItemScreen(ctx, db.GetItemScreenParams{
+		Width:      int64(p.Width),
+		Height:     int64(p.Height),
+		Palette:    p.RenderPalette(item.Palette),
+		Layout:     "full",
+		InstanceID: item.InstanceID,
+	})
+	if err != nil {
+		return "", 0, refresh, false, fmt.Errorf("get item screen: %w", err)
+	}
+	failure := ""
+	if row.Error != nil {
+		failure = clip(*row.Error)
+	}
+	var lines []screen.Line
+	switch {
+	case row.Image == nil || row.RenderedAt == nil || *row.RenderedAt == 0:
+		if failure == "" {
+			lines = []screen.Line{
+				{Text: "Rendering", Size: 44, Bold: true},
+				{Text: row.Name, Size: 28},
+				{Text: "This display checks again in a minute.", Size: 20},
+			}
+			refresh = min(refresh, pendingRefresh)
+			break
+		}
+		lines = []screen.Line{
+			{Text: "Could not render", Size: 44, Bold: true},
+			{Text: row.Name, Size: 28},
+			{Text: failure, Size: 18},
+		}
+		refresh = min(refresh, retryRefresh)
+	case now.Sub(time.Unix(*row.RenderedAt, 0)) > staleAfter(time.Duration(row.RefreshInterval)*time.Second):
+		age := now.Sub(time.Unix(*row.RenderedAt, 0)).Truncate(time.Minute)
+		lines = []screen.Line{
+			{Text: "Out of date", Size: 44, Bold: true},
+			{Text: row.Name, Size: 28},
+			{Text: "Last rendered " + age.String() + " ago.", Size: 20},
+		}
+		if failure != "" {
+			lines = append(lines, screen.Line{Text: failure, Size: 18})
+		}
+		refresh = min(refresh, retryRefresh)
+	default:
+		return *row.Image, *row.Bytes, refresh, true, nil
+	}
+	name, size, err = s.screenSized(sp, lines)
+	return name, size, refresh, true, err
+}
+
+// advance moves a device's playlist cursor for this wake and returns the
+// item it now shows and when that started. ok is false when the device's
+// playlist has no items.
+func (s *Server) advance(ctx context.Context, deviceID int64, pressed bool) (item db.ListDeviceItemsRow, started time.Time, ok bool, err error) {
+	err = s.db.InTx(ctx, func(q *db.Queries) error {
+		items, err := q.ListDeviceItems(ctx, deviceID)
+		if err != nil {
+			return fmt.Errorf("list playlist items: %w", err)
+		}
+		cursor, err := q.GetDeviceCursor(ctx, deviceID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("get cursor: %w", err)
+		}
+		var cur *playlist.Cursor
+		if cursor.ItemID != nil && cursor.ItemStartedAt != nil {
+			cur = &playlist.Cursor{ItemID: *cursor.ItemID, Started: time.Unix(*cursor.ItemStartedAt, 0)}
+		}
+		pl := make([]playlist.Item, len(items))
+		for i := range items {
+			pl[i] = playlist.Item{ID: items[i].ID, Duration: time.Duration(items[i].Duration) * time.Second}
+		}
+		i, start := playlist.Advance(pl, cur, s.now(), pressed)
+		if i < 0 {
+			return nil
+		}
+		item, started, ok = items[i], start, true
+		if cur != nil && cur.ItemID == item.ID && cur.Started.Equal(started) {
+			return nil
+		}
+		err = q.SetDeviceCursor(ctx, db.SetDeviceCursorParams{
+			DeviceID:      deviceID,
+			LastSeen:      s.now().Unix(),
+			ItemID:        &item.ID,
+			ItemStartedAt: new(started.Unix()),
+		})
+		if err != nil {
+			return fmt.Errorf("set cursor: %w", err)
+		}
+		return nil
+	})
+	return item, started, ok, err
+}
+
+// maxLineRunes bounds a line of text from elsewhere, such as an error, on a
+// system screen, which does not wrap.
+const maxLineRunes = 72
+
+// clip cuts s to its first line and maxLineRunes runes.
+func clip(s string) string {
+	s, _, _ = strings.Cut(strings.TrimSpace(s), "\n")
+	if r := []rune(s); len(r) > maxLineRunes {
+		return string(r[:maxLineRunes-1]) + "…"
+	}
+	return s
 }
 
 // logEntry is the part of a firmware log entry that gets its own columns.

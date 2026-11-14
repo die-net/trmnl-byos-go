@@ -74,3 +74,16 @@ func TestFits(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPalette(t *testing.T) {
+	og := Profile{Palettes: []string{"gray-4", "bw"}, DefaultPalette: "gray-4"}
+	for _, tc := range []struct{ want, got string }{
+		{"", "gray-4"},
+		{"bw", "bw"},
+		{"gray-16", "gray-4"},
+	} {
+		if got := og.RenderPalette(tc.want); got != tc.got {
+			t.Errorf("RenderPalette(%q) = %q, want %q", tc.want, got, tc.got)
+		}
+	}
+}
