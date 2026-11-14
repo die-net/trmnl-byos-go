@@ -1,0 +1,215 @@
+/* Tokens. Every color is a custom property, so a palette is one block for
+   light and one for dark. The dark block is written twice: once for a
+   device that prefers dark, unless the page forces light, and once for a
+   page that forces dark with <html data-theme="dark">. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f6f1;
+  --surface: #fefffb;
+  --border: #dde3d5;
+  --text: #1e251b;
+  --muted: #657060;
+  --accent: #3f6b2a;
+  --accent-soft: #e1edd6;
+  --on-accent: #fff;
+  --ok: #2c6e3f;
+  --ok-soft: #dff0e2;
+  --danger: #9b1c1c;
+  --danger-soft: #fbe4e2;
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
+  --radius: 10px;
+  --tap: 44px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #12160f;
+    --surface: #1a2016;
+    --border: #2f3829;
+    --text: #e7ede2;
+    --muted: #98a590;
+    --accent: #9ccb7c;
+    --accent-soft: #263a1b;
+    --on-accent: #0f1a09;
+    --ok: #7fd197;
+    --ok-soft: #17341f;
+    --danger: #ffb4ab;
+    --danger-soft: #4a1f1b;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #12160f;
+  --surface: #1a2016;
+  --border: #2f3829;
+  --text: #e7ede2;
+  --muted: #98a590;
+  --accent: #9ccb7c;
+  --accent-soft: #263a1b;
+  --on-accent: #0f1a09;
+  --ok: #7fd197;
+  --ok-soft: #17341f;
+  --danger: #ffb4ab;
+  --danger-soft: #4a1f1b;
+}
+
+/* Base. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font: 1rem/1.5 var(--font);
+  -webkit-text-size-adjust: 100%;
+}
+
+h1 {
+  margin: 0 0 1rem;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A centered card, for pages that are one form. */
+.center {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.card {
+  width: 100%;
+  max-width: 24rem;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* A form field: a label above its input. Inputs are 16px or more, which
+   stops iOS from zooming the page on focus. */
+.field {
+  margin-bottom: 1rem;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.field input {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 1rem;
+}
+
+/* Buttons. */
+.btn {
+  display: inline-flex;
+  min-height: var(--tap);
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.card .btn {
+  width: 100%;
+}
+
+/* A message above a form. */
+.error {
+  margin: 0 0 1rem;
+  padding: 10px 12px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 8px;
+}
+
+.badge-ok {
+  display: inline-block;
+  padding: 2px 10px;
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-radius: 999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* A page with a header, for the pages after sign-in. */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.bar form {
+  margin: 0;
+}
+
+.bar-title {
+  font-weight: 700;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 16px;
+}

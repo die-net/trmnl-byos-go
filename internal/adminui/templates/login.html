@@ -1,0 +1,12 @@
+{{define "title"}}Sign in{{end}}
+{{define "body"}}<div class="center">
+<form class="card" method="post" action="/login">
+<h1>Sign in</h1>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+<div class="field">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+</div>
+<button class="btn btn-primary" type="submit">Sign in</button>
+</form>
+</div>{{end}}

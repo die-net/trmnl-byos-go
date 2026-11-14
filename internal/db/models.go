@@ -4,6 +4,14 @@
 
 package db
 
+type AdminSession struct {
+	ID         int64  `json:"id"`
+	TokenHash  []byte `json:"token_hash"`
+	CreatedAt  int64  `json:"created_at"`
+	LastSeenAt int64  `json:"last_seen_at"`
+	ExpiresAt  int64  `json:"expires_at"`
+}
+
 type ApiToken struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`

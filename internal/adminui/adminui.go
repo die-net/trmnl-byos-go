@@ -1,0 +1,201 @@
+// Package adminui is the admin web UI: server-rendered pages from embedded
+// templates, and the embedded CSS they use. It signs the admin in with the
+// password and session cookie from adminauth. The pages call the packages
+// the commands use, not the JSON API.
+package adminui
+
+import (
+	"embed"
+	"errors"
+	"fmt"
+	"html/template"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/die-net/trmnl-byos-go/internal/adminauth"
+	"github.com/die-net/trmnl-byos-go/internal/db"
+)
+
+//go:embed templates static
+var assets embed.FS
+
+const (
+	// maxFormBody bounds a form post. The longest password is 1024 bytes.
+	maxFormBody = 4 << 10
+
+	// contentSecurityPolicy lets a page load only its own files, which
+	// leaves out inline scripts and styles, and keeps it from being framed.
+	contentSecurityPolicy = "default-src 'self'; frame-ancestors 'none'"
+)
+
+// Config is how the admin UI is set up.
+type Config struct {
+	// PublicURL is the base URL the server is reached at, if known. An
+	// https one makes the session cookie Secure even when TLS ends at a
+	// proxy, which the server cannot see.
+	PublicURL string
+}
+
+// Server handles admin UI requests.
+type Server struct {
+	db  *db.Client
+	now func() time.Time
+	// secureURL is whether PublicURL is https.
+	secureURL bool
+	// cop refuses a cross-origin request that is not safe.
+	cop   *http.CrossOriginProtection
+	pages map[string]*template.Template
+}
+
+// New returns a Server that keeps state in client.
+func New(client *db.Client, cfg Config) *Server {
+	s := &Server{
+		db:    client,
+		now:   time.Now,
+		cop:   http.NewCrossOriginProtection(),
+		pages: map[string]*template.Template{},
+	}
+	if u, err := url.Parse(cfg.PublicURL); err == nil {
+		s.secureURL = strings.EqualFold(u.Scheme, "https")
+	}
+	// Each page is the base layout with the page's own blocks, so pages
+	// that define the same block do not clash.
+	for _, name := range []string{"login", "home"} {
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+name+".html"))
+	}
+	return s
+}
+
+// Register adds the UI's routes to mux. The login page and the static files
+// are public. Everything else needs a session.
+func (s *Server) Register(mux *http.ServeMux) {
+	mux.Handle("GET /login", page(http.HandlerFunc(s.loginForm)))
+	mux.Handle("POST /login", page(s.cop.Handler(http.HandlerFunc(s.login))))
+	mux.Handle("POST /logout", page(s.cop.Handler(http.HandlerFunc(s.logout))))
+	mux.Handle("GET /{$}", page(s.requireSession(s.home)))
+	mux.Handle("GET /static/", static())
+}
+
+// setSecurityHeaders sets what every response from the UI carries.
+func setSecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Security-Policy", contentSecurityPolicy)
+	h.Set("X-Content-Type-Options", "nosniff")
+}
+
+// page wraps a handler of a page, which no cache may keep.
+func page(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// static serves the embedded files under /static/. A directory is not
+// listed.
+func static() http.Handler {
+	files := http.FileServerFS(assets)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		// The files have no modification time to validate against, so
+		// they are fetched again each time. They are small.
+		w.Header().Set("Cache-Control", "no-cache")
+		files.ServeHTTP(w, r)
+	})
+}
+
+// requireSession runs next only for a request with a valid session cookie,
+// and sends any other to the login page. A request that changes something
+// also passes the cross-origin check, since the cookie is sent with a
+// request that another site makes.
+func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
+	return s.cop.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signed, err := adminauth.SignedIn(r.Context(), s.db, r, s.now())
+		if err != nil {
+			slog.Error("admin ui: check session", "err", err)
+			s.render(w, r, http.StatusInternalServerError, "login", pageData{Error: "Something went wrong. Try again."})
+			return
+		}
+		if !signed {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	}))
+}
+
+// pageData is what the templates are given.
+type pageData struct {
+	// Error is a message to show above the form, or "".
+	Error string
+}
+
+// render sends the page called name with the status.
+func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, data pageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := s.pages[name].ExecuteTemplate(w, "base", data); err != nil {
+		slog.Error("admin ui: render page", "page", name, "path", r.URL.Path, "err", err)
+	}
+}
+
+// secure is whether the session cookie gets the Secure attribute.
+func (s *Server) secure(r *http.Request) bool {
+	return r.TLS != nil || s.secureURL
+}
+
+func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
+	if signed, _ := adminauth.SignedIn(r.Context(), s.db, r, s.now()); signed {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.render(w, r, http.StatusOK, "login", pageData{})
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
+	if err := r.ParseForm(); err != nil {
+		status, msg := http.StatusBadRequest, "The form could not be read."
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			status, msg = http.StatusRequestEntityTooLarge, fmt.Sprintf("The form is over %d bytes.", tooBig.Limit)
+		}
+		s.render(w, r, status, "login", pageData{Error: msg})
+		return
+	}
+	token, err := adminauth.Login(r.Context(), s.db, r.PostForm.Get("password"), s.now())
+	switch {
+	case err == nil:
+		http.SetCookie(w, adminauth.NewCookie(token, s.secure(r)))
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	case errors.Is(err, adminauth.ErrNoPassword):
+		s.render(w, r, http.StatusUnauthorized, "login", pageData{Error: "No admin password is set. Run trmnl-byos password on the server."})
+	case errors.Is(err, adminauth.ErrWrongPassword):
+		s.render(w, r, http.StatusUnauthorized, "login", pageData{Error: "Wrong password."})
+	default:
+		slog.Error("admin ui: sign in", "err", err)
+		s.render(w, r, http.StatusInternalServerError, "login", pageData{Error: "Something went wrong. Try again."})
+	}
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if err := adminauth.Logout(r.Context(), s.db, adminauth.Token(r)); err != nil {
+		slog.Error("admin ui: sign out", "err", err)
+		s.render(w, r, http.StatusInternalServerError, "login", pageData{Error: "Something went wrong. Try again."})
+		return
+	}
+	http.SetCookie(w, adminauth.ClearCookie(s.secure(r)))
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+func (s *Server) home(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, http.StatusOK, "home", pageData{})
+}

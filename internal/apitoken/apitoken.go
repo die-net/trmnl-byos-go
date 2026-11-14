@@ -33,6 +33,16 @@ func Hash(token string) []byte {
 	return sum[:]
 }
 
+// New returns a new random token: 32 random bytes, base64url. Admin session
+// tokens are made the same way.
+func New() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("random token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
 // Create makes an API token with the given name and returns it. It is shown
 // once: only its hash is stored.
 func Create(ctx context.Context, client *db.Client, name string, now time.Time) (string, error) {
@@ -40,12 +50,11 @@ func Create(ctx context.Context, client *db.Client, name string, now time.Time) 
 	if name == "" {
 		return "", ErrName
 	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("random token: %w", err)
+	token, err := New()
+	if err != nil {
+		return "", err
 	}
-	token := base64.RawURLEncoding.EncodeToString(raw)
-	err := client.InTx(ctx, func(q *db.Queries) error {
+	err = client.InTx(ctx, func(q *db.Queries) error {
 		exists, err := q.TokenNameExists(ctx, name)
 		if err != nil {
 			return fmt.Errorf("check token name: %w", err)

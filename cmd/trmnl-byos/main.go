@@ -8,6 +8,7 @@
 //	trmnl-byos instance   create and list plugin instances
 //	trmnl-byos playlist   edit what devices show
 //	trmnl-byos token      create and remove API tokens
+//	trmnl-byos password   set the admin password for the web UI
 //	trmnl-byos firmware   add firmware builds and roll them out
 package main
 
@@ -29,6 +30,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/die-net/trmnl-byos-go/internal/adminapi"
+	"github.com/die-net/trmnl-byos-go/internal/adminui"
 	"github.com/die-net/trmnl-byos-go/internal/cache"
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
@@ -53,6 +55,7 @@ commands:
   instance   create and list plugin instances: add, list
   playlist   edit what devices show: add, remove, list
   token      create and remove API tokens: add, list, remove
+  password   set the admin password for the web UI
   firmware   add firmware builds and roll them out: add, list, rollout, cancel, device
 
 Run "trmnl-byos <command> -h" for a command's flags.
@@ -89,6 +92,8 @@ func run() int {
 		err = playlists(ctx, args, os.Stdout)
 	case "token":
 		err = tokens(ctx, args, os.Stdout)
+	case "password":
+		err = password(ctx, args, os.Stdin, os.Stdout)
 	case "firmware":
 		err = firmwares(ctx, args, os.Stdout)
 	default:
@@ -153,6 +158,7 @@ func serve(ctx context.Context, args []string) error {
 	mux := http.NewServeMux()
 	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, RefreshRate: *refresh, FirmwareDir: firmwareDir(*data)}).Register(mux)
 	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data)}).Register(mux)
+	adminui.New(client, adminui.Config{PublicURL: *publicURL}).Register(mux)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,

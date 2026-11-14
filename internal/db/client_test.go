@@ -674,3 +674,55 @@ func TestMigrateCursors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestMigrateAdminSessions checks step 3: a database at version 2, which
+// has no admin_session table, gets it, keeps its other rows, and ends at
+// version 3 with the shape of schema.sql.
+func TestMigrateAdminSessions(t *testing.T) {
+	ctx := t.Context()
+	fresh := openTest(t)
+	want := shapeOf(t, fresh.Writer)
+
+	path := filepath.Join(t.TempDir(), "v2.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make the database look like one from before step 3.
+	for _, stmt := range []string{
+		`DROP TABLE admin_session`,
+		`INSERT INTO setting (key, value, updated_at) VALUES ('kept', 'yes', 1)`,
+		`PRAGMA user_version = 2`,
+	} {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if v := userVersion(t, client.Writer); v != len(steps) || v < 3 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if v, err := client.Read.GetSetting(ctx, "kept"); err != nil || v != "yes" {
+		t.Errorf("setting after migration = %q, %v", v, err)
+	}
+	err = client.Write.CreateAdminSession(ctx, CreateAdminSessionParams{TokenHash: []byte("h"), CreatedAt: 1, LastSeenAt: 1, ExpiresAt: 2})
+	if err != nil {
+		t.Fatalf("insert into the new table: %v", err)
+	}
+	// The token hash is unique.
+	err = client.Write.CreateAdminSession(ctx, CreateAdminSessionParams{TokenHash: []byte("h"), CreatedAt: 1, LastSeenAt: 1, ExpiresAt: 2})
+	if err == nil {
+		t.Error("a second session with the same hash was accepted")
+	}
+}

@@ -1,7 +1,7 @@
 // Package adminapi is the admin JSON API at /api/v1. Everything it does to
 // the server's data is done by the internal packages, which the command
-// line uses too. This package only checks the caller's token, decodes the
-// request, calls them, and encodes the result.
+// line uses too. This package only checks the caller's token or session,
+// decodes the request, calls them, and encodes the result.
 package adminapi
 
 import (
@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/die-net/trmnl-byos-go/internal/adminauth"
 	"github.com/die-net/trmnl-byos-go/internal/apitoken"
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
@@ -52,17 +53,20 @@ type Server struct {
 	now func() time.Time
 	// pushes rate limits pushes of data to instances.
 	pushes pushLimiters
+	// cop refuses a cross-origin request that rests on the session cookie.
+	cop *http.CrossOriginProtection
 }
 
 // New returns a Server that keeps state in client.
 func New(client *db.Client, cfg Config) *Server {
-	return &Server{db: client, cfg: cfg, now: time.Now}
+	return &Server{db: client, cfg: cfg, now: time.Now, cop: http.NewCrossOriginProtection()}
 }
 
 // Register adds the /api/v1 routes to mux, and the /api/custom_plugins
 // routes that scripts push data to, which keep TRMNL's path. Each one needs
-// a bearer token, including a /api/v1 path that matches no route, so the API
-// never says what exists to a caller without one.
+// a bearer token or an admin session cookie, including a /api/v1 path that
+// matches no route, so the API never says what exists to a caller without
+// one.
 func (s *Server) Register(mux *http.ServeMux) {
 	routes := []struct {
 		pattern string
@@ -259,23 +263,25 @@ func duration(sec int64) (time.Duration, error) {
 	return time.Duration(sec) * time.Second, nil
 }
 
-// auth runs next only for a request with a known bearer token. It notes
-// the use in the token's last_used_at, at most once per touchEvery.
+// auth runs next only for a request with a known bearer token, or with the
+// cookie of a signed-in admin session. A bearer token wins: a request that
+// sends one is judged by it alone, and is not checked for cross-origin use,
+// since a browser does not add an Authorization header to a request another
+// site makes. A request that rests on the cookie, which a browser does send
+// then, passes the cross-origin check first. A token use is noted in the
+// token's last_used_at, at most once per touchEvery.
 func (s *Server) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		scheme, bearer, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		bearer = strings.TrimSpace(bearer)
-		var tok db.ApiToken
-		var err error
-		if strings.EqualFold(scheme, "Bearer") && bearer != "" {
-			tok, err = s.db.Read.GetTokenByHash(ctx, apitoken.Hash(bearer))
-		} else {
-			err = sql.ErrNoRows
+		if !strings.EqualFold(scheme, "Bearer") || bearer == "" {
+			s.authCookie(w, r, next)
+			return
 		}
+		tok, err := s.db.Read.GetTokenByHash(ctx, apitoken.Hash(bearer))
 		if errors.Is(err, sql.ErrNoRows) {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeError(w, http.StatusUnauthorized, "a valid bearer token is required")
+			unauthorized(w)
 			return
 		}
 		if err != nil {
@@ -290,4 +296,28 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 		}
 		next(w, r)
 	})
+}
+
+// authCookie is auth for a request with no bearer token.
+func (s *Server) authCookie(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	signed, err := adminauth.SignedIn(r.Context(), s.db, r, s.now())
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if !signed {
+		unauthorized(w)
+		return
+	}
+	if err := s.cop.Check(r); err != nil {
+		writeError(w, http.StatusForbidden, "cross-origin request refused")
+		return
+	}
+	next(w, r)
+}
+
+// unauthorized answers a request that has no valid credentials.
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeError(w, http.StatusUnauthorized, "a valid bearer token is required")
 }
