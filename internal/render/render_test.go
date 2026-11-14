@@ -118,8 +118,14 @@ func TestBuildFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if processAlive(n) {
-		t.Errorf("child %d of a timed-out build is still running", n)
+	// The kill is a signal to the group, which the build does not wait on:
+	// the child is not the shim's own, so only its new parent can reap it,
+	// and until then its PID still answers. So give it a moment to go.
+	for deadline := time.Now().Add(5 * time.Second); processAlive(n); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Errorf("child %d of a timed-out build is still running", n)
+			break
+		}
 	}
 }
 
