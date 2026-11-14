@@ -43,6 +43,9 @@ type Config struct {
 	PublicURL string
 	// RefreshRate is how long a device sleeps between wakes.
 	RefreshRate time.Duration
+	// FirmwareDir is where firmware files are stored. Empty offers and
+	// serves no firmware.
+	FirmwareDir string
 }
 
 // Server handles device requests.
@@ -71,6 +74,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/setup", s.setup)
 	mux.HandleFunc("GET /api/display", s.display)
 	mux.HandleFunc("POST /api/log", s.log)
+	mux.HandleFunc("GET /firmware/{name}", s.firmware)
 	mux.Handle("GET /images/{name}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		debugRequest(r)
 		s.images.ServeHTTP(w, r)

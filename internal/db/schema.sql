@@ -19,7 +19,13 @@ CREATE TABLE IF NOT EXISTS device (
   -- screen_override names a system screen, such as calibrate, that the
   -- device shows instead of its usual one until screen_override_until.
   screen_override TEXT NOT NULL DEFAULT '',
-  screen_override_until INTEGER NOT NULL DEFAULT 0
+  screen_override_until INTEGER NOT NULL DEFAULT 0,
+  -- updates_enabled is 1 when the device may be offered firmware. It is 0
+  -- until someone turns it on, so updates happen only when asked for.
+  updates_enabled INTEGER NOT NULL DEFAULT 0,
+  -- fw_pin is a firmware version the device stays on. A device with a pin is
+  -- offered no firmware. Empty means no pin.
+  fw_pin TEXT NOT NULL DEFAULT ''
 );
 
 -- device_state is what a device reported on its last /api/display call, and
@@ -227,4 +233,44 @@ CREATE TABLE IF NOT EXISTS api_token (
   token_hash BLOB NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER NOT NULL DEFAULT 0
+);
+
+-- firmware is a build in the catalog. It is for exactly one firmware model,
+-- the Model header value, and sha256 (lowercase hex) is both its file name
+-- under firmware/ and the name in its download URL. chip and idf_version are
+-- read from the file's headers when it is added. source says where it came
+-- from, such as upload. A model has one build per version.
+CREATE TABLE IF NOT EXISTS firmware (
+  id INTEGER PRIMARY KEY,
+  fw_model TEXT NOT NULL,
+  version TEXT NOT NULL,
+  sha256 TEXT NOT NULL UNIQUE,
+  chip TEXT NOT NULL,
+  idf_version TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  uploaded_at INTEGER NOT NULL,
+  UNIQUE (fw_model, version)
+);
+
+-- firmware_offer counts how many times a build was offered to a device, so
+-- a build that never takes, such as a failing download or a file whose real
+-- version is not the one it was added as, is not offered forever.
+CREATE TABLE IF NOT EXISTS firmware_offer (
+  device_id INTEGER NOT NULL REFERENCES device (id) ON DELETE CASCADE,
+  firmware_id INTEGER NOT NULL REFERENCES firmware (id) ON DELETE CASCADE,
+  offers INTEGER NOT NULL,
+  last_offered_at INTEGER NOT NULL,
+  PRIMARY KEY (device_id, firmware_id)
+);
+
+-- firmware_rollout offers a build, first to canary_device_id and, once that
+-- device reports the build's version, to every device of the same model.
+-- state is active or canceled. A build with no active rollout is offered to
+-- no one and its file is not served.
+CREATE TABLE IF NOT EXISTS firmware_rollout (
+  firmware_id INTEGER PRIMARY KEY REFERENCES firmware (id) ON DELETE CASCADE,
+  canary_device_id INTEGER NOT NULL REFERENCES device (id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  started_at INTEGER NOT NULL
 );

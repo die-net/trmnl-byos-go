@@ -74,6 +74,8 @@ type testServer struct {
 	srv *Server
 	db  *db.Client
 	now time.Time
+	// fwDir is where the server keeps firmware files.
+	fwDir string
 	// imagesDir is where the image store keeps its files.
 	imagesDir string
 }
@@ -90,8 +92,8 @@ func newTestServer(t *testing.T) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := &testServer{db: client, now: time.Unix(1_800_000_000, 0), imagesDir: filepath.Join(dir, "images")}
-	ts.srv = New(client, images, Config{RefreshRate: 15 * time.Minute})
+	ts := &testServer{db: client, now: time.Unix(1_800_000_000, 0), fwDir: filepath.Join(dir, "firmware"), imagesDir: filepath.Join(dir, "images")}
+	ts.srv = New(client, images, Config{RefreshRate: 15 * time.Minute, FirmwareDir: ts.fwDir})
 	ts.srv.now = func() time.Time { return ts.now }
 	mux := http.NewServeMux()
 	ts.srv.Register(mux)

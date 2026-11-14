@@ -1,7 +1,7 @@
 // Package device finds devices and sets what they show, and holds the
 // setting that opens the window in which a new device may join. It has no
-// HTTP code, so the device protocol, the admin API and the command line all
-// use it.
+// HTTP code, so the device protocol, the admin API, the firmware rollout and
+// the command line all use it.
 package device
 
 import (

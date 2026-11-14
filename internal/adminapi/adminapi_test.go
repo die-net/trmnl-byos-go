@@ -21,6 +21,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/firmware"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
@@ -41,6 +42,8 @@ type testAPI struct {
 	token   string
 	now     time.Time
 	recipes string
+	// firmware is where uploaded firmware is stored.
+	firmware string
 }
 
 func newTestAPI(t *testing.T, withKey bool) *testAPI {
@@ -57,8 +60,8 @@ func newTestAPI(t *testing.T, withKey bool) *testAPI {
 			t.Fatal(err)
 		}
 	}
-	ta := &testAPI{db: client, mux: http.NewServeMux(), now: time.Unix(1_000_000, 0), recipes: filepath.Join(dir, "recipes")}
-	ta.srv = New(client, Config{Key: key, RecipesDir: ta.recipes})
+	ta := &testAPI{db: client, mux: http.NewServeMux(), now: time.Unix(1_000_000, 0), recipes: filepath.Join(dir, "recipes"), firmware: filepath.Join(dir, "firmware")}
+	ta.srv = New(client, Config{Key: key, RecipesDir: ta.recipes, FirmwareDir: ta.firmware})
 	ta.srv.now = func() time.Time { return ta.now }
 	ta.srv.Register(ta.mux)
 	if ta.token, err = apitoken.Create(t.Context(), client, "test", ta.now); err != nil {
@@ -730,6 +733,11 @@ func TestFailStatus(t *testing.T) {
 		{"apitoken exists", fmt.Errorf("%w: x", apitoken.ErrExists), http.StatusConflict},
 		{"apitoken missing", fmt.Errorf("%w: x", apitoken.ErrNotFound), http.StatusNotFound},
 		{"device", fmt.Errorf("%w: x", device.ErrNoDevice), http.StatusNotFound},
+		{"firmware image", fmt.Errorf("%w: x", firmware.ErrImage), http.StatusBadRequest},
+		{"firmware too big", fmt.Errorf("%w: x", firmware.ErrTooBig), http.StatusRequestEntityTooLarge},
+		{"firmware missing", fmt.Errorf("%w: x", firmware.ErrNoFirmware), http.StatusNotFound},
+		{"firmware exists", fmt.Errorf("%w: x", firmware.ErrExists), http.StatusConflict},
+		{"firmware version", func() error { _, err := firmware.ParseVersion("1.x"); return err }(), http.StatusBadRequest},
 		{"playlist item", fmt.Errorf("%w: 1", playlist.ErrNoItem), http.StatusNotFound},
 		{"recipe missing", fmt.Errorf("%w: 1", recipe.ErrNoRecipe), http.StatusNotFound},
 		{"instance missing", fmt.Errorf("%w: 1", recipe.ErrNoInstance), http.StatusNotFound},

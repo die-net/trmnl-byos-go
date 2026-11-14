@@ -185,12 +185,13 @@ const staleTempAge = time.Hour
 // recipesDir named by an ID that has no recipe row, which would otherwise
 // block the next install that is given the same ID, since an ID is reused
 // after a rollback. It also removes the temporary entries of an install or
-// an upload, in recipesDir, that are over an hour old.
+// an upload, in recipesDir and, when firmwareDir is not empty, in it, that are
+// over an hour old.
 //
 // The directory pass runs in a transaction, which holds SQLite's write lock
 // from its start, so it cannot run between another process's rename of an
 // install (the CLI's) and its commit.
-func Sweep(ctx context.Context, client *db.Client, recipesDir string, now time.Time) error {
+func Sweep(ctx context.Context, client *db.Client, recipesDir, firmwareDir string, now time.Time) error {
 	entries, err := os.ReadDir(recipesDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		entries, err = nil, nil
@@ -225,8 +226,13 @@ func Sweep(ctx context.Context, client *db.Client, recipesDir string, now time.T
 		return err
 	}
 	cutoff := now.Add(-staleTempAge)
-	for _, pattern := range []string{".install-*", ".upload-*.zip"} {
-		if err := removeOlder(recipesDir, pattern, cutoff); err != nil {
+	for _, t := range []struct{ dir, pattern string }{
+		{recipesDir, ".install-*"}, {recipesDir, ".upload-*.zip"}, {firmwareDir, ".upload-*.bin"},
+	} {
+		if t.dir == "" {
+			continue
+		}
+		if err := removeOlder(t.dir, t.pattern, cutoff); err != nil {
 			return err
 		}
 	}

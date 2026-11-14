@@ -267,7 +267,9 @@ func TestMigrateAddedColumns(t *testing.T) {
 			t.Fatalf("open %d: %v", i, err)
 		}
 		dev, err := client.Read.GetDeviceByFriendlyID(ctx, "F")
-		if err != nil || dev.Mac != "m" || dev.ScreenOverride != "" || dev.ScreenOverrideUntil != 0 {
+		if err != nil || dev.Mac != "m" || dev.ScreenOverride != "" || dev.ScreenOverrideUntil != 0 ||
+			// The new columns default to off and no pin, then keep what was set.
+			dev.UpdatesEnabled != int64(i) || dev.FwPin != []string{"", "1.8.1"}[i] {
 			t.Fatalf("open %d: device = %+v, %v", i, dev, err)
 		}
 		_, curErr := client.Read.GetDeviceCursor(ctx, dev.ID)
@@ -286,6 +288,19 @@ func TestMigrateAddedColumns(t *testing.T) {
 		// A table added after the database was made is created by Open.
 		if _, terr := client.Write.CreateToken(ctx, CreateTokenParams{Name: "t" + strconv.Itoa(i), TokenHash: []byte{byte(i)}, CreatedAt: 1}); terr != nil {
 			t.Fatalf("open %d: create token: %v", i, terr)
+		}
+		// The firmware tables, and the device columns a rollout reads.
+		fw, ferr := client.Write.CreateFirmware(ctx, CreateFirmwareParams{
+			FwModel: "og", Version: "1.8." + strconv.Itoa(i), Sha256: strings.Repeat(strconv.Itoa(i), 64), Chip: "esp32c3", Bytes: 1, Source: "upload", UploadedAt: 1,
+		})
+		if ferr != nil {
+			t.Fatalf("open %d: create firmware: %v", i, ferr)
+		}
+		if serr := client.Write.SetDeviceFirmwarePolicy(ctx, SetDeviceFirmwarePolicyParams{UpdatesEnabled: 1, FwPin: "1.8.1", ID: dev.ID}); serr != nil {
+			t.Fatalf("open %d: set firmware policy: %v", i, serr)
+		}
+		if serr := client.Write.StartFirmwareRollout(ctx, StartFirmwareRolloutParams{FirmwareID: fw.ID, CanaryDeviceID: dev.ID, StartedAt: 1}); serr != nil {
+			t.Fatalf("open %d: start rollout: %v", i, serr)
 		}
 		if err := client.Close(); err != nil {
 			t.Fatal(err)
@@ -525,7 +540,7 @@ func TestMigrateRefusesUnadoptable(t *testing.T) {
 // made before versions were numbered, so an edit, even one that matches an
 // edit to schema.sql, never reaches a database that is already stamped.
 func TestBaselineFrozen(t *testing.T) {
-	const want = "4b05a773d214902cd943fc158411c89d1bffbd51f96a23c5fa8d00037a7c4d00"
+	const want = "1eb16908c827b3d7d46bc8ab50fb596689613ef8750810bd0b47aaab101e12ce"
 	sum := sha256.Sum256([]byte(baselineSchema))
 	if got := hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("baselineSchema hash = %s, want %s. The baseline must never change. Add a migration step for the schema change instead.", got, want)

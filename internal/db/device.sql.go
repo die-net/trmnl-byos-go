@@ -12,7 +12,7 @@ import (
 const createDevice = `-- name: CreateDevice :one
 INSERT INTO device (mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until
+RETURNING id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin
 `
 
 type CreateDeviceParams struct {
@@ -47,6 +47,8 @@ func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) (Dev
 		&i.CreatedAt,
 		&i.ScreenOverride,
 		&i.ScreenOverrideUntil,
+		&i.UpdatesEnabled,
+		&i.FwPin,
 	)
 	return i, err
 }
@@ -63,7 +65,7 @@ func (q *Queries) FriendlyIDExists(ctx context.Context, friendlyID string) (int6
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until FROM device WHERE id = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin FROM device WHERE id = ?
 `
 
 func (q *Queries) GetDevice(ctx context.Context, id int64) (Device, error) {
@@ -80,12 +82,14 @@ func (q *Queries) GetDevice(ctx context.Context, id int64) (Device, error) {
 		&i.CreatedAt,
 		&i.ScreenOverride,
 		&i.ScreenOverrideUntil,
+		&i.UpdatesEnabled,
+		&i.FwPin,
 	)
 	return i, err
 }
 
 const getDeviceByAPIKeyHash = `-- name: GetDeviceByAPIKeyHash :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until FROM device WHERE api_key_hash = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin FROM device WHERE api_key_hash = ?
 `
 
 func (q *Queries) GetDeviceByAPIKeyHash(ctx context.Context, apiKeyHash []byte) (Device, error) {
@@ -102,12 +106,14 @@ func (q *Queries) GetDeviceByAPIKeyHash(ctx context.Context, apiKeyHash []byte) 
 		&i.CreatedAt,
 		&i.ScreenOverride,
 		&i.ScreenOverrideUntil,
+		&i.UpdatesEnabled,
+		&i.FwPin,
 	)
 	return i, err
 }
 
 const getDeviceByFriendlyID = `-- name: GetDeviceByFriendlyID :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until FROM device WHERE friendly_id = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin FROM device WHERE friendly_id = ?
 `
 
 func (q *Queries) GetDeviceByFriendlyID(ctx context.Context, friendlyID string) (Device, error) {
@@ -124,12 +130,14 @@ func (q *Queries) GetDeviceByFriendlyID(ctx context.Context, friendlyID string) 
 		&i.CreatedAt,
 		&i.ScreenOverride,
 		&i.ScreenOverrideUntil,
+		&i.UpdatesEnabled,
+		&i.FwPin,
 	)
 	return i, err
 }
 
 const getDeviceByMAC = `-- name: GetDeviceByMAC :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until FROM device WHERE mac = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin FROM device WHERE mac = ?
 `
 
 func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error) {
@@ -146,6 +154,8 @@ func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error
 		&i.CreatedAt,
 		&i.ScreenOverride,
 		&i.ScreenOverrideUntil,
+		&i.UpdatesEnabled,
+		&i.FwPin,
 	)
 	return i, err
 }
@@ -169,7 +179,7 @@ func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDevic
 }
 
 const getDeviceStatus = `-- name: GetDeviceStatus :one
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 WHERE device.id = ?
@@ -199,6 +209,8 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 		&i.Device.CreatedAt,
 		&i.Device.ScreenOverride,
 		&i.Device.ScreenOverrideUntil,
+		&i.Device.UpdatesEnabled,
+		&i.Device.FwPin,
 		&i.LastSeen,
 		&i.BatteryV,
 		&i.Rssi,
@@ -210,7 +222,7 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 }
 
 const listDeviceStatus = `-- name: ListDeviceStatus :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 ORDER BY device.name, device.id
@@ -246,6 +258,8 @@ func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, 
 			&i.Device.CreatedAt,
 			&i.Device.ScreenOverride,
 			&i.Device.ScreenOverrideUntil,
+			&i.Device.UpdatesEnabled,
+			&i.Device.FwPin,
 			&i.LastSeen,
 			&i.BatteryV,
 			&i.Rssi,

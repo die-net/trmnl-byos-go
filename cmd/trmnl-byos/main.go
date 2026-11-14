@@ -8,6 +8,7 @@
 //	trmnl-byos instance   create and list plugin instances
 //	trmnl-byos playlist   edit what devices show
 //	trmnl-byos token      create and remove API tokens
+//	trmnl-byos firmware   add firmware builds and roll them out
 package main
 
 import (
@@ -52,6 +53,7 @@ commands:
   instance   create and list plugin instances: add, list
   playlist   edit what devices show: add, remove, list
   token      create and remove API tokens: add, list, remove
+  firmware   add firmware builds and roll them out: add, list, rollout, cancel, device
 
 Run "trmnl-byos <command> -h" for a command's flags.
 `
@@ -87,6 +89,8 @@ func run() int {
 		err = playlists(ctx, args, os.Stdout)
 	case "token":
 		err = tokens(ctx, args, os.Stdout)
+	case "firmware":
+		err = firmwares(ctx, args, os.Stdout)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		return 2
@@ -142,13 +146,13 @@ func serve(ctx context.Context, args []string) error {
 
 	// Before anything that installs a recipe or starts the scheduler: clear
 	// what a crash during an install or an upload left behind.
-	if err := recipe.Sweep(ctx, client, recipesDir(*data), time.Now()); err != nil {
+	if err := recipe.Sweep(ctx, client, recipesDir(*data), firmwareDir(*data), time.Now()); err != nil {
 		return fmt.Errorf("sweep leftovers: %w", err)
 	}
 
 	mux := http.NewServeMux()
-	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, RefreshRate: *refresh}).Register(mux)
-	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data)}).Register(mux)
+	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, RefreshRate: *refresh, FirmwareDir: firmwareDir(*data)}).Register(mux)
+	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data)}).Register(mux)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,

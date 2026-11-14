@@ -76,6 +76,24 @@ docker run --rm --init -p 8081:8081 trmnl-byos-render
 
 With one running, `TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker ./internal/render/` builds a small recipe in it. `serve -render-url` points the server at a renderer, and the renderer needs `HTTP_PROXY` and `HTTPS_PROXY` set to the server's `-proxy-listen` address.
 
+## Firmware updates
+
+A device installs firmware only when you ask. Only add a build made for the device's exact firmware model, the `Model` header it sends (`firmware list` and `devices` show it). The firmware does not check the board it installs onto, so a build for another board on the same chip installs and can leave the device needing a USB cable. The server checks the chip and the file's structure, not the board.
+
+```
+trmnl-byos firmware add -model xiao_epaper_display -version 1.8.19 FW1.8.19.bin
+trmnl-byos firmware device -updates on ABC123
+trmnl-byos firmware rollout 1 -canary ABC123
+trmnl-byos firmware list
+```
+
+`firmware add` takes the app image TRMNL publishes for OTA (the `firmware.bin` of a build, not the merged flash image). It accepts only models in the table in `docs/design.md`, and `-version` is the dotted version from the release's file name. Nothing is offered after `add`. `firmware rollout` offers the build to the canary device, and to every device of that model after the canary reports the new version. `firmware cancel 1` stops offering it. A build is offered to a device at most 3 times. If the canary is offered it 3 times and still does not report the version, `firmware list` shows the rollout as `stalled` and nothing is offered to anyone. The `LAST OFFERED` column is when the canary was last told to install the build. Run `firmware rollout` again, with the same canary to retry or another one, or cancel. `firmware device -updates on|off` and `-pin VERSION` or `-pin none` set which devices may be offered firmware, which is none until you turn it on. A device on firmware older than 1.8.17 is never offered an update, since its `Model` may not name its board. The same operations are in the admin API, under `/api/v1/firmware` and `PATCH /api/v1/devices/{id}`:
+
+```
+curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/octet-stream" --data-binary @FW1.8.19.bin "http://localhost:8080/api/v1/firmware?model=xiao_epaper_display&version=1.8.19"
+curl -H "Authorization: Bearer $TOKEN" -d '{"canary": "ABC123"}' http://localhost:8080/api/v1/firmware/1/rollout
+```
+
 ## Admin API
 
 Everything the commands above do to a running server's data, a script can do over HTTP at `/api/v1`. It is on the same port as the device API, so keep that port on a trusted network. Create a token, which is shown once:

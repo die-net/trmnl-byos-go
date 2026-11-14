@@ -41,6 +41,8 @@ type Config struct {
 	Key *secrets.Key
 	// RecipesDir is where uploaded recipes are installed.
 	RecipesDir string
+	// FirmwareDir is where uploaded firmware is stored.
+	FirmwareDir string
 }
 
 // Server handles admin API requests.
@@ -68,9 +70,14 @@ func (s *Server) Register(mux *http.ServeMux) {
 	}{
 		{"GET /api/v1/devices", handle(http.StatusOK, s.listDevices)},
 		{"GET /api/v1/devices/{id}", handle(http.StatusOK, s.getDevice)},
+		{"PATCH /api/v1/devices/{id}", handle(http.StatusOK, s.patchDevice)},
 		{"POST /api/v1/devices/{id}/calibrate", handle(http.StatusOK, s.calibrate)},
 		{"GET /api/v1/join", handle(http.StatusOK, s.getJoin)},
 		{"PUT /api/v1/join", handle(http.StatusOK, s.putJoin)},
+		{"GET /api/v1/firmware", handle(http.StatusOK, s.listFirmware)},
+		{"POST /api/v1/firmware", handle(http.StatusCreated, s.addFirmware)},
+		{"POST /api/v1/firmware/{id}/rollout", handle(http.StatusOK, s.startRollout)},
+		{"DELETE /api/v1/firmware/{id}/rollout", handleNoContent(s.cancelRollout)},
 		{"GET /api/v1/recipes", handle(http.StatusOK, s.listRecipes)},
 		{"GET /api/v1/recipes/{id}", handle(http.StatusOK, s.getRecipe)},
 		{"POST /api/v1/recipes", handle(http.StatusCreated, s.installRecipe)},
@@ -95,8 +102,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 }
 
 // uploadTimeout is how long an upload may take to arrive. The server's own
-// read and write timeouts are short, for everything else, and a recipe
-// zip over a slow link needs longer.
+// read and write timeouts are short, for everything else, and a firmware
+// image or a recipe zip over a slow link needs longer.
 const uploadTimeout = 10 * time.Minute
 
 // allowSlowUpload gives the request its own read and write deadlines in

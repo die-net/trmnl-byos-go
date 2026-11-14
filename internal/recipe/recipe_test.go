@@ -655,7 +655,7 @@ func TestSweep(t *testing.T) {
 	if _, err := Install(ctx, client, recipes, src, time.Now()); err == nil {
 		t.Fatal("installed over an orphan directory")
 	}
-	if err := Sweep(ctx, client, recipes, time.Now()); err != nil {
+	if err := Sweep(ctx, client, recipes, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
@@ -673,7 +673,7 @@ func TestSweep(t *testing.T) {
 // running install may still be using is kept.
 func TestSweepTemps(t *testing.T) {
 	now := time.Now()
-	recipes := t.TempDir()
+	recipes, firmwareDir := t.TempDir(), t.TempDir()
 	old, fresh := now.Add(-2*time.Hour), now.Add(-time.Minute)
 	for _, e := range []struct {
 		dir, name string
@@ -685,6 +685,9 @@ func TestSweepTemps(t *testing.T) {
 		{recipes, ".upload-old.zip", false, old},
 		{recipes, ".upload-fresh.zip", false, fresh},
 		{recipes, "notes.txt", false, old},
+		{firmwareDir, ".upload-old.bin", false, old},
+		{firmwareDir, ".upload-fresh.bin", false, fresh},
+		{firmwareDir, "keep.bin", false, old},
 	} {
 		p := filepath.Join(e.dir, e.name)
 		if e.dirEntry {
@@ -696,7 +699,7 @@ func TestSweepTemps(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := Sweep(t.Context(), openDB(t), recipes, now); err != nil {
+	if err := Sweep(t.Context(), openDB(t), recipes, firmwareDir, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range []struct {
@@ -708,6 +711,9 @@ func TestSweepTemps(t *testing.T) {
 		{recipes, ".upload-old.zip", false},
 		{recipes, ".upload-fresh.zip", true},
 		{recipes, "notes.txt", true},
+		{firmwareDir, ".upload-old.bin", false},
+		{firmwareDir, ".upload-fresh.bin", true},
+		{firmwareDir, "keep.bin", true},
 	} {
 		_, err := os.Stat(filepath.Join(e.dir, e.name))
 		if kept := err == nil; kept != e.kept {

@@ -82,6 +82,8 @@ var addedColumns = []struct {
 }{
 	{"device", "screen_override", `ALTER TABLE device ADD COLUMN screen_override TEXT NOT NULL DEFAULT ''`},
 	{"device", "screen_override_until", `ALTER TABLE device ADD COLUMN screen_override_until INTEGER NOT NULL DEFAULT 0`},
+	{"device", "updates_enabled", `ALTER TABLE device ADD COLUMN updates_enabled INTEGER NOT NULL DEFAULT 0`},
+	{"device", "fw_pin", `ALTER TABLE device ADD COLUMN fw_pin TEXT NOT NULL DEFAULT ''`},
 	{"device_state", "width", `ALTER TABLE device_state ADD COLUMN width INTEGER`},
 	{"device_state", "height", `ALTER TABLE device_state ADD COLUMN height INTEGER`},
 	{"device_state", "item_id", `ALTER TABLE device_state ADD COLUMN item_id INTEGER`},

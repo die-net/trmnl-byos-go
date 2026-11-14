@@ -23,6 +23,8 @@ type Device struct {
 	CreatedAt           int64  `json:"created_at"`
 	ScreenOverride      string `json:"screen_override"`
 	ScreenOverrideUntil int64  `json:"screen_override_until"`
+	UpdatesEnabled      int64  `json:"updates_enabled"`
+	FwPin               string `json:"fw_pin"`
 }
 
 type DeviceCursor struct {
@@ -52,6 +54,32 @@ type DeviceState struct {
 	LastImage           string   `json:"last_image"`
 	Width               *int64   `json:"width"`
 	Height              *int64   `json:"height"`
+}
+
+type Firmware struct {
+	ID         int64  `json:"id"`
+	FwModel    string `json:"fw_model"`
+	Version    string `json:"version"`
+	Sha256     string `json:"sha256"`
+	Chip       string `json:"chip"`
+	IdfVersion string `json:"idf_version"`
+	Bytes      int64  `json:"bytes"`
+	Source     string `json:"source"`
+	UploadedAt int64  `json:"uploaded_at"`
+}
+
+type FirmwareOffer struct {
+	DeviceID      int64 `json:"device_id"`
+	FirmwareID    int64 `json:"firmware_id"`
+	Offers        int64 `json:"offers"`
+	LastOfferedAt int64 `json:"last_offered_at"`
+}
+
+type FirmwareRollout struct {
+	FirmwareID     int64  `json:"firmware_id"`
+	CanaryDeviceID int64  `json:"canary_device_id"`
+	State          string `json:"state"`
+	StartedAt      int64  `json:"started_at"`
 }
 
 type InstanceDatum struct {

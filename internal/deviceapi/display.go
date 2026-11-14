@@ -13,6 +13,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
+	"github.com/die-net/trmnl-byos-go/internal/firmware"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/screen"
@@ -27,9 +28,12 @@ type displayResponse struct {
 	Filename string `json:"filename,omitempty"`
 	// RefreshRate is seconds until the next wake. The firmware reads it as
 	// a number, never a string.
-	RefreshRate     int64  `json:"refresh_rate"`
-	ResetFirmware   bool   `json:"reset_firmware"`
+	RefreshRate   int64 `json:"refresh_rate"`
+	ResetFirmware bool  `json:"reset_firmware"`
+	// UpdateFirmware tells the device to install the firmware at
+	// FirmwareURL. It is only ever true with a URL.
 	UpdateFirmware  bool   `json:"update_firmware"`
+	FirmwareURL     string `json:"firmware_url,omitempty"`
 	SpecialFunction string `json:"special_function,omitempty"`
 }
 
@@ -106,6 +110,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	err = s.db.InTx(ctx, func(q *db.Queries) error {
 		if (model != "" && model != dev.FwModel) || (version != "" && version != dev.FwVersion) {
 			// An empty header leaves the stored value alone in the query.
+			// model and version stay as sent, for the firmware offer.
 			if err := q.UpdateDeviceFirmware(ctx, db.UpdateDeviceFirmwareParams{FwModel: model, FwVersion: version, ID: dev.ID}); err != nil {
 				return fmt.Errorf("update firmware: %w", err)
 			}
@@ -138,6 +143,10 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		Filename:        choice.name,
 		RefreshRate:     choice.refresh,
 		SpecialFunction: "none",
+	}
+	if fw := s.offerFirmware(ctx, &dev, model, version); fw != nil {
+		slog.Info("display: offering firmware", "mac", dev.Mac, "model", model, "from", version, "to", fw.Version)
+		resp.UpdateFirmware, resp.FirmwareURL = true, s.baseURL(r)+"/firmware/"+firmware.FileName(fw.Sha256)
 	}
 	writeJSON(w, resp)
 }
