@@ -32,13 +32,13 @@ func newPlaylist(t *testing.T, n int) (*db.Client, []int64, int64) {
 	}
 	ids := make([]int64, 0, n)
 	for range n {
-		item, _, err := AddItem(ctx, client, "p", 0, inst.ID, DefaultDuration)
+		item, _, err := AddItem(ctx, client, "p", "", inst.ID, DefaultDuration)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, item.ID)
 	}
-	if _, _, err := AddItem(ctx, client, "q", 0, inst.ID, DefaultDuration); err != nil {
+	if _, _, err := AddItem(ctx, client, "q", "", inst.ID, DefaultDuration); err != nil {
 		t.Fatal(err)
 	}
 	return client, ids, inst.ID
@@ -145,7 +145,7 @@ func TestDeleteItemRenumbers(t *testing.T) {
 		t.Errorf("q = %v", got)
 	}
 	// An item added after a delete takes the next index.
-	item, _, err := AddItem(ctx, client, "p", 0, 1, DefaultDuration)
+	item, _, err := AddItem(ctx, client, "p", "", 1, DefaultDuration)
 	if err != nil || item.Position != 2 {
 		t.Errorf("AddItem = %+v, %v; want position 2", item, err)
 	}
@@ -234,7 +234,7 @@ func TestUpdatePlaylistSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 	days, start, end, from, until := int64(5), int64(60), int64(30), int64(100), int64(200)
-	err = UpdatePlaylist(ctx, client, pl.ID, Update{Schedule: &ScheduleEdit{Days: &days, WindowStart: &start, WindowEnd: &end, StartsAt: &from, EndsAt: &until}})
+	err = UpdatePlaylist(ctx, client, ByID(pl.ID), Update{Schedule: &ScheduleEdit{Days: &days, WindowStart: &start, WindowEnd: &end, StartsAt: &from, EndsAt: &until}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,17 +245,17 @@ func TestUpdatePlaylistSchedule(t *testing.T) {
 	// A partial edit keeps the rest, and the result is what is validated: an
 	// end date before the kept start date is refused.
 	early := int64(50)
-	if err := UpdatePlaylist(ctx, client, pl.ID, Update{Schedule: &ScheduleEdit{EndsAt: &early}}); !errors.Is(err, errkind.ErrInvalid) {
+	if err := UpdatePlaylist(ctx, client, ByID(pl.ID), Update{Schedule: &ScheduleEdit{EndsAt: &early}}); !errors.Is(err, errkind.ErrInvalid) {
 		t.Errorf("end before the kept start: %v", err)
 	}
 	zero := int64(0)
-	if err := UpdatePlaylist(ctx, client, pl.ID, Update{Schedule: &ScheduleEdit{Days: &zero}}); !errors.Is(err, errkind.ErrInvalid) {
+	if err := UpdatePlaylist(ctx, client, ByID(pl.ID), Update{Schedule: &ScheduleEdit{Days: &zero}}); !errors.Is(err, errkind.ErrInvalid) {
 		t.Errorf("no days: %v", err)
 	}
 	if again, err := client.Read.GetPlaylist(ctx, pl.ID); err != nil || again != got {
 		t.Errorf("a refused edit changed the playlist: %+v, %v", again, err)
 	}
-	if err := UpdatePlaylist(ctx, client, pl.ID+100, Update{}); !errors.Is(err, ErrNoPlaylist) {
+	if err := UpdatePlaylist(ctx, client, ByID(pl.ID+100), Update{}); !errors.Is(err, ErrNoPlaylist) {
 		t.Errorf("unknown playlist: %v", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestDeviceLists(t *testing.T) {
 		id       int64
 		priority *int64
 	}{{p.ID, nil}, {q.ID, &zero}} {
-		if err := LinkDevice(ctx, client, l.id, dev.ID, l.priority); err != nil {
+		if err := LinkDevice(ctx, client, ByID(l.id), dev.FriendlyID, l.priority); err != nil {
 			t.Fatal(err)
 		}
 	}

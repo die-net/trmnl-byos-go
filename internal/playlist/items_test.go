@@ -34,15 +34,15 @@ func TestAddItem(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		playlist string
-		device   int64
+		device   string
 		instance int64
 		duration time.Duration
 		want     error
 	}{
-		{"unknown instance", "p", 0, inst.ID + 1, time.Hour, errkind.ErrNotFound},
-		{"unknown instance for a device", "", dev.ID, inst.ID + 1, time.Hour, errkind.ErrNotFound},
-		{"no playlist and no device", "", 0, inst.ID, time.Hour, errkind.ErrInvalid},
-		{"too short", "p", 0, inst.ID, time.Second, errkind.ErrInvalid},
+		{"unknown instance", "p", "", inst.ID + 1, time.Hour, errkind.ErrNotFound},
+		{"unknown instance for a device", "", dev.FriendlyID, inst.ID + 1, time.Hour, errkind.ErrNotFound},
+		{"no playlist and no device", "", "", inst.ID, time.Hour, errkind.ErrInvalid},
+		{"too short", "p", "", inst.ID, time.Second, errkind.ErrInvalid},
 	} {
 		if _, _, err := AddItem(ctx, client, tc.playlist, tc.device, tc.instance, tc.duration); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
@@ -53,7 +53,7 @@ func TestAddItem(t *testing.T) {
 	}
 
 	// With no name, the playlist is the device's friendly ID.
-	item, name, err := AddItem(ctx, client, "", dev.ID, inst.ID, DefaultDuration)
+	item, name, err := AddItem(ctx, client, "", dev.FriendlyID, inst.ID, DefaultDuration)
 	if err != nil || name != "ABC123" || item.Position != 0 || item.Duration != 900 {
 		t.Fatalf("AddItem = %+v, %q, %v", item, name, err)
 	}

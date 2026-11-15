@@ -119,6 +119,20 @@ func (c *Client) InTx(ctx context.Context, fn func(q *Queries) error) error {
 	return nil
 }
 
+// ReadTx runs fn in a read-only transaction on Reader, so every read through
+// q sees one snapshot of the database. The transaction is a deferred BEGIN,
+// so under WAL its snapshot starts at fn's first read and holds until fn
+// returns. Nothing is written, so it is rolled back at the end. fn must read
+// through q, not Read, which sees newer commits, and must not write.
+func (c *Client) ReadTx(ctx context.Context, fn func(q *Queries) error) error {
+	tx, err := c.Reader.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fn(c.Read.WithTx(tx))
+}
+
 // Close closes the database.
 func (c *Client) Close() error {
 	if c == nil {

@@ -43,7 +43,7 @@ func addInstance(t *testing.T, tu *testUI, name string) int64 {
 // playlist, and returns the item.
 func addItem(t *testing.T, tu *testUI, list, instance string, d time.Duration) db.PlaylistItem {
 	t.Helper()
-	item, _, err := playlist.AddItem(t.Context(), tu.db, list, 0, addInstance(t, tu, instance), d)
+	item, _, err := playlist.AddItem(t.Context(), tu.db, list, "", addInstance(t, tu, instance), d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestPlaylistsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := playlist.AddItem(ctx, tu.db, "", dev.ID, addInstance(t, tu, "Solo"), 0); err != nil {
+	if _, _, err := playlist.AddItem(ctx, tu.db, "", dev.FriendlyID, addInstance(t, tu, "Solo"), 0); err != nil {
 		t.Fatal(err)
 	}
 	other, err := device.FindDevice(ctx, tu.db.Read, "DEF456")
@@ -122,7 +122,7 @@ func TestPlaylistsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := playlist.LinkDevice(ctx, tu.db, pl.ID, other.ID, nil); err != nil {
+	if err := playlist.LinkDevice(ctx, tu.db, playlist.ByID(pl.ID), other.FriendlyID, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestPlaylistsList(t *testing.T) {
 	}
 	// 2026-12-01 00:00 in the server's zone, which UTC would show as the day before.
 	start := time.Date(2026, 12, 1, 0, 0, 0, 0, testZone).Unix()
-	if err := playlist.UpdatePlaylist(ctx, tu.db, playlistID(t, tu, mornings), playlist.Update{Schedule: &playlist.ScheduleEdit{StartsAt: &start}}); err != nil {
+	if err := playlist.UpdatePlaylist(ctx, tu.db, playlist.ByID(playlistID(t, tu, mornings)), playlist.Update{Schedule: &playlist.ScheduleEdit{StartsAt: &start}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -774,5 +774,25 @@ func TestDescribeSchedule(t *testing.T) {
 				t.Errorf("describeSchedule = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestBuildPlaylistViews checks that rows are joined to their playlist by
+// ID, and that a row for a playlist that is not in the list is skipped.
+func TestBuildPlaylistViews(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, false)
+	lists := []db.Playlist{{ID: 1, Name: "same", Days: int64(playlist.AllDays)}, {ID: 2, Name: "other", Days: int64(playlist.AllDays)}}
+	devs := []db.ListPlaylistDevicesRow{
+		{Playlist: "other", PlaylistID: 1, FriendlyID: "ABC123"}, // The name is stale. The ID decides.
+		{Playlist: "ghost", PlaylistID: 9, FriendlyID: "ABC124"},
+	}
+	items := []db.ListPlaylistItemsRow{
+		{Playlist: "same", PlaylistID: 2, ID: 7, Days: int64(playlist.AllDays)},
+		{Playlist: "ghost", PlaylistID: 9, ID: 8},
+	}
+	got := tu.srv.buildPlaylistViews(lists, devs, items)
+	if len(got) != 2 || len(got[0].Devices) != 1 || len(got[0].Items) != 0 || len(got[1].Devices) != 0 || len(got[1].Items) != 1 || got[1].Items[0].ID != 7 {
+		t.Errorf("views %+v", got)
 	}
 }

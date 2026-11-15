@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
@@ -143,15 +144,17 @@ var (
 
 // AddItem appends an item showing one instance on the whole screen to the
 // named playlist, checked by CleanName, creating the playlist if it does not
-// exist, and links the device to it, last in the device's order, when
-// deviceID is not 0 and it is not linked already. An empty name is the device's
-// friendly ID, so the device needs to be given then. duration is 0, to show
+// exist, and links the device, named by friendly ID or MAC, to it, last in the
+// device's order, when deviceName is not empty and it is not linked already.
+// The device is looked up in the same transaction, and an unknown one is an
+// error wrapping device.ErrNoDevice. An empty name is the device's friendly
+// ID, so the device needs to be given then. duration is 0, to show
 // the item until a button press, or at least MinDuration.
-func AddItem(ctx context.Context, client *db.Client, name string, deviceID, instanceID int64, duration time.Duration) (db.PlaylistItem, string, error) {
+func AddItem(ctx context.Context, client *db.Client, name, deviceName string, instanceID int64, duration time.Duration) (db.PlaylistItem, string, error) {
 	if err := validDuration(duration); err != nil {
 		return db.PlaylistItem{}, "", err
 	}
-	if name == "" && deviceID == 0 {
+	if name == "" && deviceName == "" {
 		return db.PlaylistItem{}, "", fmt.Errorf("%w: give a playlist name or a device", errkind.ErrInvalid)
 	}
 	if name != "" {
@@ -167,11 +170,14 @@ func AddItem(ctx context.Context, client *db.Client, name string, deviceID, inst
 		} else if err != nil {
 			return fmt.Errorf("get instance: %w", err)
 		}
-		if name == "" {
-			dev, err := q.GetDevice(ctx, deviceID)
-			if err != nil {
-				return fmt.Errorf("get device: %w", err)
+		var dev db.Device
+		if deviceName != "" {
+			var err error
+			if dev, err = device.FindDevice(ctx, q, deviceName); err != nil {
+				return err
 			}
+		}
+		if name == "" {
 			name = dev.FriendlyID
 		}
 		pl, err := q.GetPlaylistByName(ctx, name)
@@ -181,8 +187,8 @@ func AddItem(ctx context.Context, client *db.Client, name string, deviceID, inst
 		if err != nil {
 			return fmt.Errorf("get playlist: %w", err)
 		}
-		if deviceID != 0 {
-			if err := q.AppendPlaylistDevice(ctx, db.AppendPlaylistDeviceParams{DeviceID: deviceID, PlaylistID: pl.ID}); err != nil {
+		if deviceName != "" {
+			if err := q.AppendPlaylistDevice(ctx, db.AppendPlaylistDeviceParams{DeviceID: dev.ID, PlaylistID: pl.ID}); err != nil {
 				return fmt.Errorf("link device: %w", err)
 			}
 		}

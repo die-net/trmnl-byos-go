@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
-	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
@@ -246,13 +244,7 @@ func playlistAdd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	var dev db.Device
-	if *deviceID != "" {
-		if dev, err = device.FindDevice(ctx, client.Read, *deviceID); err != nil {
-			return err
-		}
-	}
-	item, plName, err := playlist.AddItem(ctx, client, *name, dev.ID, *instanceID, *duration)
+	item, plName, err := playlist.AddItem(ctx, client, *name, *deviceID, *instanceID, *duration)
 	if err != nil {
 		return err
 	}
@@ -429,27 +421,11 @@ func playlistSchedule(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	pl, err := playlistByName(ctx, client, rest[0])
-	if err != nil {
+	if err := playlist.UpdatePlaylist(ctx, client, playlist.ByName(rest[0]), playlist.Update{Schedule: edit}); err != nil {
 		return err
 	}
-	if err := playlist.UpdatePlaylist(ctx, client, pl.ID, playlist.Update{Schedule: edit}); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Updated playlist %q.\n", pl.Name)
+	_, err = fmt.Fprintf(out, "Updated playlist %q.\n", rest[0])
 	return err
-}
-
-// playlistByName returns the playlist with the name, or an error wrapping
-// playlist.ErrNoPlaylist.
-func playlistByName(ctx context.Context, client *db.Client, name string) (db.Playlist, error) {
-	pl, err := client.Read.GetPlaylistByName(ctx, name)
-	if errors.Is(err, sql.ErrNoRows) {
-		return db.Playlist{}, fmt.Errorf("%w: %q", playlist.ErrNoPlaylist, name)
-	} else if err != nil {
-		return db.Playlist{}, fmt.Errorf("get playlist: %w", err)
-	}
-	return pl, nil
 }
 
 func playlistCreate(ctx context.Context, args []string, out io.Writer) error {
@@ -484,14 +460,10 @@ func playlistRename(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	pl, err := playlistByName(ctx, client, rest[0])
-	if err != nil {
+	if err := playlist.UpdatePlaylist(ctx, client, playlist.ByName(rest[0]), playlist.Update{Name: &rest[1]}); err != nil {
 		return err
 	}
-	if err := playlist.UpdatePlaylist(ctx, client, pl.ID, playlist.Update{Name: &rest[1]}); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Renamed playlist %q to %q.\n", pl.Name, strings.TrimSpace(rest[1]))
+	_, err = fmt.Fprintf(out, "Renamed playlist %q to %q.\n", rest[0], strings.TrimSpace(rest[1]))
 	return err
 }
 
@@ -507,14 +479,10 @@ func playlistDelete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	pl, err := playlistByName(ctx, client, rest[0])
-	if err != nil {
+	if err := playlist.DeletePlaylist(ctx, client, playlist.ByName(rest[0])); err != nil {
 		return err
 	}
-	if err := playlist.DeletePlaylist(ctx, client, pl.ID); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Deleted playlist %q.\n", pl.Name)
+	_, err = fmt.Fprintf(out, "Deleted playlist %q.\n", rest[0])
 	return err
 }
 
@@ -537,18 +505,10 @@ func playlistLink(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	pl, err := playlistByName(ctx, client, rest[0])
-	if err != nil {
+	if err := playlist.LinkDevice(ctx, client, playlist.ByName(rest[0]), rest[1], prio); err != nil {
 		return err
 	}
-	dev, err := device.FindDevice(ctx, client.Read, rest[1])
-	if err != nil {
-		return err
-	}
-	if err := playlist.LinkDevice(ctx, client, pl.ID, dev.ID, prio); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Linked device %s to playlist %q.\n", dev.FriendlyID, pl.Name)
+	_, err = fmt.Fprintf(out, "Linked device %s to playlist %q.\n", rest[1], rest[0])
 	return err
 }
 
@@ -564,18 +524,10 @@ func playlistUnlink(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	pl, err := playlistByName(ctx, client, rest[0])
-	if err != nil {
+	if err := playlist.UnlinkDevice(ctx, client, playlist.ByName(rest[0]), rest[1]); err != nil {
 		return err
 	}
-	dev, err := device.FindDevice(ctx, client.Read, rest[1])
-	if err != nil {
-		return err
-	}
-	if err := playlist.UnlinkDevice(ctx, client, pl.ID, dev.ID); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Unlinked device %s from playlist %q.\n", dev.FriendlyID, pl.Name)
+	_, err = fmt.Fprintf(out, "Unlinked device %s from playlist %q.\n", rest[1], rest[0])
 	return err
 }
 

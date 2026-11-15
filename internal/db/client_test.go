@@ -908,3 +908,44 @@ func TestMigratePlaylistPriorityIndex(t *testing.T) {
 		t.Error("two links of one device with the same priority were accepted")
 	}
 }
+
+// TestReadTx checks that every read in a ReadTx sees one snapshot: a commit
+// made through Write after the first read is not seen by the second, though
+// it is by a read outside. It runs under whichever driver the build uses.
+func TestReadTx(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	client := openTest(t)
+	set := func(v string) {
+		t.Helper()
+		_, err := client.Writer.ExecContext(ctx, `INSERT INTO setting (key, value, updated_at) VALUES ('k', ?, 1) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	set("old")
+	err := client.ReadTx(ctx, func(q *Queries) error {
+		if v, err := q.GetSetting(ctx, "k"); err != nil || v != "old" {
+			t.Errorf("first read = %q, %v", v, err)
+		}
+		set("new")
+		if v, err := q.GetSetting(ctx, "k"); err != nil || v != "old" {
+			t.Errorf("second read in the transaction = %q, %v; want the old value", v, err)
+		}
+		if v, err := client.Read.GetSetting(ctx, "k"); err != nil || v != "new" {
+			t.Errorf("read outside the transaction = %q, %v; want the new value", v, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An error from fn is returned as it is, and the transaction is released.
+	want := errors.New("stop")
+	if err := client.ReadTx(ctx, func(*Queries) error { return want }); !errors.Is(err, want) {
+		t.Errorf("err = %v, want %v", err, want)
+	}
+	if v, err := client.Read.GetSetting(ctx, "k"); err != nil || v != "new" {
+		t.Errorf("after the transaction = %q, %v", v, err)
+	}
+}

@@ -677,8 +677,8 @@ func TestPlaylistCRUD(t *testing.T) {
 		{"link unknown field", "PUT", pa + "/devices/" + testFriend, `{"order": 1}`, 400, "unknown field"},
 		{"link priority not a number", "PUT", pa + "/devices/" + testFriend, `{"priority": "first"}`, 400, "bad request body"},
 		{"unlink not linked", "DELETE", pa + "/devices/" + testFriend, "", 404, "not linked"},
-		{"unlink unknown device", "DELETE", pa + "/devices/ZZZ999", "", 404, "not linked"},
-		{"unlink unknown playlist", "DELETE", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "not linked"},
+		{"unlink unknown device", "DELETE", pa + "/devices/ZZZ999", "", 404, "no such device"},
+		{"unlink unknown playlist", "DELETE", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
 	} {
 		ta.wantError(t, tc.method, tc.path, tc.body, tc.status, tc.contains)
 	}
@@ -1090,5 +1090,28 @@ func TestDecode(t *testing.T) {
 				t.Errorf("n = %d, want %d", v.N, tc.wantN)
 			}
 		})
+	}
+}
+
+// TestBuildPlaylists checks that device and item rows are joined to their
+// playlist by ID, and that a row for a playlist that is not in the list is
+// skipped, as a read that is not one snapshot could give.
+func TestBuildPlaylists(t *testing.T) {
+	t.Parallel()
+	lists := []db.Playlist{{ID: 1, Name: "same"}, {ID: 2, Name: "other"}}
+	devs := []db.ListPlaylistDevicesRow{
+		{Playlist: "other", PlaylistID: 1, FriendlyID: "ABC123"}, // The name is stale. The ID decides.
+		{Playlist: "ghost", PlaylistID: 9, FriendlyID: "ABC124"},
+	}
+	items := []db.ListPlaylistItemsRow{
+		{Playlist: "same", PlaylistID: 2, ID: 7},
+		{Playlist: "ghost", PlaylistID: 9, ID: 8},
+	}
+	got := buildPlaylists(lists, devs, items)
+	if len(got) != 2 || len(got[0].Devices) != 1 || got[0].Devices[0].Device != "ABC123" || len(got[0].Items) != 0 {
+		t.Errorf("first playlist %+v", got[0])
+	}
+	if len(got[1].Devices) != 0 || len(got[1].Items) != 1 || got[1].Items[0].ID != 7 {
+		t.Errorf("second playlist %+v", got[1])
 	}
 }
