@@ -63,6 +63,45 @@ type InstanceUpdate struct {
 	// is never shown back, so unmarking a field that has one is refused
 	// unless the same update gives it a new value or clears it.
 	Secret map[string]bool
+	// Seen, if not nil, is the instance as the caller saw it. The update is
+	// refused with ErrInstanceChanged if the instance differs from it now.
+	// Nil makes the last write win, as for the API and the command line.
+	Seen *InstanceSeen
+}
+
+// InstanceSeen is an instance's settings as a page showed them: its name,
+// palette, plain field values and secret marks, as PublicFields and
+// SecretKeys return them. UpdateInstance compares it with the instance as it
+// is, so a save from a page that is out of date is refused instead of
+// undoing a change made since. Sealed values are not compared: a page never
+// shows them, and comparing them would need the secrets key, which a rename
+// does not.
+type InstanceSeen struct {
+	Name    string
+	Palette string
+	// Fields are the plain field values by keyname. Nil and empty are the
+	// same.
+	Fields map[string]Value
+	// SecretKeys are the keynames marked secret, in any order.
+	SecretKeys []string
+}
+
+// ErrInstanceChanged means an instance is not what the caller saw, so its
+// change was refused.
+var ErrInstanceChanged = errkind.New(errkind.ErrConflict, "the instance has changed")
+
+// matches reports whether the instance, with its decoded plain values and
+// marks, is what was seen. The values are compared as values, so the order of
+// keys in the stored JSON does not matter.
+func (s *InstanceSeen) matches(inst *db.PluginInstance, plain map[string]Value, marks map[string]bool) bool {
+	if s.Name != inst.Name || s.Palette != inst.Palette || !maps.EqualFunc(plain, s.Fields, Value.equal) {
+		return false
+	}
+	seen := make(map[string]bool, len(s.SecretKeys))
+	for _, k := range s.SecretKeys {
+		seen[k] = true
+	}
+	return maps.Equal(seen, marks)
 }
 
 // readFields returns the custom fields of the recipe with the given ID. It
@@ -197,9 +236,13 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 // its renders stale: moving a value between stores does not change what a
 // build gets.
 //
-// It returns ErrNoInstance for an unknown ID, secrets.ErrNoKey when the
-// secrets have to be opened or sealed and key is nil, and the errors of
-// CreateInstance for the rest.
+// When u.Seen is set, the instance is compared with it first, inside the
+// transaction, which needs no key.
+//
+// It returns ErrNoInstance for an unknown ID, an error wrapping
+// ErrInstanceChanged when the instance is not what u.Seen says,
+// secrets.ErrNoKey when the secrets have to be opened or sealed and key is
+// nil, and the errors of CreateInstance for the rest.
 func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, recipesDir string, id int64, u InstanceUpdate, now time.Time) (db.PluginInstance, error) {
 	if u.Palette != nil {
 		if err := checkPalette(*u.Palette); err != nil {
@@ -241,6 +284,15 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		curMarks, err := decodeMarks(&cur)
 		if err != nil {
 			return err
+		}
+		if u.Seen != nil {
+			seenPlain, _, err := decodeFields(&cur, nil, false)
+			if err != nil {
+				return err
+			}
+			if !u.Seen.matches(&cur, seenPlain, curMarks) {
+				return fmt.Errorf("%w: instance %d", ErrInstanceChanged, id)
+			}
 		}
 		bad := FieldErrors{}
 		marked := mark(byName, curMarks, u.Secret, bad)
