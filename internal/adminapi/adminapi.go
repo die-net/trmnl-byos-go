@@ -82,6 +82,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"PATCH /api/v1/settings", handle(http.StatusOK, s.patchSettings)},
 		{"GET /api/v1/firmware", handle(http.StatusOK, s.listFirmware)},
 		{"POST /api/v1/firmware", handle(http.StatusCreated, s.addFirmware)},
+		{"GET /api/v1/firmware/{id}/devices", handle(http.StatusOK, s.listFirmwareDevices)},
 		{"POST /api/v1/firmware/{id}/rollout", handle(http.StatusOK, s.startRollout)},
 		{"DELETE /api/v1/firmware/{id}/rollout", handleNoContent(s.cancelRollout)},
 		{"GET /api/v1/recipes", handle(http.StatusOK, s.listRecipes)},

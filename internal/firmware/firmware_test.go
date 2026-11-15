@@ -748,11 +748,17 @@ func TestOfferAndRecordFiles(t *testing.T) {
 	d, _ := device.FindDevice(t.Context(), f.client.Read, canaryID)
 	offers := func(id int64) int64 {
 		t.Helper()
-		n, err := f.client.Read.GetFirmwareOffers(t.Context(), db.GetFirmwareOffersParams{DeviceID: d.ID, FirmwareID: id})
+		all, err := DeviceOffers(t.Context(), f.client.Read, f.dir, id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return n
+		for _, o := range all {
+			if o.DeviceID == d.ID {
+				return o.Offers
+			}
+		}
+		t.Fatalf("device %d not listed for build %d", d.ID, id)
+		return 0
 	}
 	if err := os.Remove(Path(f.dir, newer.Sha256)); err != nil {
 		t.Fatal(err)

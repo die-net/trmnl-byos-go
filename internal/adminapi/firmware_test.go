@@ -196,6 +196,7 @@ func TestFirmwareNeedsToken(t *testing.T) {
 	for _, r := range []struct{ method, path string }{
 		{"GET", "/api/v1/firmware"},
 		{"POST", "/api/v1/firmware?model=og"},
+		{"GET", "/api/v1/firmware/1/devices"},
 		{"POST", "/api/v1/firmware/1/rollout"},
 		{"DELETE", "/api/v1/firmware/1/rollout"},
 		{"PATCH", "/api/v1/devices/" + testFriend},
@@ -335,4 +336,42 @@ func TestPatchDeviceName(t *testing.T) {
 	if d.Name != "" {
 		t.Errorf("name %q, want none", d.Name)
 	}
+}
+
+func TestFirmwareDevices(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, false)
+	dev := ta.addDevice(t)
+	var fw firmwareJSON
+	decodeBody(t, ta.upload(t, "xiao_epaper_display", "1.8.19", bytes.NewReader(testImage(chipS3, "1")), "application/octet-stream"), 201, &fw)
+	path := "/api/v1/firmware/" + strconv.FormatInt(fw.ID, 10) + "/devices"
+
+	// The device reports old firmware, with updates off.
+	var list []firmwareDeviceJSON
+	ta.call(t, "GET", path, "", 200, &list)
+	if len(list) != 1 || list[0].Device != testFriend || list[0].Reason != "updates_off" || list[0].Why == "" || list[0].CanBeCanary {
+		t.Errorf("list %+v", list)
+	}
+
+	ta.call(t, "PATCH", "/api/v1/devices/"+testFriend, `{"updates_enabled": true}`, 200, nil)
+	if err := ta.db.Write.UpdateDeviceFirmware(t.Context(), db.UpdateDeviceFirmwareParams{FwModel: "xiao_epaper_display", FwVersion: "1.8.17", ID: dev.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ta.call(t, "GET", path, "", 200, &list)
+	if len(list) != 1 || list[0].Reason != "no_rollout" || !list[0].CanBeCanary || list[0].Canary {
+		t.Errorf("list %+v", list)
+	}
+
+	ta.call(t, "POST", "/api/v1/firmware/"+strconv.FormatInt(fw.ID, 10)+"/rollout", `{"canary": "`+testFriend+`"}`, 200, nil)
+	ta.call(t, "GET", path, "", 200, &list)
+	want := firmwareDeviceJSON{
+		Device: testFriend, Name: list[0].Name, Model: "xiao_epaper_display", Version: "1.8.17",
+		Canary: true, CanBeCanary: true,
+	}
+	if len(list) != 1 || list[0] != want {
+		t.Errorf("list %+v, want %+v", list, want)
+	}
+
+	ta.wantError(t, "GET", "/api/v1/firmware/999/devices", "", 404, "no such firmware")
+	ta.wantError(t, "GET", "/api/v1/firmware/x/devices", "", 404, "no such firmware")
 }

@@ -66,6 +66,48 @@ func (s *Server) listFirmware(_ http.ResponseWriter, r *http.Request) ([]firmwar
 	return out, nil
 }
 
+// firmwareDeviceJSON is one device's standing for a build.
+type firmwareDeviceJSON struct {
+	Device  string `json:"device"`
+	Name    string `json:"name"`
+	Model   string `json:"model"`
+	Version string `json:"version"`
+	// Canary is whether the device is the build's rollout canary.
+	Canary bool  `json:"canary"`
+	Offers int64 `json:"offers"`
+	// LastOfferedAt is when the device was last offered the build, in Unix
+	// seconds, or 0 if never.
+	LastOfferedAt int64 `json:"last_offered_at"`
+	// Reason is a code for why the device would not be offered the build
+	// now, or "" when it would, and Why a sentence saying so.
+	Reason string `json:"reason"`
+	Why    string `json:"why"`
+	// CanBeCanary is whether the device could be the build's canary now.
+	CanBeCanary bool `json:"can_be_canary"`
+}
+
+// listFirmwareDevices lists the devices of the build's model and whether
+// each would be offered the build now.
+func (s *Server) listFirmwareDevices(_ http.ResponseWriter, r *http.Request) ([]firmwareDeviceJSON, error) {
+	id, err := pathID(r, firmware.ErrNoFirmware)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := firmware.DeviceOffers(r.Context(), s.db.Read, s.cfg.FirmwareDir, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]firmwareDeviceJSON, len(rows))
+	for i := range rows {
+		o := &rows[i]
+		out[i] = firmwareDeviceJSON{
+			Device: o.FriendlyID, Name: o.Name, Model: o.Model, Version: o.Version, Canary: o.Canary,
+			Offers: o.Offers, LastOfferedAt: o.LastOfferedAt, Reason: string(o.Reason), Why: o.Why, CanBeCanary: o.CanBeCanary,
+		}
+	}
+	return out, nil
+}
+
 // addFirmware adds the firmware file in the request body, for the model in
 // the query and, if it is given, the version. A body that is cut off is the
 // client's error, not the server's.
