@@ -326,8 +326,8 @@ func storedMarks(t *testing.T, dir string) (marks []string, fields map[string]re
 }
 
 // TestInstanceSecretMarks checks that -secret on add and set moves a value
-// into the encrypted fields, that -plain moves it back and shows it, and that
-// neither raises settings_at on set. It sets the environment, so it does not
+// into the encrypted fields without raising settings_at, and that -plain is
+// refused unless it comes with a new value, which is then the one shown. It sets the environment, so it does not
 // run in parallel.
 func TestInstanceSecretMarks(t *testing.T) {
 	dir := instanceDir(t)
@@ -339,18 +339,20 @@ func TestInstanceSecretMarks(t *testing.T) {
 	if len(marks) != 1 || marks[0] != "city" || len(fields) != 0 {
 		t.Errorf("after add -secret: marks %v, plain fields %v", marks, fields)
 	}
-	_, _, at := storedMarks(t, dir)
-	if _, err := runInstance(t, dir, "set", "1", "-plain", "city"); err != nil {
+	if _, err := runInstance(t, dir, "set", "1", "-plain", "city"); err == nil || !strings.Contains(err.Error(), "city: is secret; give it a new value or clear it to make it plain") {
+		t.Errorf("set -plain alone: %v", err)
+	}
+	if _, err := runInstance(t, dir, "set", "1", "-plain", "city", "-field", "city=Geneva"); err != nil {
 		t.Fatal(err)
 	}
-	marks, fields, got := storedMarks(t, dir)
-	if len(marks) != 0 || fields["city"].One != "Zurich" || got != at {
-		t.Errorf("after set -plain: marks %v, plain fields %v, settings_at %d (was %d)", marks, fields, got, at)
+	marks, fields, at := storedMarks(t, dir)
+	if len(marks) != 0 || fields["city"].One != "Geneva" {
+		t.Errorf("after set -plain with a value: marks %v, plain fields %v", marks, fields)
 	}
 	if _, err := runInstance(t, dir, "set", "1", "-secret", "city"); err != nil {
 		t.Fatal(err)
 	}
-	marks, fields, got = storedMarks(t, dir)
+	marks, fields, got := storedMarks(t, dir)
 	if len(marks) != 1 || len(fields) != 0 || got != at {
 		t.Errorf("after set -secret: marks %v, plain fields %v, settings_at %d (was %d)", marks, fields, got, at)
 	}

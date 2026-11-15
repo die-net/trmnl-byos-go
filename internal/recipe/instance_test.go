@@ -877,32 +877,52 @@ func TestUpdateMarks(t *testing.T) {
 		}
 	})
 
-	t.Run("unmark moves a secret back to plain", func(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		values map[string]Value
+	}{
+		{"unmark alone is refused", nil},
+		{"unmark with a blank value is refused", map[string]Value{"notes": {}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f, before := markFixture(t, key, notes, map[string]bool{"notes": true})
+			_, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": false}, Values: tc.values}, now)
+			wantFieldErrors(t, err, map[string]string{"notes": "is secret; give it a new value or clear it to make it plain"})
+			if err != nil && strings.Contains(err.Error(), note) {
+				t.Errorf("the error shows the value: %v", err)
+			}
+			stored, err := f.client.Read.GetInstance(ctx, before.ID)
+			if err != nil || !reflect.DeepEqual(stored, before) || strings.Contains(stored.FieldValues, note) {
+				t.Errorf("a refused unmark changed the instance: %+v, %v", stored, err)
+			}
+		})
+	}
+
+	t.Run("unmark with a new value shows only the new value", func(t *testing.T) {
 		t.Parallel()
+		const fresh = "a fresh plain note"
 		f, before := markFixture(t, key, notes, map[string]bool{"notes": true})
-		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": false}}, now)
+		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": false}, Values: map[string]Value{"notes": {One: fresh}}}, now)
 		if err != nil {
 			t.Fatal(err)
 		}
 		public, names, err := PublicFields(&got, key)
-		if err != nil || len(names) != 0 || public["notes"].One != note {
-			t.Errorf("PublicFields = %v, %v, %v", public, names, err)
-		}
-		if marks, err := SecretKeys(&got); err != nil || len(marks) != 0 || got.SecretValues != nil || got.SettingsAt != before.SettingsAt {
-			t.Errorf("marks = %v, %v, secrets set = %v, settings_at = %d (was %d)", marks, err, got.SecretValues != nil, got.SettingsAt, before.SettingsAt)
+		if err != nil || len(names) != 0 || public["notes"].One != fresh || strings.Contains(got.FieldValues, note) || got.SecretValues != nil || got.SecretKeys != `[]` {
+			t.Errorf("PublicFields = %v, %v, %v; field_values %s, secrets set %v, marks %s", public, names, err, got.FieldValues, got.SecretValues != nil, got.SecretKeys)
 		}
 	})
 
-	t.Run("unmark with an empty value keeps the value", func(t *testing.T) {
+	t.Run("unmark with a clear removes the value from both stores", func(t *testing.T) {
 		t.Parallel()
 		f, before := markFixture(t, key, notes, map[string]bool{"notes": true})
-		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": false}, Values: map[string]Value{"notes": {}}}, now)
+		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": false}, Clear: []string{"notes"}}, now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		public, names, err := PublicFields(&got, key)
-		if err != nil || len(names) != 0 || public["notes"].One != note || got.SettingsAt != before.SettingsAt {
-			t.Errorf("PublicFields = %v, %v, %v, settings_at = %d", public, names, err, got.SettingsAt)
+		all, _, err := InstanceFields(&got, key)
+		if _, ok := all["notes"]; ok || err != nil || got.SecretValues != nil || got.SecretKeys != `[]` {
+			t.Errorf("InstanceFields = %v, %v; secrets set %v, marks %s", all, err, got.SecretValues != nil, got.SecretKeys)
 		}
 	})
 
@@ -1012,8 +1032,8 @@ func TestUpdateMarkRefused(t *testing.T) {
 
 // TestSealedStaysSealed checks that a sealed password value stays sealed,
 // and is marked, when its field stops being a password field or leaves the
-// recipe and an update changes another field, and that only an unmark then
-// shows it, after which it can be cleared.
+// recipe and an update changes another field, that an unmark alone is
+// refused, and that an unmark with a clear removes it from both stores.
 func TestSealedStaysSealed(t *testing.T) {
 	t.Parallel()
 	const secret = "hunter2"
@@ -1040,16 +1060,18 @@ func TestSealedStaysSealed(t *testing.T) {
 			if err != nil || strings.Contains(got.FieldValues, secret) || public["token"].One != "" || !slices.Equal(names, []string{"token"}) || got.SecretKeys != `["token"]` {
 				t.Fatalf("after another field's edit: field_values %s, public %v, names %v, marks %s, %v", got.FieldValues, public, names, got.SecretKeys, err)
 			}
-			got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Secret: map[string]bool{"token": false}}, now)
+			// An unmark alone would show it, so it is refused.
+			_, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Secret: map[string]bool{"token": false}}, now)
+			wantFieldErrors(t, err, map[string]string{"token": "is secret; give it a new value or clear it to make it plain"})
+			// Unmarked with a clear, it goes from both stores, though the
+			// recipe may no longer declare it.
+			got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Secret: map[string]bool{"token": false}, Clear: []string{"token"}}, now)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if public, names, err := PublicFields(&got, key); err != nil || public["token"].One != secret || len(names) != 0 || got.SecretKeys != `[]` {
-				t.Fatalf("after the unmark: public %v, names %v, marks %s, %v", public, names, got.SecretKeys, err)
-			}
-			got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Clear: []string{"token"}}, now)
-			if err != nil || strings.Contains(got.FieldValues, "token") {
-				t.Errorf("after the clear: field_values %s, %v", got.FieldValues, err)
+			all, _, err := InstanceFields(&got, key)
+			if _, ok := all["token"]; ok || err != nil || strings.Contains(got.FieldValues, secret) || got.SecretValues != nil || got.SecretKeys != `[]` {
+				t.Errorf("after the unmark and clear: fields %v, field_values %s, secrets set %v, marks %s, %v", all, got.FieldValues, got.SecretValues != nil, got.SecretKeys, err)
 			}
 		})
 	}

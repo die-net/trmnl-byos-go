@@ -59,8 +59,9 @@ type InstanceUpdate struct {
 	// false. A field it leaves out keeps its mark. Only a field that
 	// CanMarkSecret can be marked. A password field is always secret, so
 	// marking one changes nothing and unmarking one is refused. Marking a
-	// field moves its stored value into the sealed secrets, and unmarking
-	// moves it out, where it is shown.
+	// field moves its stored value into the sealed secrets. A sealed value
+	// is never shown back, so unmarking a field that has one is refused
+	// unless the same update gives it a new value or clears it.
 	Secret map[string]bool
 }
 
@@ -264,14 +265,27 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		if err != nil {
 			return err
 		}
-		// A sealed value stays sealed until an update unmarks it. Its field
-		// may have stopped being a password field, or left the recipe, since
-		// it was sealed, and an edit of another field must not show it. It
-		// is marked, so its secrecy shows in the marks and can be undone.
+		// A sealed value is never shown back. One whose field would now be
+		// plain, because the update unmarks it, or because its field stopped
+		// being a password field or left the recipe since it was sealed, is
+		// either replaced by the update, with a new value or a clear, or kept
+		// sealed. An unmark that would move it into the plain values, where
+		// any caller could read it, is refused. Otherwise it is marked, so
+		// its secrecy shows in the marks.
 		for k := range secret {
-			if on, given := u.Secret[k]; !isSealed(k) && (!given || on) {
-				marked[k] = true
+			if isSealed(k) {
+				continue
 			}
+			if on, given := u.Secret[k]; !given || on {
+				marked[k] = true
+				continue
+			}
+			if _, replaced := values[k]; !replaced {
+				bad[k] = "is secret; give it a new value or clear it to make it plain"
+			}
+		}
+		if len(bad) > 0 {
+			return bad
 		}
 		arg := db.UpdateInstanceParams{
 			ID: id, Name: cur.Name, Palette: cur.Palette, FieldValues: cur.FieldValues,
@@ -369,7 +383,7 @@ func changes(wasSealed func(string) bool, u InstanceUpdate, bad FieldErrors) map
 // one that cannot be marked, and unmarking a password field. Marking a
 // password field changes nothing, since it is always secret, and is not
 // stored as a mark. Unmarking a field the recipe no longer has is allowed,
-// so a value left from a field it dropped can be shown and cleared.
+// so its mark can go along with a clear of its value.
 func mark(byName map[string]*Field, cur, req map[string]bool, bad FieldErrors) map[string]bool {
 	out := maps.Clone(cur)
 	for k, on := range req {
