@@ -6,7 +6,8 @@
 #
 #   PUBLIC_URL        base URL devices reach the server at, such as
 #                     http://192.168.1.10:8080 (default: from each request)
-#   TZ                time zone recipes render in, such as Europe/Zurich
+#   TZ                the server's time zone, such as Europe/Zurich, which
+#                     recipes render in and schedules are read in
 #   TRMNL_SECRET_KEY  key for secret recipe fields: openssl rand -base64 32
 #
 # The renderer is on an internal network with no route out. Its builds reach

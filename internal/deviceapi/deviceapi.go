@@ -6,6 +6,7 @@
 package deviceapi
 
 import (
+	"cmp"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -44,6 +45,9 @@ type Config struct {
 	// FirmwareDir is where firmware files are stored. Empty offers and
 	// serves no firmware.
 	FirmwareDir string
+	// Zone is the server's time zone, which schedules are read in. Nil is
+	// UTC.
+	Zone *time.Location
 }
 
 // Server handles device requests.
@@ -64,6 +68,7 @@ type Server struct {
 // New returns a Server that keeps state in client and images in images.
 func New(client *db.Client, images *imagestore.Store, cfg Config) *Server {
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
+	cfg.Zone = cmp.Or(cfg.Zone, time.UTC)
 	return &Server{db: client, images: images, cfg: cfg, now: time.Now, screens: map[string]string{}}
 }
 

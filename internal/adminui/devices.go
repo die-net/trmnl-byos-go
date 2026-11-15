@@ -403,7 +403,7 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
 		return
 	}
-	now := s.now()
+	now := s.now().In(s.zone)
 	d := &deviceDetail{
 		View:       s.newDeviceView((*db.ListDeviceStatusRow)(&row), now),
 		ID:         dev.FriendlyID,

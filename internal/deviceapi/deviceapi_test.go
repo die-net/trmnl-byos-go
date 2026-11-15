@@ -70,6 +70,10 @@ func displayHeaders(mac, token string) map[string]string {
 	}
 }
 
+// testZone is the server's zone in these tests. It is neither UTC nor any
+// machine's local zone, so a schedule read in another zone is caught.
+var testZone = time.FixedZone("TST", 5*3600+1800)
+
 type testServer struct {
 	*httptest.Server
 	srv *Server
@@ -94,8 +98,10 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatal(err)
 	}
 	ts := &testServer{db: client, now: time.Unix(1_800_000_000, 0), fwDir: filepath.Join(dir, "firmware"), imagesDir: filepath.Join(dir, "images")}
-	ts.srv = New(client, images, Config{FirmwareDir: ts.fwDir})
-	ts.srv.now = func() time.Time { return ts.now }
+	ts.srv = New(client, images, Config{FirmwareDir: ts.fwDir, Zone: testZone})
+	// In UTC, as time.Now gives the time in time.Local, so a schedule is
+	// read in testZone only if the server reads it in Config.Zone.
+	ts.srv.now = func() time.Time { return ts.now.UTC() }
 	mux := http.NewServeMux()
 	ts.srv.Register(mux)
 	ts.Server = httptest.NewServer(mux)

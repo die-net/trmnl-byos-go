@@ -112,6 +112,18 @@ func run() int {
 }
 
 // dataFlag adds the -data flag every command takes.
+// serverZone returns the server's time zone: TZ, the standard way to give a
+// process its zone, or UTC if TZ is unset. Schedules are read in it, times
+// are shown in it, and recipes render in it. An unknown name is an error,
+// so a typo does not quietly become UTC.
+func serverZone() (*time.Location, error) {
+	loc, err := time.LoadLocation(os.Getenv("TZ"))
+	if err != nil {
+		return nil, fmt.Errorf("TZ: %w", err)
+	}
+	return loc, nil
+}
+
 func dataFlag(fs *flag.FlagSet) *string {
 	return fs.String("data", "data", "directory holding the database and images")
 }
@@ -162,6 +174,10 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	zone, err := serverZone()
+	if err != nil {
+		return err
+	}
 
 	client, err := openDB(ctx, *data)
 	if err != nil {
@@ -180,9 +196,9 @@ func serve(ctx context.Context, args []string) error {
 	}
 
 	mux := http.NewServeMux()
-	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, FirmwareDir: firmwareDir(*data)}).Register(mux)
+	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
 	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data)}).Register(mux)
-	adminui.New(client, adminui.Config{PublicURL: *publicURL}).Register(mux)
+	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone}).Register(mux)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,
@@ -200,7 +216,7 @@ func serve(ctx context.Context, args []string) error {
 	if *renderURL != "" {
 		// It fails before it starts anything, so returning here leaves
 		// nothing running.
-		proxy, err := startRendering(ctx, g, client, images, key, *data, *renderURL, *cacheDir)
+		proxy, err := startRendering(ctx, g, client, images, key, zone, *data, *renderURL, *cacheDir)
 		if err != nil {
 			return err
 		}
@@ -256,7 +272,7 @@ const (
 // proxy the renderer's builds reach the internet through. If it fails, it
 // has started nothing.
 func startRendering(ctx context.Context, g *errgroup.Group, client *db.Client, images *imagestore.Store, key *secrets.Key,
-	data, renderURL, cacheDir string,
+	zone *time.Location, data, renderURL, cacheDir string,
 ) (http.Handler, error) {
 	assets, err := cache.New(cacheDir)
 	if err != nil {
@@ -272,8 +288,7 @@ func startRendering(ctx context.Context, g *errgroup.Group, client *db.Client, i
 		Renderer:   &render.Client{URL: renderURL, HTTP: &http.Client{}},
 		RecipesDir: recipesDir(data),
 		Secrets:    key,
-		// TZ is the standard way to give a process its time zone.
-		TimeZone:   os.Getenv("TZ"),
+		Zone:       zone,
 		AssetHosts: renderproxy.AssetHosts,
 	})
 	g.Go(func() error {

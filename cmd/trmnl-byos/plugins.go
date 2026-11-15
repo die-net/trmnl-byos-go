@@ -294,8 +294,8 @@ func addScheduleFlags(fs *flag.FlagSet) scheduleFlags {
 }
 
 // edit returns the change that the schedule flags given on the command line
-// ask for, or nil if none was given.
-func (f scheduleFlags) edit() (*playlist.ScheduleEdit, error) {
+// ask for, or nil if none was given. Dates are days in loc.
+func (f scheduleFlags) edit(loc *time.Location) (*playlist.ScheduleEdit, error) {
 	var e playlist.ScheduleEdit
 	var given bool
 	var err error
@@ -315,12 +315,12 @@ func (f scheduleFlags) edit() (*playlist.ScheduleEdit, error) {
 		case "from":
 			given = true
 			e.StartsAt = new(int64)
-			*e.StartsAt, err = parseDate(*f.from, 0)
+			*e.StartsAt, err = parseDate(*f.from, 0, loc)
 		case "until":
 			given = true
 			e.EndsAt = new(int64)
 			// The last day is included, so the schedule ends when the next begins.
-			*e.EndsAt, err = parseDate(*f.until, 1)
+			*e.EndsAt, err = parseDate(*f.until, 1, loc)
 		}
 	})
 	if err != nil || !given {
@@ -329,13 +329,13 @@ func (f scheduleFlags) edit() (*playlist.ScheduleEdit, error) {
 	return &e, nil
 }
 
-// parseDate returns the Unix time of local midnight at the start of the
+// parseDate returns the Unix time of midnight in loc at the start of the
 // day YYYY-MM-DD, plus plusDays days, or 0 for an empty string.
-func parseDate(s string, plusDays int) (int64, error) {
+func parseDate(s string, plusDays int, loc *time.Location) (int64, error) {
 	if s == "" {
 		return 0, nil
 	}
-	d, err := time.ParseInLocation(time.DateOnly, s, time.Local)
+	d, err := time.ParseInLocation(time.DateOnly, s, loc)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %q is not a date as YYYY-MM-DD", errkind.ErrInvalid, s)
 	}
@@ -394,7 +394,11 @@ func playlistSet(ctx context.Context, args []string, out io.Writer) error {
 			u.Hidden = hidden
 		}
 	})
-	if u.Schedule, err = sched.edit(); err != nil {
+	zone, err := serverZone()
+	if err != nil {
+		return err
+	}
+	if u.Schedule, err = sched.edit(zone); err != nil {
 		return err
 	}
 	if u.Duration == nil && u.Hidden == nil && u.Schedule == nil {
@@ -418,7 +422,11 @@ func playlistSchedule(ctx context.Context, args []string, out io.Writer) error {
 	sched := addScheduleFlags(fs)
 	rest := parseInterspersed(fs, args)
 	usage := errors.New("usage: trmnl-byos playlist schedule [-data dir] <playlist name> [-days d,d] [-window HH:MM-HH:MM|all] [-from date] [-until date]")
-	edit, err := sched.edit()
+	zone, err := serverZone()
+	if err != nil {
+		return err
+	}
+	edit, err := sched.edit(zone)
 	if err != nil {
 		return err
 	}
@@ -447,6 +455,10 @@ func playlistList(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("playlist list", flag.ExitOnError)
 	data := dataFlag(fs)
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
+	zone, err := serverZone()
+	if err != nil {
+		return err
+	}
 	client, err := openDB(ctx, *data)
 	if err != nil {
 		return err
@@ -471,7 +483,7 @@ func playlistList(ctx context.Context, args []string, out io.Writer) error {
 	for i := range lists {
 		l := &lists[i]
 		sched := playlist.Schedule{Days: l.Days, WindowStart: l.WindowStart, WindowEnd: l.WindowEnd, StartsAt: l.StartsAt, EndsAt: l.EndsAt}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\n", l.Name, sched.Describe(time.Local)); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\n", l.Name, sched.Describe(zone)); err != nil {
 			return err
 		}
 	}
@@ -498,7 +510,7 @@ func playlistList(ctx context.Context, args []string, out io.Writer) error {
 		if it.Hidden != 0 {
 			hide = "hidden"
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%d\t%d\t%d %s\t%s\t%s\t%s\n", it.Playlist, it.ID, it.Position, it.InstanceID, it.InstanceName, dur, sched.Describe(time.Local), hide); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%d\t%d\t%d %s\t%s\t%s\t%s\n", it.Playlist, it.ID, it.Position, it.InstanceID, it.InstanceName, dur, sched.Describe(zone), hide); err != nil {
 			return err
 		}
 	}
