@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,9 @@ type harness struct {
 	failFile string
 	// down, while set, makes the fake renderer answer 503 to every build.
 	down atomic.Bool
+	// reject, while set, makes the fake renderer answer 400 to every build,
+	// as the shim does for a job it cannot read.
+	reject atomic.Bool
 	// leakFile, while it exists, makes the fake renderer fail with the
 	// first field's value in its output.
 	leakFile string
@@ -396,7 +400,10 @@ func TestDue(t *testing.T) {
 		{name: "settings newer, and wanted", r: good(10 * time.Minute), settings: 6, builtSettings: 5, wanted: []time.Duration{time.Hour}, woken: true, want: true, by: time.Hour},
 		{name: "build read the latest settings", r: good(10 * time.Minute), settings: 5, builtSettings: 5, woken: true},
 		{name: "build read newer settings than it has", r: good(10 * time.Minute), settings: 4, builtSettings: 5, woken: true},
-		{name: "settings newer after a failed build, inside RetryAfter", r: failed(db.RenderRetryAfter - time.Second), settings: 6, builtSettings: 5, woken: true},
+		{name: "settings newer after a failed build, inside RetryAfter", r: failed(db.RenderRetryAfter - time.Second), settings: 6, builtSettings: 5, woken: true, want: true},
+		{name: "settings newer after a failed build, and wanted", r: failed(db.RenderRetryAfter - time.Second), settings: 6, builtSettings: 5, wanted: []time.Duration{time.Hour}, woken: true, want: true, by: time.Hour},
+		{name: "settings read by the failed build, inside RetryAfter", r: failed(db.RenderRetryAfter - time.Second), settings: 5, builtSettings: 5, woken: true},
+		{name: "data newer after a failed build, settings read, inside RetryAfter", r: failed(db.RenderRetryAfter - time.Second), data: 6, built: 5, settings: 5, builtSettings: 5, woken: true},
 		{name: "settings newer after a failed build, past RetryAfter", r: failed(db.RenderRetryAfter), settings: 6, builtSettings: 5, woken: true, want: true},
 		{name: "settings and never rendered", r: nil, settings: 6, woken: true, want: true},
 		{name: "a device has woken but wants nothing", r: good(time.Hour), woken: true},
@@ -1480,5 +1487,97 @@ func TestHiddenItemsAreNotTargets(t *testing.T) {
 	h.renderDue(t, 3)
 	if got := instances(); !slices.Equal(got, []int64{1, other.ID}) {
 		t.Fatalf("renders with the item shown again: %v, want both", got)
+	}
+}
+
+// TestSettingsChangeAfterFailure checks that a failing target is built again
+// as soon as its settings change, once for each change, while it otherwise
+// waits for its backoff, and that a failure that read the new settings is
+// not built again before the backoff.
+func TestSettingsChangeAfterFailure(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.renderDue(t, 1)
+	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.now = h.now.Add(time.Hour + time.Minute)
+	h.renderDue(t, 2) // Fails and starts its backoff.
+	h.now = h.now.Add(time.Minute)
+	h.renderDue(t, 2)
+
+	h.setToken(t, "swordfish")
+	h.renderDue(t, 3) // Built at once, and fails again.
+	if r := h.render(t); r.Error == "" || r.SettingsAt != h.now.Unix() || r.Failures != 2 {
+		t.Fatalf("after the change: %+v", r)
+	}
+	for range 3 {
+		h.renderDue(t, 3) // The same settings wait for the backoff.
+	}
+	h.setToken(t, "trout-fish")
+	h.renderDue(t, 4)
+	h.renderDue(t, 4)
+	if err := os.Remove(h.failFile); err != nil {
+		t.Fatal(err)
+	}
+	h.setToken(t, "salmon-run")
+	h.renderDue(t, 5)
+	if r := h.render(t); r.Error != "" || r.Failures != 0 {
+		t.Errorf("after the fix: %+v", r)
+	}
+}
+
+// TestRejectedJobCounts checks that a job the renderer refuses, either
+// because the shim answers 400 or because the client will not send it for
+// its size, is recorded as a failed build that counts toward the backoff,
+// with the reason, and not as an outage.
+func TestRejectedJobCounts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		setup  func(t *testing.T, h *harness)
+		reason string
+	}{
+		{"shim answers 400", func(_ *testing.T, h *harness) { h.reject.Store(true) }, "read job: unexpected EOF"},
+		{"job too big to send", func(t *testing.T, h *harness) {
+			// Written past the checks of an update, as a value from before
+			// a limit, or from the database, could be.
+			huge, err := json.Marshal(map[string]string{"city": strings.Repeat("x", 70000)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			inst, err := h.db.Read.GetInstance(t.Context(), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = h.db.Write.UpdateInstance(t.Context(), db.UpdateInstanceParams{
+				ID: 1, Name: inst.Name, Palette: inst.Palette, FieldValues: string(huge), SecretValues: inst.SecretValues, SettingsAt: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}, "the job is"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			tc.setup(t, h)
+			h.drain(t)
+			r := h.render(t)
+			if r.Failures != 1 || !strings.Contains(r.Error, tc.reason) || strings.Contains(r.Error, "unavailable") {
+				t.Fatalf("after a rejected job: %+v", r)
+			}
+			builds := h.builds.Load()
+			h.now = h.now.Add(db.RenderRetryAfter - time.Second)
+			h.drain(t)
+			if h.builds.Load() != builds {
+				t.Error("built again before the backoff")
+			}
+			h.now = h.now.Add(time.Second)
+			h.drain(t)
+			if r := h.render(t); r.Failures != 2 {
+				t.Errorf("after the retry: %+v", r)
+			}
+		})
 	}
 }

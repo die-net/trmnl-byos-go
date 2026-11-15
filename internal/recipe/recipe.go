@@ -747,6 +747,34 @@ func contains(r io.Reader, needle []byte) (bool, error) {
 // frameworkHost is the host the TRMNL framework's assets come from.
 const frameworkHost = "trmnl.com"
 
+// envFor returns the environment a job carries for the field values, and the
+// custom_fields of .trmnlp.yml that name its variables. It is the one place
+// the names are made, so the size check of an instance's values is of the
+// job that is built.
+func envFor(fields map[string]Value) (env map[string]string, refs map[string]envRefs) {
+	keys := slices.Sorted(maps.Keys(fields))
+	if len(keys) > 0 {
+		env = make(map[string]string, len(keys))
+		refs = make(map[string]envRefs, len(keys))
+	}
+	for i, k := range keys {
+		name := "FIELD_" + strconv.Itoa(i)
+		v := fields[k]
+		if !v.IsList() {
+			env[name] = v.One
+			refs[k] = envRefs{names: []string{name}}
+			continue
+		}
+		names := make([]string, len(v.Many))
+		for j, item := range v.Many {
+			names[j] = name + "_" + strconv.Itoa(j)
+			env[names[j]] = item
+		}
+		refs[k] = envRefs{names: names, list: true}
+	}
+	return env, refs
+}
+
 // NewProject returns the project for an instance of the recipe in dir, with
 // the given field values and time zone. cachedHosts are the hosts whose
 // assets the proxy caches.
@@ -758,26 +786,7 @@ const frameworkHost = "trmnl.com"
 // is not.
 func NewProject(dir string, fields map[string]Value, timeZone string, cachedHosts []string) Project {
 	p := Project{dir: dir, config: trmnlpConfig{TimeZone: timeZone}}
-	keys := slices.Sorted(maps.Keys(fields))
-	if len(keys) > 0 {
-		p.Env = make(map[string]string, len(keys))
-		p.config.CustomFields = make(map[string]envRefs, len(keys))
-	}
-	for i, k := range keys {
-		name := "FIELD_" + strconv.Itoa(i)
-		v := fields[k]
-		if !v.IsList() {
-			p.Env[name] = v.One
-			p.config.CustomFields[k] = envRefs{names: []string{name}}
-			continue
-		}
-		names := make([]string, len(v.Many))
-		for j, item := range v.Many {
-			names[j] = name + "_" + strconv.Itoa(j)
-			p.Env[names[j]] = item
-		}
-		p.config.CustomFields[k] = envRefs{names: names, list: true}
-	}
+	p.Env, p.config.CustomFields = envFor(fields)
 	if len(cachedHosts) > 0 {
 		p.config.AssetOverrides = make(map[string]string, len(cachedHosts))
 	}

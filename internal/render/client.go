@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,17 +24,26 @@ type Client struct {
 // Build sends job to the shim with the project writeProject writes, and
 // calls png for each layout's PNG as it streams back. It returns the build
 // log, cut to a bound. A build trmnlp failed returns its log and an error
-// matching ErrBuildFailed. A renderer that cannot be reached or does not
-// answer with a result returns an error matching ErrUnavailable.
+// matching ErrBuildFailed. A job that is too big to send, or that the shim
+// refuses with a 400, returns an error matching ErrRejected. A renderer that
+// cannot be reached or does not answer with a result returns an error
+// matching ErrUnavailable.
 func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writer) error,
 	png func(layout string, r io.Reader) error,
 ) (string, error) {
 	if err := job.validate(); err != nil {
 		return "", err
 	}
+	enc, err := encodeJob(job)
+	if err != nil {
+		return "", err
+	}
+	if len(enc) > maxJobBytes {
+		return "", fmt.Errorf("%w: the job is %d bytes, over the limit of %d", ErrRejected, len(enc), maxJobBytes)
+	}
 	pr, pw := io.Pipe()
 	go func() {
-		pw.CloseWithError(writeRequest(pw, job, writeProject))
+		pw.CloseWithError(writeRequest(pw, enc, writeProject))
 	}()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.URL, "/")+"/build", pr)
 	if err != nil {
@@ -51,7 +59,11 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnprocessableEntity {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", fmt.Errorf("render request: %w: %s: %s", ErrUnavailable, resp.Status, strings.TrimSpace(string(msg)))
+		kind := ErrUnavailable
+		if resp.StatusCode == http.StatusBadRequest {
+			kind = ErrRejected
+		}
+		return "", fmt.Errorf("render request: %w: %s: %s", kind, resp.Status, strings.TrimSpace(string(msg)))
 	}
 
 	var log strings.Builder
@@ -89,12 +101,8 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 	return log.String(), nil
 }
 
-// writeRequest writes the request tar: the job, then the project.
-func writeRequest(w io.Writer, job Job, writeProject func(*tar.Writer) error) error {
-	enc, err := json.Marshal(job)
-	if err != nil {
-		return fmt.Errorf("encode job: %w", err)
-	}
+// writeRequest writes the request tar: the encoded job, then the project.
+func writeRequest(w io.Writer, enc []byte, writeProject func(*tar.Writer) error) error {
 	tw := tar.NewWriter(w)
 	if err := AddFile(tw, jobMember, int64(len(enc)), bytes.NewReader(enc)); err != nil {
 		return err

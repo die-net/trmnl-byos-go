@@ -32,6 +32,10 @@ func (h *harness) fakeRenderer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 		return
 	}
+	if h.reject.Load() {
+		http.Error(w, "read job: unexpected EOF", http.StatusBadRequest)
+		return
+	}
 	job, files, err := readFakeRequest(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

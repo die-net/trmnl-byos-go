@@ -252,3 +252,57 @@ func TestUnavailable(t *testing.T) {
 		}
 	}
 }
+
+// TestJobSize checks that a job is encoded without HTML escaping, which the
+// shim reads the same, that EnvSize is the size of what is sent, and that a
+// job over the limit is refused by the client before anything is sent, as
+// ErrRejected and not as an outage.
+func TestJobSize(t *testing.T) {
+	t.Parallel()
+	html := strings.Repeat("<b>&</b>", 1000)
+	size, err := EnvSize(map[string]string{"FIELD_TOKEN": html})
+	if err != nil || size != len(`{"FIELD_TOKEN":""}`)+len(html) {
+		t.Errorf("EnvSize = %d, %v; want the unescaped size", size, err)
+	}
+
+	var requests int
+	counting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "unexpected", http.StatusTeapot)
+	}))
+	t.Cleanup(counting.Close)
+	big := Job{Width: 800, Height: 480, Palette: "bw", Env: map[string]string{"FIELD_TOKEN": strings.Repeat("x", maxJobBytes)}}
+	_, err = (&Client{URL: counting.URL, HTTP: counting.Client()}).Build(t.Context(), big, project(), collect(map[string]string{}))
+	if !errors.Is(err, ErrRejected) || errors.Is(err, ErrUnavailable) || requests != 0 {
+		t.Errorf("oversize job: err %v after %d requests", err, requests)
+	}
+
+	// The largest Env fits, HTML in it included, and reaches the build as
+	// it was written.
+	shim := newShimServer(t, 10*time.Second)
+	fits := Job{Width: 800, Height: 480, Palette: "bw", Env: map[string]string{"FIELD_TOKEN": html + strings.Repeat("y", MaxEnvBytes-len(`{"FIELD_TOKEN":""}`)-len(html))}}
+	if n, err := EnvSize(fits.Env); err != nil || n != MaxEnvBytes {
+		t.Fatalf("EnvSize = %d, %v, want %d", n, err, MaxEnvBytes)
+	}
+	got := map[string]string{}
+	if _, err := shim.Build(t.Context(), fits, project(), collect(got)); err != nil {
+		t.Fatalf("job at the limit: %v", err)
+	}
+	if !strings.HasSuffix(got["full"], " "+fits.Env["FIELD_TOKEN"]) {
+		t.Error("the value did not reach the build as written")
+	}
+}
+
+// TestRejected checks that a shim's 400 is ErrRejected, with its message,
+// and not ErrUnavailable.
+func TestRejected(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "read job: unexpected EOF", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	_, err := (&Client{URL: srv.URL, HTTP: srv.Client()}).Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(), collect(map[string]string{}))
+	if !errors.Is(err, ErrRejected) || errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "read job: unexpected EOF") {
+		t.Errorf("err = %v", err)
+	}
+}

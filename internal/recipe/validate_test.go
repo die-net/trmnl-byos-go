@@ -78,6 +78,7 @@ func TestCheckValues(t *testing.T) {
 		{"select by label", map[string]Value{"sel": {One: "A"}}, false, map[string]string{"sel": `"A" is not one of the options`}},
 		{"multi ok", map[string]Value{"multi": {Many: []string{"a", "b"}}}, false, nil},
 		{"multi one bad", map[string]Value{"multi": {Many: []string{"a", "c"}}}, false, map[string]string{"multi": `"c" is not one of the options`}},
+		{"multi with a choice twice", map[string]Value{"multi": {Many: []string{"a", "b", "a"}}}, false, map[string]string{"multi": `"a" is chosen twice`}},
 		{"multi given a string", map[string]Value{"multi": {One: "b"}}, false, nil},
 		{"bool ok", map[string]Value{"bool": {One: "false"}}, false, nil},
 		{"bool bad", map[string]Value{"bool": {One: "yes"}}, false, map[string]string{"bool": `must be "true" or "false"`}},
