@@ -209,16 +209,17 @@ func TestCorruptValue(t *testing.T) {
 				n, err = MinPasswordLength(t.Context(), client.Read)
 				def = int64(n)
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.key) {
-				t.Fatalf("err = %v, want one naming %s", err, tc.key)
+			// A row that is not usable is not an error: the default is in
+			// effect, as List reports.
+			if err != nil {
+				t.Fatalf("err = %v, want none", err)
 			}
-			// The default comes back with the error, for a caller that must go on.
 			want := int64(900)
 			if tc.key == KeyMinPasswordLength {
 				want = 12
 			}
 			if def != want {
-				t.Errorf("value with the error = %d, want the default %d", def, want)
+				t.Errorf("value = %d, want the default %d", def, want)
 			}
 			// A reset repairs it.
 			if err := Reset(t.Context(), client, tc.key); err != nil {
@@ -265,9 +266,13 @@ func TestListBadRow(t *testing.T) {
 				}
 			}
 			check(true)
-			// The other readers still fail on it.
-			if _, err := RefreshInterval(t.Context(), client.Read); (err != nil) != (tc.key == KeyRefreshSeconds) {
-				t.Errorf("RefreshInterval err = %v", err)
+			// The readers the server uses agree with List: the default,
+			// and no error.
+			if d, err := RefreshInterval(t.Context(), client.Read); err != nil || d != 900*time.Second {
+				t.Errorf("RefreshInterval = %v, %v; want the default and no error", d, err)
+			}
+			if n, err := MinPasswordLength(t.Context(), client.Read); err != nil || n != 12 {
+				t.Errorf("MinPasswordLength = %d, %v; want the default and no error", n, err)
 			}
 			if err := Reset(t.Context(), client, tc.key); err != nil {
 				t.Fatal(err)

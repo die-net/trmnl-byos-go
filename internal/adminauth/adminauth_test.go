@@ -120,17 +120,33 @@ func TestRaisedMinimumKeepsOldPassword(t *testing.T) {
 	}
 }
 
-// TestSetPasswordCorruptMinimum checks that an unusable setting is an error
-// naming the key, not a silent default.
-func TestSetPasswordCorruptMinimum(t *testing.T) {
+// TestSetPasswordBadMinimum checks that a stored minimum that is not usable
+// does not block setting a password: the default minimum, 12, is in effect,
+// which is what the settings page, the CLI and the API say.
+func TestSetPasswordBadMinimum(t *testing.T) {
 	t.Parallel()
-	client := openTest(t)
-	if err := client.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyMinPasswordLength, Value: "lots", UpdatedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
-	err := SetPassword(t.Context(), client, testPassword, t0)
-	if err == nil || !strings.Contains(err.Error(), settings.KeyMinPasswordLength) {
-		t.Fatalf("err = %v, want one naming the setting", err)
+	for _, tc := range []struct{ name, stored string }{
+		{"not a number", "lots"},
+		{"zero", "0"},
+		{"over the maximum", "5000"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := openTest(t)
+			if err := client.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyMinPasswordLength, Value: tc.stored, UpdatedAt: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if err := SetPassword(t.Context(), client, strings.Repeat("a", 11), t0); !errors.Is(err, ErrPasswordLength) {
+				t.Errorf("11 bytes: %v, want a length error from the default minimum", err)
+			}
+			if err := SetPassword(t.Context(), client, strings.Repeat("a", 12), t0); err != nil {
+				t.Fatalf("12 bytes: %v, want it set", err)
+			}
+			if err := CheckPassword(t.Context(), client, strings.Repeat("a", 12)); err != nil {
+				t.Errorf("the password that was set does not check: %v", err)
+			}
+		})
 	}
 }
 
