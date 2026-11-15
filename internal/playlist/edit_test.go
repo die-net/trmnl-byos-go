@@ -67,6 +67,7 @@ func order(t *testing.T, client *db.Client, name string) []int64 {
 }
 
 func TestMoveItem(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		item  int // index into the original order
@@ -80,6 +81,7 @@ func TestMoveItem(t *testing.T) {
 		{"in place", 1, 1, []int{0, 1, 2, 3}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			client, ids, _ := newPlaylist(t, 4)
 			if err := MoveItem(t.Context(), client, ids[tc.item], tc.index); err != nil {
 				t.Fatal(err)
@@ -100,6 +102,7 @@ func TestMoveItem(t *testing.T) {
 }
 
 func TestMoveItemRefused(t *testing.T) {
+	t.Parallel()
 	client, ids, _ := newPlaylist(t, 3)
 	ctx := t.Context()
 	for _, tc := range []struct {
@@ -123,6 +126,7 @@ func TestMoveItemRefused(t *testing.T) {
 }
 
 func TestDeleteItemRenumbers(t *testing.T) {
+	t.Parallel()
 	client, ids, _ := newPlaylist(t, 4)
 	ctx := t.Context()
 	if err := DeleteItem(ctx, client, ids[1]); err != nil {
@@ -149,6 +153,7 @@ func TestDeleteItemRenumbers(t *testing.T) {
 }
 
 func TestUpdateItem(t *testing.T) {
+	t.Parallel()
 	client, ids, _ := newPlaylist(t, 3)
 	ctx := t.Context()
 	yes, five, minutes := true, int64(5), 10*time.Minute
@@ -185,6 +190,7 @@ func TestUpdateItem(t *testing.T) {
 }
 
 func TestUpdateItemRefusedChangesNothing(t *testing.T) {
+	t.Parallel()
 	client, ids, _ := newPlaylist(t, 3)
 	ctx := t.Context()
 	before, err := client.Read.GetPlaylistItem(ctx, ids[1])
@@ -220,6 +226,7 @@ func TestUpdateItemRefusedChangesNothing(t *testing.T) {
 }
 
 func TestSetPlaylistSchedule(t *testing.T) {
+	t.Parallel()
 	client, _, _ := newPlaylist(t, 1)
 	ctx := t.Context()
 	pl, err := client.Read.GetPlaylistByName(ctx, "p")
@@ -254,6 +261,7 @@ func TestSetPlaylistSchedule(t *testing.T) {
 }
 
 func TestDeviceLists(t *testing.T) {
+	t.Parallel()
 	client, ids, instID := newPlaylist(t, 2)
 	ctx := t.Context()
 	dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: "D8:3B:DA:12:34:56", ApiKeyHash: []byte{1}, FriendlyID: "ABC123", CreatedAt: 1})

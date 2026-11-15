@@ -189,6 +189,7 @@ func (h *harness) renderDue(t *testing.T, wantBuilds int32) {
 }
 
 func TestRenderDue(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	start := h.now
 
@@ -295,6 +296,7 @@ func (h *harness) screenBody(t *testing.T, device, instance int64) string {
 // once per device, each time with that device's values, while a recipe that
 // does not is still built once for both.
 func TestRenderPerDevice(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	shared := int64(1) // The harness's instance of a recipe that ignores the device.
 	perDevice := h.installRecipe(t, "<p>{{ trmnl.device.friendly_id }}</p>")
@@ -350,6 +352,7 @@ func TestRenderPerDevice(t *testing.T) {
 }
 
 func TestDescribe(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -367,6 +370,7 @@ func TestDescribe(t *testing.T) {
 }
 
 func TestDue(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_800_000_000, 0)
 	tgt := target{refresh: time.Hour}
 	// A default lead is two 30 s builds (the target's, and one already running),
@@ -468,6 +472,7 @@ func (h *harness) wake(t *testing.T, device int64, rate time.Duration) {
 // but will be stale at the device's next wake starts inside the lead before
 // that wake, not when the refresh interval passes.
 func TestRenderAheadOfWake(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	start := h.now
 	h.renderDue(t, 1)
@@ -500,6 +505,7 @@ func TestRenderAheadOfWake(t *testing.T) {
 // TestRenderAheadOfWakeFailure checks that a failed build is retried only
 // after RetryAfter even when a wake is near.
 func TestRenderAheadOfWakeFailure(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	start := h.now
 	h.renderDue(t, 1)
@@ -519,6 +525,7 @@ func TestRenderAheadOfWakeFailure(t *testing.T) {
 // target is wanted by every device that will show it, and a per-device one
 // only by its own device.
 func TestCandidatesWanted(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	shared := int64(1)
 	perDevice := h.installRecipe(t, "<p>{{ trmnl.device.friendly_id }}</p>")
@@ -587,6 +594,7 @@ func TestCandidatesWanted(t *testing.T) {
 // TestDueTargetsOrder checks that targets wanted by a wake build first,
 // soonest first, ahead of those due only because they are old.
 func TestDueTargetsOrder(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	start := h.now
 	other := h.installRecipe(t, "y")
@@ -648,6 +656,7 @@ func mustData(t *testing.T, s string) recipe.Data {
 // clock never moves between a push and the build that follows, so a build
 // that read the latest data must not be due again even in the same second.
 func TestRenderOnPush(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.renderDue(t, 1)
 	if got := h.screenBody(t, 1, 1); strings.Contains(got, "hl=") {
@@ -680,6 +689,7 @@ func TestRenderOnPush(t *testing.T) {
 // build that already read the data is newer, and is built, and that the
 // build after it is not repeated.
 func TestRenderOnPushSameSecond(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.renderDue(t, 1)
 	h.now = h.now.Add(time.Minute)
@@ -705,6 +715,7 @@ func TestRenderOnPushSameSecond(t *testing.T) {
 // TestRenderOnPushAfterFailure checks that a failed build still waits
 // RetryAfter when data is pushed after it.
 func TestRenderOnPushAfterFailure(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.renderDue(t, 1)
 	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
@@ -735,6 +746,7 @@ func TestRenderOnPushAfterFailure(t *testing.T) {
 // gone records a failure the device can show, retries only after RetryAfter,
 // and does not stop the other targets.
 func TestRenderMissingRecipeDir(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	other := h.installRecipe(t, "y")
 	if _, _, err := playlist.AddItem(t.Context(), h.db, "p", 0, other.ID, 15*time.Minute); err != nil {
@@ -781,6 +793,7 @@ func TestRenderMissingRecipeDir(t *testing.T) {
 // reaches the stored error or log, though a transform or a failed fetch
 // printed it, and that the rest of the line is kept.
 func TestRenderRedactsSecrets(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	if err := os.WriteFile(h.leakFile, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -804,6 +817,7 @@ func TestRenderRedactsSecrets(t *testing.T) {
 // TestRedact checks that a secret is hidden as it was written, and in the
 // two URL-encoded forms trmnlp prints in a failed poll's warning.
 func TestRedact(t *testing.T) {
+	t.Parallel()
 	const field = `s3cr/t+key=a b&"x"`
 	for _, tc := range []struct {
 		name, log string
@@ -838,6 +852,7 @@ func TestRedact(t *testing.T) {
 		{name: "no values", log: "unchanged", want: "unchanged"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := redact(tc.log, tc.values); got != tc.want {
 				t.Errorf("redact = %q, want %q", got, tc.want)
 			}
@@ -849,6 +864,7 @@ func TestRedact(t *testing.T) {
 // due, returns when its context ends, so a server can close the database
 // after waiting for it.
 func TestRunStops(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -889,6 +905,7 @@ func TestRunStops(t *testing.T) {
 // scheduler and checks that each retry waits twice as long as the one
 // before, up to an hour, and that a success starts the count over.
 func TestBackoffDoubles(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -943,6 +960,7 @@ func TestBackoffDoubles(t *testing.T) {
 // after the delay for the old count, and that a build failure after the
 // outage still counts.
 func TestOutageDoesNotCountAsFailure(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	builds := int32(0)
 
@@ -998,6 +1016,7 @@ func TestOutageDoesNotCountAsFailure(t *testing.T) {
 }
 
 func TestRetryDelay(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		failures int64
 		want     time.Duration
@@ -1021,6 +1040,7 @@ func TestRetryDelay(t *testing.T) {
 // deleted, so its images lose their reference and expire, and that a render
 // a device can still show is kept.
 func TestRenderPruning(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	other := h.installRecipe(t, "y")
 	item, _, err := playlist.AddItem(t.Context(), h.db, "p", 0, other.ID, 15*time.Minute)
@@ -1100,6 +1120,7 @@ func TestRenderPruning(t *testing.T) {
 // not lose its per-device renders and their images. Its devices keep their
 // last good screens until the recipe can be scanned again.
 func TestPruneKeepsRendersOfUnscannedRecipe(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	per := h.installRecipe(t, "<p>{{ trmnl.device.friendly_id }}</p>")
 	if _, _, err := playlist.AddItem(t.Context(), h.db, "p2", 1, per.ID, 15*time.Minute); err != nil {
@@ -1149,6 +1170,7 @@ func TestPruneKeepsRendersOfUnscannedRecipe(t *testing.T) {
 // because its image was missing is built again at the next check, with no
 // wait for its refresh interval.
 func TestRebuildAfterRenderDeleted(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.renderDue(t, 1)
 	p := profile.Resolve("xiao_epaper_display", nil, nil)
@@ -1174,6 +1196,7 @@ func TestRebuildAfterRenderDeleted(t *testing.T) {
 // build at its deadline, so the target is recorded as failed and retried
 // later instead of the scheduler waiting on it forever.
 func TestRenderTimesOut(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	stuck := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		// Read the project, then never answer. The server notices the
@@ -1214,6 +1237,7 @@ func (h *harness) renderedAt(t *testing.T, instance int64) int64 {
 // pass looks again, so a target that becomes urgent while others are queued
 // is built before the older ones that were due first.
 func TestRenderNextUrgentFirst(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	start := h.now
 	second := h.installRecipe(t, "y")
@@ -1268,6 +1292,7 @@ func TestRenderNextUrgentFirst(t *testing.T) {
 // rule that rebuilds a render nobody has fetched, and it has no wake time
 // for the scheduler to build ahead of.
 func TestCursorIsNotAWake(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	items, err := h.db.Read.ListDeviceItems(t.Context(), 1)
 	if err != nil || len(items) != 1 {

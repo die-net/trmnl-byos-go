@@ -48,6 +48,7 @@ func playlistFixture(t *testing.T) string {
 }
 
 func TestPlaylistMove(t *testing.T) {
+	t.Parallel()
 	dir := playlistFixture(t)
 	if _, err := runPlaylist(t, dir, "move", "1", "2"); err != nil {
 		t.Fatal(err)
@@ -131,7 +132,7 @@ func TestPlaylistSet(t *testing.T) {
 }
 
 func TestPlaylistSetRefused(t *testing.T) {
-	dir := playlistFixture(t)
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -155,27 +156,29 @@ func TestPlaylistSetRefused(t *testing.T) {
 		{"schedule nothing to change", []string{"schedule", "p"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := playlistFixture(t)
 			_, err := runPlaylist(t, dir, tc.args...)
 			if err == nil || (tc.kind != nil && !errors.Is(err, tc.kind)) {
 				t.Fatalf("err = %v, want kind %v", err, tc.kind)
 			}
+			// Nothing was changed.
+			client, err := openDB(t.Context(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			for _, id := range []int64{1, 2, 3} {
+				item, err := client.Read.GetPlaylistItem(t.Context(), id)
+				if err != nil || item.Position != id-1 || item.Hidden != 0 || item.Days != 127 || item.Duration != 900 || item.StartsAt != 0 || item.EndsAt != 0 {
+					t.Errorf("item %d = %+v, %v", id, item, err)
+				}
+			}
+			pl, err := client.Read.GetPlaylistByName(t.Context(), "p")
+			if err != nil || pl.Days != 127 {
+				t.Errorf("playlist = %+v, %v", pl, err)
+			}
 		})
-	}
-	// Nothing was changed by any of them.
-	client, err := openDB(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	for _, id := range []int64{1, 2, 3} {
-		item, err := client.Read.GetPlaylistItem(t.Context(), id)
-		if err != nil || item.Position != id-1 || item.Hidden != 0 || item.Days != 127 || item.Duration != 900 || item.StartsAt != 0 || item.EndsAt != 0 {
-			t.Errorf("item %d = %+v, %v", id, item, err)
-		}
-	}
-	pl, err := client.Read.GetPlaylistByName(t.Context(), "p")
-	if err != nil || pl.Days != 127 {
-		t.Errorf("playlist = %+v, %v", pl, err)
 	}
 }
 

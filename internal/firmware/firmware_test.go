@@ -100,6 +100,7 @@ func (f *fixture) files() []string {
 }
 
 func TestAdd(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	image := buildImage(imageSpec{version: "1.8.19"})
 	sum := sha256.Sum256(image)
@@ -123,6 +124,7 @@ func TestAdd(t *testing.T) {
 // TestAddVersions checks which version is recorded: the given one, or the
 // descriptor's when it is a plain X.Y.Z.
 func TestAddVersions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, given, descriptor, want string
 	}{
@@ -135,6 +137,7 @@ func TestAddVersions(t *testing.T) {
 		{"given with zeros is normalized", "1.08.19", "1a2b3c4", "1.8.19"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			fw, err := Add(t.Context(), f.client, f.dir, testModel, tc.given, bytes.NewReader(buildImage(imageSpec{version: tc.descriptor})), testNow)
 			if err != nil || fw.Version != tc.want {
@@ -160,6 +163,7 @@ func (z *zeros) Read(p []byte) (int, error) {
 // TestAddRefusals checks that each rule refuses an upload, with the right
 // kind of error, and that a refused upload leaves no file and no row.
 func TestAddRefusals(t *testing.T) {
+	t.Parallel()
 	good := buildImage(imageSpec{version: "1.8.19"})
 	oversize := zeros(Models["og"].MaxBytes + 1)
 	for _, tc := range []struct {
@@ -189,6 +193,7 @@ func TestAddRefusals(t *testing.T) {
 		{"larger than the app partition", "og", "1.8.19", &oversize, ErrTooBig},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			_, err := Add(t.Context(), f.client, f.dir, tc.model, tc.version, tc.body, testNow)
 			if !errors.Is(err, tc.want) {
@@ -205,6 +210,7 @@ func TestAddRefusals(t *testing.T) {
 }
 
 func TestAddDuplicates(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.add("1.8.19")
 	// The same file again, and a different file for the same version.
@@ -226,6 +232,7 @@ func TestAddDuplicates(t *testing.T) {
 }
 
 func TestStartRollout(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// canary is how the canary device is set up.
@@ -245,6 +252,7 @@ func TestStartRollout(t *testing.T) {
 		{"firmware too old to trust its model", testModel, "1.8.16", true, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.device(canaryID, "AA:00:00:00:00:01", tc.model, tc.version)
 			if _, err := SetPolicy(t.Context(), f.client, canaryID, Policy{UpdatesEnabled: &tc.updates, Pin: &tc.pin}); err != nil {
@@ -269,6 +277,7 @@ func TestStartRollout(t *testing.T) {
 }
 
 func TestStartRolloutErrors(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	fw := f.add("1.8.19")
@@ -287,6 +296,7 @@ func TestStartRolloutErrors(t *testing.T) {
 }
 
 func TestSetPolicy(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	dev, err := SetPolicy(t.Context(), f.client, canaryID, Policy{Pin: ptr("1.08.17")})
@@ -310,6 +320,7 @@ func TestSetPolicy(t *testing.T) {
 // The canary is ABC123 and the other device DEF456. The canary is on
 // 1.8.17 when the rollout starts, then becomes canaryNow.
 func TestOffer(t *testing.T) {
+	t.Parallel()
 	type dev struct{ model, version string }
 	for _, tc := range []struct {
 		name string
@@ -360,6 +371,7 @@ func TestOffer(t *testing.T) {
 		{"other, canceled after canary reported", "canceled", dev{testModel, "1.8.19"}, true, dev{testModel, "1.8.17"}, false, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 			f.device(otherID, "AA:00:00:00:00:02", testModel, "1.8.17")
@@ -403,6 +415,7 @@ func TestOffer(t *testing.T) {
 // TestOfferNewest checks that of several builds in active rollouts, the
 // newest that qualifies is offered, never an older one or the same one.
 func TestOfferNewest(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	f.device(otherID, "AA:00:00:00:00:02", testModel, "1.8.17")
@@ -456,6 +469,7 @@ func TestOfferNewest(t *testing.T) {
 // TestOfferNeedsTheFile checks that a build whose file is missing or is not
 // the size that was added is never offered.
 func TestOfferNeedsTheFile(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	fw := f.add("1.8.19")
@@ -482,6 +496,7 @@ func TestOfferNeedsTheFile(t *testing.T) {
 }
 
 func TestOpen(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	image := buildImage(imageSpec{version: "1.8.19"})
@@ -548,6 +563,7 @@ func upper(s string) string {
 }
 
 func TestList(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	a, b := f.add("1.8.18"), f.add("1.8.19")
@@ -611,6 +627,7 @@ func TestList(t *testing.T) {
 }
 
 func TestValidSHA(t *testing.T) {
+	t.Parallel()
 	good := sha256Hex("x")
 	for s, want := range map[string]bool{
 		good:               true,
@@ -641,6 +658,7 @@ func TestValidSHA(t *testing.T) {
 // every update. It is offered MaxOffers times and then never, the rollout
 // stalls, and no other device is offered it.
 func TestOfferCap(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	f.device(otherID, "AA:00:00:00:00:02", testModel, "1.8.17")
@@ -718,6 +736,7 @@ func TestOfferCap(t *testing.T) {
 // for the next newest one, is never counted, and that nothing is offered or
 // counted when no file is left.
 func TestOfferAndRecordFiles(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	older, newer := f.add("1.8.18"), f.add("1.8.19")
@@ -758,6 +777,7 @@ func TestOfferAndRecordFiles(t *testing.T) {
 
 // TestOfferCapCascade checks that deleting a device deletes its offers.
 func TestOfferCapCascade(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
 	f.device(otherID, "AA:00:00:00:00:02", testModel, "1.8.17")

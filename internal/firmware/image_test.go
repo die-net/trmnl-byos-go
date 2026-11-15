@@ -112,6 +112,7 @@ func buildImage(s imageSpec) []byte {
 }
 
 func TestParseImage(t *testing.T) {
+	t.Parallel()
 	good := buildImage(imageSpec{})
 	for _, tc := range []struct {
 		name string
@@ -144,6 +145,7 @@ func TestParseImage(t *testing.T) {
 		}(), "non-text"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			img, err := ParseImage(bytes.NewReader(tc.data), int64(len(tc.data)))
 			if tc.want == "" {
 				if err != nil || img.ChipID != chipS3 || img.Version != "1.8.19" || img.IDFVersion != "v5.3.2" || img.Project != "trmnl-firmware" {
@@ -159,6 +161,7 @@ func TestParseImage(t *testing.T) {
 }
 
 func TestParseVersion(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   string
 		want string // "" when it must be refused
@@ -196,6 +199,7 @@ func TestParseVersion(t *testing.T) {
 }
 
 func TestVersionCompare(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		a, b string
 		want int
@@ -217,6 +221,7 @@ func TestVersionCompare(t *testing.T) {
 }
 
 func TestCleanDescriptorVersion(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in string
 		ok bool
@@ -238,6 +243,7 @@ func TestCleanDescriptorVersion(t *testing.T) {
 // TestModelsAreSane checks the table against facts that must hold for every
 // entry, so an edit cannot add a model with an impossible size.
 func TestModelsAreSane(t *testing.T) {
+	t.Parallel()
 	for name, m := range Models {
 		if name == "" || m.Chip.Name == "" || m.MaxBytes < 1<<20 || m.MaxBytes > 0x400000 {
 			t.Errorf("model %q = %+v", name, m)

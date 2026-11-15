@@ -11,6 +11,7 @@ import (
 )
 
 func TestRelativeTime(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		ago  time.Duration
 		want string
@@ -52,6 +53,7 @@ func addDevice(t *testing.T, tu *testUI, mac, friendly, name string, lastSeen in
 }
 
 func TestDevicesBadges(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		ago      time.Duration // 0 means never seen
@@ -65,6 +67,7 @@ func TestDevicesBadges(t *testing.T) {
 		{"late", 2 * time.Hour, "Late", "badge-warn", "2 h ago"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tu := newTestUI(t, Config{}, true)
 			var seen int64
 			if tc.ago != 0 {
@@ -100,6 +103,7 @@ func TestDevicesBadges(t *testing.T) {
 }
 
 func TestDevicesNameFallbackAndEscaping(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, "D8:3B:DA:00:00:01", "ABC123", "<script>alert(1)</script>", 0)
 	addDevice(t, tu, "D8:3B:DA:00:00:02", "XYZ789", "", 0)
@@ -121,6 +125,7 @@ func TestDevicesNameFallbackAndEscaping(t *testing.T) {
 }
 
 func TestDevicesEmpty(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	body := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)).Body.String()
@@ -135,11 +140,13 @@ func TestDevicesEmpty(t *testing.T) {
 }
 
 func TestNavCurrent(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	current := regexp.MustCompile(`<a href="(/[a-z]+)" aria-current="page">`)
 	for _, path := range []string{"/devices", "/recipes", "/playlists", "/firmware"} {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
 			w := tu.do(t, "GET", path, "", "Cookie", cookieHeader(c))
 			if w.Code != http.StatusOK {
 				t.Fatalf("status %d", w.Code)
@@ -166,6 +173,7 @@ func TestNavCurrent(t *testing.T) {
 }
 
 func TestStubPages(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	for _, tc := range []struct{ path, heading string }{

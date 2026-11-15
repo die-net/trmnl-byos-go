@@ -14,6 +14,7 @@ import (
 const testMAC = "D8:3B:DA:12:34:56"
 
 func TestCalibrate(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
 	if err != nil {
@@ -57,6 +58,7 @@ func TestCalibrate(t *testing.T) {
 }
 
 func TestStatusHealth(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_800_000_000, 0)
 	i := func(v int64) *int64 { return &v }
 	for _, tc := range []struct {
@@ -81,6 +83,7 @@ func TestStatusHealth(t *testing.T) {
 }
 
 func TestListStatus(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
 	if err != nil {
@@ -121,6 +124,7 @@ func TestListStatus(t *testing.T) {
 }
 
 func TestCleanName(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, in, want string
 		invalid        bool
@@ -144,6 +148,7 @@ func TestCleanName(t *testing.T) {
 }
 
 func TestSetName(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
 	if err != nil {

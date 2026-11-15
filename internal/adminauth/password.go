@@ -81,13 +81,13 @@ func derive(ctx context.Context, password string, salt []byte, p argonParams, n 
 	return argon2.IDKey([]byte(password), salt, p.passes, p.memoryKiB, p.threads, n), nil
 }
 
-// hashPassword returns the PHC string for password, with a new salt.
-func hashPassword(ctx context.Context, password string) (string, error) {
+// hashPassword returns the PHC string for password at the settings p, with a
+// new salt.
+func hashPassword(ctx context.Context, password string, p argonParams) (string, error) {
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("random salt: %w", err)
 	}
-	p := hashParams
 	key, err := derive(ctx, password, salt, p, keyLen)
 	if err != nil {
 		return "", err
@@ -163,7 +163,7 @@ func SetPassword(ctx context.Context, client *db.Client, password string, now ti
 	if n := len(password); n < minLen || n > settings.MaxPasswordLen {
 		return fmt.Errorf("%w: must be %d to %d bytes", ErrPasswordLength, minLen, settings.MaxPasswordLen)
 	}
-	phc, err := hashPassword(ctx, password)
+	phc, err := hashPassword(ctx, password, hashParams)
 	if err != nil {
 		return err
 	}

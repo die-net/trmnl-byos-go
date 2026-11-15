@@ -22,6 +22,7 @@ func parse(t *testing.T, s string) Data {
 }
 
 func TestParseData(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{`[1]`, `"x"`, `null`, ``, `{"a":1} {"b":2}`, `{"a":`} {
 		if _, err := ParseData(strings.NewReader(s)); !errors.Is(err, errkind.ErrInvalid) {
 			t.Errorf("%q: error %v, want errkind.ErrInvalid", s, err)
@@ -30,6 +31,7 @@ func TestParseData(t *testing.T) {
 }
 
 func TestDeepMerge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, base, add, want string }{
 		{"empty base", `{}`, `{"a":1}`, `{"a":1}`},
 		{"adds and replaces", `{"a":1,"b":2}`, `{"b":3,"c":4}`, `{"a":1,"b":3,"c":4}`},
@@ -50,6 +52,7 @@ func TestDeepMerge(t *testing.T) {
 }
 
 func TestStream(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, base, add string
 		limit           int
@@ -77,6 +80,7 @@ func TestStream(t *testing.T) {
 // looks like Liquid or has a newline stays a literal string, and a number
 // stays a number.
 func TestProjectData(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
 	shared := NewProject(dir, nil, "UTC", nil)
@@ -136,6 +140,7 @@ func TestProjectData(t *testing.T) {
 }
 
 func TestPushData(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := openDB(t)
 	rec, err := client.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "r", Source: "s", RefreshInterval: 900, InstalledAt: 1})

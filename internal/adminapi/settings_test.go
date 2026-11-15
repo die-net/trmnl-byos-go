@@ -9,6 +9,7 @@ import (
 )
 
 func TestSettings(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	var got settingsJSON
 	ta.call(t, "GET", "/api/v1/settings", "", 200, &got)
@@ -45,6 +46,7 @@ func TestSettings(t *testing.T) {
 }
 
 func TestSettingsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, body, contains string }{
 		{"refresh zero", `{"refresh_seconds": 0}`, "refresh_seconds"},
 		{"refresh over a year", `{"refresh_seconds": 31536001}`, "refresh_seconds"},
@@ -60,6 +62,7 @@ func TestSettingsRefused(t *testing.T) {
 		{"one bad field, other order", `{"refresh_seconds": 0, "min_password_length": 20}`, "refresh_seconds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ta := newTestAPI(t, false)
 			ta.wantError(t, "PATCH", "/api/v1/settings", tc.body, 400, tc.contains)
 			rows, err := settings.List(t.Context(), ta.db.Read)
@@ -76,6 +79,7 @@ func TestSettingsRefused(t *testing.T) {
 }
 
 func TestSettingsCorruptValue(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	ta.call(t, "PATCH", "/api/v1/settings", `{"refresh_seconds": 60}`, 200, nil)
 	if err := ta.db.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyMinPasswordLength, Value: "lots", UpdatedAt: 1}); err != nil {
@@ -92,6 +96,7 @@ func TestSettingsCorruptValue(t *testing.T) {
 }
 
 func TestSettingsNeedAuth(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	for _, method := range []string{"GET", "PATCH"} {
 		w := ta.do(t, method, "/api/v1/settings", strings.NewReader(`{}`), "Authorization", "Bearer wrong")

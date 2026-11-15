@@ -24,12 +24,14 @@ linters:
     - misspell
     - nakedret
     - noctx
+    - paralleltest
     - nolintlint
     - prealloc
     - predeclared
     - revive
     - staticcheck
     - testifylint
+    - tparallel
     - unconvert
     - unparam
     - unused

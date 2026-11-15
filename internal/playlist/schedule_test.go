@@ -40,6 +40,7 @@ func mustDays(t *testing.T, s string) int64 {
 }
 
 func TestScheduleActive(t *testing.T) {
+	t.Parallel()
 	utc := time.UTC
 	la := loadLA(t)
 	weekdays := Schedule{Days: mustDays(t, "mon,tue,wed,thu,fri"), WindowStart: 9 * 60, WindowEnd: 17 * 60}
@@ -92,6 +93,7 @@ func TestScheduleActive(t *testing.T) {
 }
 
 func TestScheduleValidate(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		s    Schedule
@@ -118,6 +120,7 @@ func TestScheduleValidate(t *testing.T) {
 }
 
 func TestParse(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   string
 		want int64
@@ -165,6 +168,7 @@ func TestParse(t *testing.T) {
 }
 
 func TestScheduleDescribe(t *testing.T) {
+	t.Parallel()
 	utc := time.UTC
 	for _, tc := range []struct {
 		s    Schedule
@@ -181,6 +185,7 @@ func TestScheduleDescribe(t *testing.T) {
 }
 
 func TestScheduleEdit(t *testing.T) {
+	t.Parallel()
 	two, five := int64(2), int64(5)
 	base := Schedule{Days: AllDays, WindowStart: 1, WindowEnd: 3, StartsAt: 4, EndsAt: 9}
 	if got := (ScheduleEdit{}).Apply(base); got != base {
@@ -198,6 +203,7 @@ func TestScheduleEdit(t *testing.T) {
 func entry(id int64) Entry { return Entry{ID: id, Schedule: Always} }
 
 func TestChoose(t *testing.T) {
+	t.Parallel()
 	utc := time.UTC
 	now := at(t, utc, "2026-11-13 12:00") // Friday noon
 	evening := Schedule{Days: AllDays, WindowStart: 18 * 60, WindowEnd: 20 * 60}
@@ -249,6 +255,7 @@ func TestChoose(t *testing.T) {
 }
 
 func TestNextChange(t *testing.T) {
+	t.Parallel()
 	utc := time.UTC
 	la := loadLA(t)
 	workHours := Schedule{Days: AllDays, WindowStart: 9 * 60, WindowEnd: 17 * 60}

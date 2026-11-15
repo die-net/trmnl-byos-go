@@ -5,6 +5,7 @@ import "testing"
 func ptr(v int64) *int64 { return &v }
 
 func TestResolve(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		fwModel       string
@@ -42,6 +43,7 @@ func TestResolve(t *testing.T) {
 // maps names a model in the vendored registry, so a registry update that
 // renames one is caught.
 func TestFirmwareModelsInRegistry(t *testing.T) {
+	t.Parallel()
 	reg := loadRegistry()
 	for fw, m := range firmwareModels {
 		if _, ok := reg.models[m.registry]; !ok {
@@ -51,6 +53,7 @@ func TestFirmwareModelsInRegistry(t *testing.T) {
 }
 
 func TestFits(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		limit, size int64
 		want        bool
@@ -67,6 +70,7 @@ func TestFits(t *testing.T) {
 }
 
 func TestRenderPalette(t *testing.T) {
+	t.Parallel()
 	og := Profile{Palettes: []string{"gray-4", "bw"}, DefaultPalette: "gray-4"}
 	for _, tc := range []struct{ want, got string }{
 		{"", "gray-4"},

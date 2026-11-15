@@ -26,6 +26,7 @@ func openTest(t *testing.T) *Client {
 // TestOpenPools checks that the writer runs WAL with synchronous=NORMAL and
 // foreign keys on, and that the reader pool refuses writes.
 func TestOpenPools(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := openTest(t)
 
@@ -56,6 +57,7 @@ func TestOpenPools(t *testing.T) {
 // TestReopen checks that opening an existing database applies the schema
 // again without error and keeps its rows.
 func TestReopen(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "trmnl.db")
 	for i := range 2 {
@@ -80,6 +82,7 @@ func TestReopen(t *testing.T) {
 // TestInTx checks that InTx commits what fn wrote when it returns nil, and
 // rolls all of it back when fn fails.
 func TestInTx(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := openTest(t)
 
@@ -124,6 +127,7 @@ func TestInTx(t *testing.T) {
 // TestWriterSerializes checks that concurrent InTx calls queue for the one
 // writer connection rather than failing with SQLITE_BUSY.
 func TestWriterSerializes(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := openTest(t)
 
@@ -239,6 +243,7 @@ var preDeviceIDSQL = []string{
 // TestMigrateAddedColumns checks that opening a database made before a
 // column was added adds it, keeps the rows, and leaves them usable.
 func TestMigrateAddedColumns(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "trmnl.db")
 	old, err := sql.Open(driverName(), writerDSN(path, busyTimeout))
@@ -315,6 +320,7 @@ func TestMigrateAddedColumns(t *testing.T) {
 // has no device_id drops its renders, keeps the rest, and leaves a table
 // that holds one render per device and removes a deleted device's.
 func TestMigrateRenderDevice(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "trmnl.db")
 	old, err := sql.Open(driverName(), writerDSN(path, busyTimeout))
@@ -440,6 +446,7 @@ func userVersion(t *testing.T, db *sql.DB) int {
 // It fails when schema.sql changes without a step that makes the same change
 // to an existing database.
 func TestMigrateMatchesSchema(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	oldSQL, err := os.ReadFile("testdata/schema_a0122ed.sql")
 	if err != nil {
@@ -462,6 +469,7 @@ func TestMigrateMatchesSchema(t *testing.T) {
 		{"before render device_id", preDeviceIDSQL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(t.TempDir(), "old.db")
 			raw := rawDB(t, path)
 			for _, stmt := range tc.build {
@@ -496,6 +504,7 @@ func TestMigrateMatchesSchema(t *testing.T) {
 // and no api_key_hash. The error names the column, the version stays 0, and
 // the rows are untouched.
 func TestMigrateRefusesUnadoptable(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	firstSQL, err := os.ReadFile("testdata/schema_1371c05.sql")
 	if err != nil {
@@ -540,6 +549,7 @@ func TestMigrateRefusesUnadoptable(t *testing.T) {
 // made before versions were numbered, so an edit, even one that matches an
 // edit to schema.sql, never reaches a database that is already stamped.
 func TestBaselineFrozen(t *testing.T) {
+	t.Parallel()
 	const want = "1eb16908c827b3d7d46bc8ab50fb596689613ef8750810bd0b47aaab101e12ce"
 	sum := sha256.Sum256([]byte(baselineSchema))
 	if got := hex.EncodeToString(sum[:]); got != want {
@@ -550,6 +560,7 @@ func TestBaselineFrozen(t *testing.T) {
 // TestMigrateVersion checks the version rules: a stamped database is not
 // probed or repaired again, and one from a newer server is refused.
 func TestMigrateVersion(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "trmnl.db")
 	client, err := Open(ctx, path)
@@ -587,6 +598,7 @@ func TestMigrateVersion(t *testing.T) {
 // TestMigrateRollsBack checks that a step that fails leaves the database
 // at its old version with its old tables.
 func TestMigrateRollsBack(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "trmnl.db")
 	raw := rawDB(t, path)
@@ -619,6 +631,7 @@ func TestMigrateRollsBack(t *testing.T) {
 // only held a cursor, written with a refresh rate of 0 and a made-up
 // last_seen, is dropped, so its device is not taken to have woken.
 func TestMigrateCursors(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	oldSQL, err := os.ReadFile("testdata/schema_a0122ed.sql")
 	if err != nil {
@@ -679,6 +692,7 @@ func TestMigrateCursors(t *testing.T) {
 // has no admin_session table, gets it, keeps its other rows, and ends at
 // version 3 with the shape of schema.sql.
 func TestMigrateAdminSessions(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	fresh := openTest(t)
 	want := shapeOf(t, fresh.Writer)
@@ -750,6 +764,7 @@ var dropPlaylistSchedules = []string{
 // their old order, with positions that are far apart, out of order by ID, and
 // that a one-row-at-a-time rewrite would collide on.
 func TestMigratePlaylistSchedules(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	fresh := openTest(t)
 	want := shapeOf(t, fresh.Writer)

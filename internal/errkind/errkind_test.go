@@ -7,6 +7,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	sentinel := New(ErrNotFound, "no such widget")
 	err := fmt.Errorf("get: %w: 7", sentinel)
 	if !errors.Is(err, sentinel) || !errors.Is(err, ErrNotFound) {

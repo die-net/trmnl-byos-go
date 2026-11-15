@@ -75,6 +75,7 @@ func collect(got map[string]string) func(string, io.Reader) error {
 }
 
 func TestBuild(t *testing.T) {
+	t.Parallel()
 	c := newShimServer(t, 10*time.Second)
 	got := map[string]string{}
 	log, err := c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "gray-4", Env: map[string]string{"FIELD_TOKEN": "abc"}},
@@ -96,6 +97,7 @@ func TestBuild(t *testing.T) {
 // ErrBuildFailed with the build log, and no PNGs, and that a timed-out
 // build's child processes are killed with it.
 func TestBuildFails(t *testing.T) {
+	t.Parallel()
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	c := newShimServer(t, 500*time.Millisecond, "CHILD_PID_FILE="+pidFile)
 	for _, tc := range []struct {
@@ -132,6 +134,7 @@ func TestBuildFails(t *testing.T) {
 // TestShimRejects checks that a bad job or a project that would write
 // outside its directory, or a request without the job first, is refused before trmnlp runs.
 func TestShimRejects(t *testing.T) {
+	t.Parallel()
 	c := newShimServer(t, 10*time.Second)
 	for _, tc := range []struct {
 		name    string
@@ -183,6 +186,7 @@ func TestShimRejects(t *testing.T) {
 // TestAddDir checks that a recipe's source directory is sent whole, with
 // its files under the prefix.
 func TestAddDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for name, body := range map[string]string{"settings.yml": "s", "full.liquid": "f", "sub/x.txt": "x"} {
 		path := filepath.Join(dir, filepath.FromSlash(name))
@@ -221,6 +225,7 @@ func TestAddDir(t *testing.T) {
 // answers 503 returns ErrUnavailable and not ErrBuildFailed, and that the
 // shim's 422 is ErrBuildFailed and not ErrUnavailable.
 func TestUnavailable(t *testing.T) {
+	t.Parallel()
 	closed := httptest.NewServer(http.NotFoundHandler())
 	closedURL := closed.URL
 	closed.Close()

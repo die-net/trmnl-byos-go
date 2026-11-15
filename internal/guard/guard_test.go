@@ -9,6 +9,7 @@ import (
 )
 
 func TestPublic(t *testing.T) {
+	t.Parallel()
 	for addr, want := range map[string]bool{
 		"93.184.215.14":          true,
 		"2606:4700:4700::1111":   true,
@@ -44,6 +45,7 @@ func TestPublic(t *testing.T) {
 }
 
 func TestHostAddress(t *testing.T) {
+	t.Parallel()
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +72,7 @@ func TestHostAddress(t *testing.T) {
 // TestDialerRefusesLoopback checks that the dialer refuses a listener on
 // loopback, by address and by name, on any port.
 func TestDialerRefusesLoopback(t *testing.T) {
+	t.Parallel()
 	var lc net.ListenConfig
 	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {

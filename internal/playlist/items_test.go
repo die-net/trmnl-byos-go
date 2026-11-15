@@ -11,6 +11,7 @@ import (
 )
 
 func TestAddItem(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
 	if err != nil {

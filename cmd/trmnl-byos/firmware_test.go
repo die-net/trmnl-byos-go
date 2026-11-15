@@ -6,6 +6,7 @@ import (
 )
 
 func TestOffered(t *testing.T) {
+	t.Parallel()
 	if got := offered(0); got != "-" {
 		t.Errorf("offered(0) = %q, want -", got)
 	}

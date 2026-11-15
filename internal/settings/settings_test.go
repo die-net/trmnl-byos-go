@@ -34,6 +34,7 @@ func putRaw(t *testing.T, client *db.Client, key, value string) {
 }
 
 func TestDefaults(t *testing.T) {
+	t.Parallel()
 	client := openTest(t)
 	refresh, err := RefreshInterval(t.Context(), client.Read)
 	if err != nil || refresh != 15*time.Minute {
@@ -55,6 +56,7 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestSetAndGet(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, key, value string
 		want             int64
@@ -67,6 +69,7 @@ func TestSetAndGet(t *testing.T) {
 		{"min length maximum", KeyMinPasswordLength, "1024", 1024},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			client := openTest(t)
 			if err := Set(t.Context(), client, tc.key, tc.value, t0); err != nil {
 				t.Fatal(err)
@@ -107,6 +110,7 @@ func TestSetAndGet(t *testing.T) {
 }
 
 func TestSetRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, key, value string
 		kind             error
@@ -126,6 +130,7 @@ func TestSetRefused(t *testing.T) {
 		{"password hash", "admin_password_hash", "x", errkind.ErrNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			client := openTest(t)
 			err := Set(t.Context(), client, tc.key, tc.value, t0)
 			if !errors.Is(err, tc.kind) {
@@ -142,6 +147,7 @@ func TestSetRefused(t *testing.T) {
 }
 
 func TestSetManyWritesNothingOnABadChange(t *testing.T) {
+	t.Parallel()
 	client := openTest(t)
 	err := SetMany(t.Context(), client, []Change{{KeyRefreshSeconds, "60"}, {KeyMinPasswordLength, "0"}}, t0)
 	if !errors.Is(err, errkind.ErrInvalid) {
@@ -159,6 +165,7 @@ func TestSetManyWritesNothingOnABadChange(t *testing.T) {
 }
 
 func TestReset(t *testing.T) {
+	t.Parallel()
 	client := openTest(t)
 	if err := Set(t.Context(), client, KeyRefreshSeconds, "60", t0); err != nil {
 		t.Fatal(err)
@@ -180,6 +187,7 @@ func TestReset(t *testing.T) {
 }
 
 func TestCorruptValue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, key, value string }{
 		{"not a number", KeyRefreshSeconds, "soon"},
 		{"zero", KeyRefreshSeconds, "0"},
@@ -187,6 +195,7 @@ func TestCorruptValue(t *testing.T) {
 		{"empty", KeyMinPasswordLength, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			client := openTest(t)
 			putRaw(t, client, tc.key, tc.value)
 			var err error
@@ -228,6 +237,7 @@ func TestCorruptValue(t *testing.T) {
 // TestOtherRowsAreNotExposed checks that the join window and the admin
 // password hash can be neither listed nor set here, and are left alone.
 func TestOtherRowsAreNotExposed(t *testing.T) {
+	t.Parallel()
 	client := openTest(t)
 	const hash = "$argon2id$secret"
 	putRaw(t, client, "admin_password_hash", hash)
@@ -264,6 +274,7 @@ func TestOtherRowsAreNotExposed(t *testing.T) {
 
 // TestInTx checks that the getters read through a transaction's queries.
 func TestInTx(t *testing.T) {
+	t.Parallel()
 	client := openTest(t)
 	err := client.InTx(t.Context(), func(q *db.Queries) error {
 		d, err := RefreshInterval(t.Context(), q)

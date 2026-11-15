@@ -63,6 +63,7 @@ func (tu *testUI) post(t *testing.T, c *http.Cookie, path string, form url.Value
 }
 
 func TestThumbnail(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		image         string
@@ -89,6 +90,7 @@ func TestThumbnail(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tu := newTestUI(t, Config{}, true)
 			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 			addState(t, tu, "ABC123", tc.image, tc.width, tc.height)
@@ -114,6 +116,7 @@ func TestThumbnail(t *testing.T) {
 }
 
 func TestCardLinksToDevice(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	addDevice(t, tu, "D8:3B:DA:00:00:02", "XYZ789", "", 0)
@@ -130,6 +133,7 @@ func TestCardLinksToDevice(t *testing.T) {
 }
 
 func TestDeviceDetail(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	if err := tu.db.Write.UpdateDeviceFirmware(t.Context(), db.UpdateDeviceFirmwareParams{FwModel: testModel, FwVersion: "1.8.19", ID: 1}); err != nil {
@@ -165,6 +169,7 @@ func TestDeviceDetail(t *testing.T) {
 }
 
 func TestDeviceDetailMissingValues(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "", 0)
 	body := tu.get(t, tu.signIn(t), "/devices/ABC123").Body.String()
@@ -181,6 +186,7 @@ func TestDeviceDetailMissingValues(t *testing.T) {
 }
 
 func TestDeviceNotFound(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	for _, tc := range []struct{ method, path string }{
@@ -196,6 +202,7 @@ func TestDeviceNotFound(t *testing.T) {
 }
 
 func TestDeviceNeedsSession(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	for _, tc := range []struct{ method, path, body string }{
@@ -218,6 +225,7 @@ func TestDeviceNeedsSession(t *testing.T) {
 }
 
 func TestDeviceSettingsSave(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		form        url.Values
@@ -230,6 +238,7 @@ func TestDeviceSettingsSave(t *testing.T) {
 		{"empty name clears it", url.Values{"updates_enabled": {"1"}}, "", 1, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tu := newTestUI(t, Config{}, true)
 			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 			c := tu.signIn(t)
@@ -246,6 +255,7 @@ func TestDeviceSettingsSave(t *testing.T) {
 }
 
 func TestDeviceSettingsInvalid(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		form    url.Values
@@ -272,6 +282,7 @@ func TestDeviceSettingsInvalid(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tu := newTestUI(t, Config{}, true)
 			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 			c := tu.signIn(t)
@@ -298,6 +309,7 @@ func TestDeviceSettingsInvalid(t *testing.T) {
 }
 
 func TestDeviceSettingsFormTooBig(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	w := tu.post(t, tu.signIn(t), "/devices/ABC123", url.Values{"name": {strings.Repeat("n", maxFormBody)}})
@@ -307,6 +319,7 @@ func TestDeviceSettingsFormTooBig(t *testing.T) {
 }
 
 func TestDeviceSettingsCrossOrigin(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	c := tu.signIn(t)
@@ -326,6 +339,7 @@ func TestDeviceSettingsCrossOrigin(t *testing.T) {
 }
 
 func TestPinOptions(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	if err := tu.db.Write.UpdateDeviceFirmware(t.Context(), db.UpdateDeviceFirmwareParams{FwModel: testModel, ID: 1}); err != nil {
@@ -355,6 +369,7 @@ func TestPinOptions(t *testing.T) {
 }
 
 func TestDevicePlaylist(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	ctx := t.Context()
@@ -434,6 +449,7 @@ func TestDevicePlaylistZone(t *testing.T) {
 }
 
 func TestDeviceNameEscaping(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	const name = `<b>"x"</b>`
 	addDevice(t, tu, testMAC, "ABC123", name, 0)
@@ -459,6 +475,7 @@ func TestDeviceNameEscaping(t *testing.T) {
 }
 
 func TestJoinWindow(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	closed := []string{"New devices cannot register.", `name="action" value="open">Open for 10 minutes</button>`}
@@ -508,6 +525,7 @@ func TestJoinWindow(t *testing.T) {
 }
 
 func TestJoinWindowBadAction(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"", "toggle", "OPEN", "open "} {
 		tu := newTestUI(t, Config{}, true)
 		w := tu.post(t, tu.signIn(t), "/join", url.Values{"action": {action}})
@@ -521,6 +539,7 @@ func TestJoinWindowBadAction(t *testing.T) {
 }
 
 func TestListTimesUseZone(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", tu.now.Add(-time.Hour).Unix())
 	body := tu.get(t, tu.signIn(t), "/devices").Body.String()
@@ -533,6 +552,7 @@ func TestListTimesUseZone(t *testing.T) {
 // TestUntilText checks that the join window's closing time leaves out the
 // date only when it is today in the server's zone.
 func TestUntilText(t *testing.T) {
+	t.Parallel()
 	s := &Server{zone: testZone}
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, testZone)
 	for _, tc := range []struct {
