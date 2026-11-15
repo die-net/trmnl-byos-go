@@ -50,19 +50,20 @@ func shortSecret(s string) string {
 // sealed says whether a keyname's value is stored sealed, which it then has
 // to be long enough for. Every problem is added to bad, so one FieldErrors
 // reports them all. A value that is empty clears its field, so only its
-// being required is checked, and it may name a field the recipe no longer
-// has, so a value left from one can be cleared. When creating, each
-// required field also needs a value, given or not.
+// being required is checked, and on update it may name a field the recipe
+// no longer has, so a value left from one can be cleared; UpdateInstance
+// refuses it if no such value is stored. When creating, each required field
+// also needs a value, given or not.
 func checkValues(fields []Field, values map[string]Value, creating bool, sealed func(string) bool, bad FieldErrors) map[string]Value {
 	byName := fieldsByName(fields)
 	out := make(map[string]Value, len(values))
 	for k, v := range values {
 		f := byName[k]
 		switch {
+		case f == nil && (creating || !v.Empty()):
+			bad[k] = "no such field"
 		case v.Empty():
 			out[k] = v
-		case f == nil:
-			bad[k] = "no such field"
 		default:
 			var msg string
 			if out[k], msg = f.check(v, sealed(k)); msg != "" {

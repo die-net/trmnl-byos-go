@@ -253,7 +253,7 @@ func TestUpdateInstance(t *testing.T) {
 			wantErr: errkind.ErrInvalid, wantFields: []string{"city", "days"},
 		},
 		{desc: "Clear of a required field", update: InstanceUpdate{Clear: []string{"city"}}, key: "a", wantErr: errkind.ErrInvalid, wantFields: []string{"city"}},
-		{desc: "Clear of a field the recipe lacks clears nothing", update: InstanceUpdate{Clear: []string{"nope"}}, key: "a"},
+		{desc: "Clear of a field neither declared nor stored", update: InstanceUpdate{Clear: []string{"nope"}}, key: "a", wantErr: errkind.ErrInvalid, wantFields: []string{"nope"}},
 		{desc: "a rename with no key opens nothing", update: InstanceUpdate{Name: ptr("Home"), Palette: ptr("bw")}, key: "", name: "Home", palette: "bw"},
 		{desc: "a rename under another key opens nothing", update: InstanceUpdate{Name: ptr("Home")}, key: "b", name: "Home"},
 		{desc: "a plain change must open the sealed secrets, and has no key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "", wantErr: secrets.ErrNoKey},
@@ -1014,6 +1014,7 @@ func TestUpdateMarkRefused(t *testing.T) {
 		{"mark a number", InstanceUpdate{Secret: map[string]bool{"days": true}}, map[string]string{"days": "cannot be secret, since its value is not text"}},
 		{"unmark a password field", InstanceUpdate{Secret: map[string]bool{"token": false}}, map[string]string{"token": "is a password field, which is always secret"}},
 		{"unknown keyname", InstanceUpdate{Secret: map[string]bool{"nope": true}}, map[string]string{"nope": "no such field"}},
+		{"unmark of an unknown keyname that is not marked", InstanceUpdate{Secret: map[string]bool{"nope": false}}, map[string]string{"nope": "no such field"}},
 		{"several at once", InstanceUpdate{Secret: map[string]bool{"days": true, "nope": true}}, map[string]string{"days": "cannot be secret, since its value is not text", "nope": "no such field"}},
 		{"short value", InstanceUpdate{Values: map[string]Value{"notes": {One: "abc"}}}, map[string]string{"notes": "must be at least 6 characters to be secret"}},
 		{"set and cleared, with a value that would also fail", InstanceUpdate{Values: map[string]Value{"notes": {One: "abc"}}, Clear: []string{"notes"}}, map[string]string{"notes": "is both set and cleared"}},
@@ -1102,4 +1103,28 @@ func dropField(t *testing.T, f fixture, keyname string) {
 	if err := root.WriteFile("settings.yml", []byte(strings.Join(slices.Delete(lines, start, end), "")), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestClearDroppedField checks that clear takes the keyname of a stored
+// value whose field the recipe dropped, and removes it, while a keyname that
+// is neither declared nor stored is refused as a typo.
+func TestClearDroppedField(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	key := testKey(t, keyA)
+	now := time.Unix(5000, 0)
+	f, inst := markFixture(t, key, map[string]Value{"notes": {One: "a plain note"}}, nil)
+	dropField(t, f, "notes")
+	_, err := UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Clear: []string{"notez"}}, now)
+	wantFieldErrors(t, err, map[string]string{"notez": "no such field"})
+	got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Clear: []string{"notes"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FieldValues != `{"city":"Zurich"}` {
+		t.Errorf("field_values = %s, want the dropped field's value gone", got.FieldValues)
+	}
+	// Once it is gone, the keyname names nothing.
+	_, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Clear: []string{"notes"}}, now)
+	wantFieldErrors(t, err, map[string]string{"notes": "no such field"})
 }
