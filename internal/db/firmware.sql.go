@@ -64,25 +64,6 @@ func (q *Queries) CreateFirmware(ctx context.Context, arg CreateFirmwareParams) 
 	return i, err
 }
 
-const firmwareExists = `-- name: FirmwareExists :one
-SELECT EXISTS (SELECT 1 FROM firmware WHERE sha256 = ? OR (fw_model = ? AND version = ?))
-`
-
-type FirmwareExistsParams struct {
-	Sha256  string `json:"sha256"`
-	FwModel string `json:"fw_model"`
-	Version string `json:"version"`
-}
-
-// Whether the catalog has this file, or has a build of this model at this
-// version.
-func (q *Queries) FirmwareExists(ctx context.Context, arg FirmwareExistsParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, firmwareExists, arg.Sha256, arg.FwModel, arg.Version)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const getActiveFirmwareBySHA = `-- name: GetActiveFirmwareBySHA :one
 SELECT firmware.id, firmware.fw_model, firmware.version, firmware.sha256, firmware.chip, firmware.idf_version, firmware.bytes, firmware.source, firmware.uploaded_at FROM firmware
 JOIN firmware_rollout r ON r.firmware_id = firmware.id AND r.state = 'active'
@@ -363,6 +344,47 @@ func (q *Queries) ListFirmware(ctx context.Context) ([]ListFirmwareRow, error) {
 			&i.CanaryOffers,
 			&i.CanaryLastOfferedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFirmwareClashes = `-- name: ListFirmwareClashes :many
+SELECT fw_model, version, sha256 FROM firmware WHERE sha256 = ?1 OR fw_model = ?2
+`
+
+type ListFirmwareClashesParams struct {
+	Sha256  string `json:"sha256"`
+	FwModel string `json:"fw_model"`
+}
+
+type ListFirmwareClashesRow struct {
+	FwModel string `json:"fw_model"`
+	Version string `json:"version"`
+	Sha256  string `json:"sha256"`
+}
+
+// The builds that an upload of this file for this model could clash with:
+// the one with the same file, wherever it is, and the builds of the model,
+// whose versions the caller compares as numbers, which SQL cannot do.
+func (q *Queries) ListFirmwareClashes(ctx context.Context, arg ListFirmwareClashesParams) ([]ListFirmwareClashesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listFirmwareClashes, arg.Sha256, arg.FwModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFirmwareClashesRow{}
+	for rows.Next() {
+		var i ListFirmwareClashesRow
+		if err := rows.Scan(&i.FwModel, &i.Version, &i.Sha256); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

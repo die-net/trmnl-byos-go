@@ -148,12 +148,18 @@ func Add(ctx context.Context, client *db.Client, dir, model, version string, r i
 	sha := hex.EncodeToString(h.Sum(nil))
 	var fw db.Firmware
 	err = client.InTx(ctx, func(q *db.Queries) error {
-		exists, err := q.FirmwareExists(ctx, db.FirmwareExistsParams{Sha256: sha, FwModel: model, Version: declared.String()})
+		rows, err := q.ListFirmwareClashes(ctx, db.ListFirmwareClashesParams{Sha256: sha, FwModel: model})
 		if err != nil {
 			return fmt.Errorf("check catalog: %w", err)
 		}
-		if exists != 0 {
-			return fmt.Errorf("%w: %s %s or this file is in the catalog already", ErrExists, model, declared)
+		for _, r := range rows {
+			if r.Sha256 == sha {
+				return fmt.Errorf("%w: this file is in the catalog already, as %s %s", ErrExists, r.FwModel, r.Version)
+			}
+			// A version that does not parse cannot equal this one.
+			if v, err := ParseVersion(r.Version); err == nil && v.Compare(declared) == 0 {
+				return fmt.Errorf("%w: %s %s is the same version as %s, which is in the catalog already", ErrExists, model, declared, r.Version)
+			}
 		}
 		fw, err = q.CreateFirmware(ctx, db.CreateFirmwareParams{
 			FwModel: model, Version: declared.String(), Sha256: sha, Chip: m.Chip.Name,

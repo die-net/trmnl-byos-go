@@ -3,10 +3,11 @@ INSERT INTO firmware (fw_model, version, sha256, chip, idf_version, bytes, sourc
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
--- name: FirmwareExists :one
--- Whether the catalog has this file, or has a build of this model at this
--- version.
-SELECT EXISTS (SELECT 1 FROM firmware WHERE sha256 = ? OR (fw_model = ? AND version = ?));
+-- name: ListFirmwareClashes :many
+-- The builds that an upload of this file for this model could clash with:
+-- the one with the same file, wherever it is, and the builds of the model,
+-- whose versions the caller compares as numbers, which SQL cannot do.
+SELECT fw_model, version, sha256 FROM firmware WHERE sha256 = sqlc.arg(sha256) OR fw_model = sqlc.arg(fw_model);
 
 -- name: GetFirmware :one
 SELECT * FROM firmware WHERE id = ?;

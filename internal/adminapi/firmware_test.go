@@ -129,6 +129,7 @@ func TestFirmwareUpload(t *testing.T) {
 	}{
 		{"duplicate", "xiao_epaper_display", "1.8.19", bytes.NewReader(image), "application/octet-stream", 409, "in the catalog"},
 		{"same version, other file", "xiao_epaper_display", "1.8.19", bytes.NewReader(testImage(chipS3, "1.8.19 ")), "application/octet-stream", 409, "in the catalog"},
+		{"equal version, spelled differently", "xiao_epaper_display", "1.8.19.0", bytes.NewReader(testImage(chipS3, "1.8.19 ")), "application/octet-stream", 409, "same version as 1.8.19"},
 		{"no model", "", "1.8.19", bytes.NewReader(image), "application/octet-stream", 400, "not one this server knows"},
 		{"unknown model", "toaster", "1.8.19", bytes.NewReader(image), "application/octet-stream", 400, "not one this server knows"},
 		{"wrong chip", "og", "1.8.19", bytes.NewReader(image), "application/octet-stream", 400, "esp32s3"},
