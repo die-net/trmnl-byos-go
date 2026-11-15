@@ -138,9 +138,10 @@ type patchInstanceRequest struct {
 	// Clear is the keynames of the fields to clear, which is how a secret
 	// is cleared.
 	Clear []string `json:"clear"`
-	// MarkSecret marks a field secret by keyname when true and unmarks it
-	// when false, which moves its value between the encrypted and the shown
-	// fields. A key left out keeps its mark.
+	// MarkSecret marks a field secret by keyname when true, which moves its
+	// value into the encrypted fields, and unmarks it when false. A secret
+	// is never shown back, so unmarking a field that has a value needs a new
+	// value in Fields or the keyname in Clear. A key left out keeps its mark.
 	MarkSecret map[string]bool `json:"mark_secret"`
 }
 

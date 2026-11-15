@@ -183,8 +183,10 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 // A keyname lives in exactly one of the plain field values and the sealed
 // secrets: the sealed ones when its field is a password field or marked
 // secret, and the plain ones otherwise. Every value is put in its store on
-// each change, so a mark or unmark moves a stored value, as does a field's
-// type that changed since it was set, and clearing removes it from both. The
+// each change, so a mark moves a stored value into the sealed ones, and
+// clearing removes it from both. A sealed value is never moved to the plain
+// ones: an unmark of a field that has one needs a new value or a clear, and
+// one whose field stopped being a password field is marked. The
 // stored secrets cannot be told apart without opening them, so they are
 // opened, which needs key, whenever the update changes any value or mark and
 // the instance has sealed secrets, and are sealed again only when they
@@ -264,6 +266,18 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		}
 		if err != nil {
 			return err
+		}
+		// A clear of a keyname the recipe does not declare is for a value
+		// left from a field it dropped, so one that is not stored either is a
+		// typo, refused like any unknown keyname.
+		for k, v := range values {
+			if !v.Empty() || byName[k] != nil {
+				continue
+			}
+			_, inPlain := plain[k]
+			if _, inSecret := secret[k]; !inPlain && !inSecret {
+				bad[k] = "no such field"
+			}
 		}
 		// A sealed value is never shown back. One whose field would now be
 		// plain, because the update unmarks it, or because its field stopped
@@ -382,14 +396,14 @@ func changes(wasSealed func(string) bool, u InstanceUpdate, bad FieldErrors) map
 // is refused is added to bad: marking a field the recipe does not have or
 // one that cannot be marked, and unmarking a password field. Marking a
 // password field changes nothing, since it is always secret, and is not
-// stored as a mark. Unmarking a field the recipe no longer has is allowed,
-// so its mark can go along with a clear of its value.
+// stored as a mark. Unmarking a field the recipe no longer has is allowed
+// when it is marked, so its mark can go along with a clear of its value.
 func mark(byName map[string]*Field, cur, req map[string]bool, bad FieldErrors) map[string]bool {
 	out := maps.Clone(cur)
 	for k, on := range req {
 		f := byName[k]
 		switch {
-		case f == nil && !on:
+		case f == nil && !on && cur[k]:
 			delete(out, k)
 		case f == nil:
 			bad[k] = "no such field"

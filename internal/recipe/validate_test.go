@@ -65,7 +65,8 @@ func TestCheckValues(t *testing.T) {
 	}{
 		{"nothing to check", nil, false, nil},
 		{"unknown field", map[string]Value{"nope": {One: "x"}}, false, map[string]string{"nope": "no such field"}},
-		{"unknown and empty, which clears a value left from a dropped field", map[string]Value{"nope": {}}, false, nil},
+		{"unknown and empty on update, which UpdateInstance checks against what is stored", map[string]Value{"nope": {}}, false, nil},
+		{"unknown and empty on create", map[string]Value{"nope": {}, "must": {One: "x"}}, true, map[string]string{"nope": "no such field"}},
 		{"display only with a value", map[string]Value{"bio": {One: "x"}}, false, map[string]string{"bio": "takes no value"}},
 		{"list for a string", map[string]Value{"str": {Many: []string{"a"}}}, false, map[string]string{"str": "takes one value, not a list"}},
 		{"list for a single select", map[string]Value{"sel": {Many: []string{"a"}}}, false, map[string]string{"sel": "takes one value, not a list"}},
