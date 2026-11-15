@@ -54,7 +54,7 @@ commands:
   calibrate  show a device the gray calibration screen
   recipe     install and list recipes: add, list
   instance   create and list plugin instances: add, list
-  playlist   edit what devices show: add, remove, list
+  playlist   edit what devices show: add, remove, list, move, set, schedule
   token      create and remove API tokens: add, list, remove
   password   set the admin password for the web UI
   setting    list and change settings: list, set, reset

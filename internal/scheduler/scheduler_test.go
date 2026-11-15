@@ -1287,3 +1287,151 @@ func TestCursorIsNotAWake(t *testing.T) {
 		t.Fatalf("candidates after a wake %+v, %v", cands, err)
 	}
 }
+
+// useZone makes loc the server's local time zone for the test, since the
+// scheduler reads schedules in it.
+func useZone(t *testing.T, loc *time.Location) {
+	t.Helper()
+	old := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = old })
+}
+
+// wantedAt returns when the wakes want the render target of a shared
+// instance, as candidates reports it.
+func (h *harness) wantedAt(t *testing.T, instance int64) []time.Time {
+	t.Helper()
+	cands, err := h.s.candidates(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cands {
+		if c.instance == instance && c.device == 0 {
+			return c.wanted
+		}
+	}
+	t.Fatalf("no target for instance %d", instance)
+	return nil
+}
+
+// TestCandidatesHonorSchedules checks that the item a device is predicted to
+// show at its next wake comes from the playlist and items that are shown
+// then, which is the wake plus the slack a timer wake may come early, not
+// from those shown now.
+func TestCandidatesHonorSchedules(t *testing.T) {
+	useZone(t, time.UTC)
+	h := newHarness(t)
+	other := h.installRecipe(t, "y")
+	// The second playlist has the higher ID, so it is tried after p, and
+	// it has no schedule, so it is the default.
+	if _, _, err := playlist.AddItem(t.Context(), h.db, "fallback", 1, other.ID, 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	h.wake(t, 1, 10*time.Minute)
+	next := h.now.Add(10 * time.Minute)
+	at := next.Add(playlist.WakeSlack)
+	atMinute := int64(at.Hour()*60 + at.Minute())
+	window := func(start, end int64) {
+		t.Helper()
+		s := playlist.Always
+		s.WindowStart, s.WindowEnd = start, end
+		if err := playlist.SetPlaylistSchedule(t.Context(), h.db, 1, s.Full()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	same := func(got []time.Time, want ...time.Time) bool { return slices.EqualFunc(got, want, time.Time.Equal) }
+
+	// p opens ten minutes after the wake plus slack: the default is shown.
+	window(atMinute+10, atMinute+60)
+	if got := h.wantedAt(t, other.ID); !same(got, next) {
+		t.Errorf("before p opens: the default instance is wanted at %v, want %v", got, next)
+	}
+	if got := h.wantedAt(t, 1); len(got) != 0 {
+		t.Errorf("before p opens: instance 1 is wanted at %v, want never", got)
+	}
+	// p opened a minute before the wake plus slack.
+	window(atMinute-1, atMinute+60)
+	if got := h.wantedAt(t, 1); !same(got, next) {
+		t.Errorf("after p opens: instance 1 is wanted at %v, want %v", got, next)
+	}
+	if got := h.wantedAt(t, other.ID); len(got) != 0 {
+		t.Errorf("after p opens: the default instance is wanted at %v, want never", got)
+	}
+	// p's window ends at the minute of the wake plus slack, and an end is
+	// exclusive.
+	window(atMinute-60, atMinute)
+	if got := h.wantedAt(t, other.ID); !same(got, next) {
+		t.Errorf("after p closes: the default instance is wanted at %v, want %v", got, next)
+	}
+
+	// With p always on and its only item hidden, p has nothing to show, so
+	// the default is next.
+	window(0, 0)
+	hidden := true
+	if err := playlist.UpdateItem(t.Context(), h.db, 1, playlist.ItemUpdate{Hidden: &hidden}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.wantedAt(t, other.ID); !same(got, next) {
+		t.Errorf("with p's item hidden: the default instance is wanted at %v, want %v", got, next)
+	}
+}
+
+// TestHiddenItemsAreNotTargets checks that a hidden item's render is deleted
+// at the next scan, and an item that is only off schedule keeps its render,
+// so it is ready when its window opens.
+func TestHiddenItemsAreNotTargets(t *testing.T) {
+	useZone(t, time.UTC)
+	h := newHarness(t)
+	other := h.installRecipe(t, "y")
+	item, _, err := playlist.AddItem(t.Context(), h.db, "p", 0, other.ID, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.renderDue(t, 2)
+	instances := func() []int64 {
+		t.Helper()
+		keys, err := h.db.Read.ListRenderKeys(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]int64, 0, len(keys))
+		for _, k := range keys {
+			ids = append(ids, k.InstanceID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+
+	// A window that is not open, and a playlist that is not open, are not hidden.
+	now := h.now
+	closed := int64((now.Hour()*60 + now.Minute() + 120) % (24 * 60))
+	closedEnd := (closed + 30) % (24 * 60)
+	if err := playlist.UpdateItem(t.Context(), h.db, item.ID, playlist.ItemUpdate{Schedule: &playlist.ScheduleEdit{WindowStart: &closed, WindowEnd: &closedEnd}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := playlist.SetPlaylistSchedule(t.Context(), h.db, 1, playlist.ScheduleEdit{WindowStart: &closed, WindowEnd: &closedEnd}); err != nil {
+		t.Fatal(err)
+	}
+	h.renderDue(t, 2)
+	if got := instances(); !slices.Equal(got, []int64{1, other.ID}) {
+		t.Fatalf("renders with items off schedule: %v, want both", got)
+	}
+
+	hidden := true
+	if err := playlist.UpdateItem(t.Context(), h.db, item.ID, playlist.ItemUpdate{Hidden: &hidden}); err != nil {
+		t.Fatal(err)
+	}
+	h.renderDue(t, 2)
+	if got := instances(); !slices.Equal(got, []int64{1}) {
+		t.Fatalf("renders with an item hidden: %v, want only instance 1", got)
+	}
+	// Shown again, it is built again.
+	hidden = false
+	if err := playlist.UpdateItem(t.Context(), h.db, item.ID, playlist.ItemUpdate{Hidden: &hidden}); err != nil {
+		t.Fatal(err)
+	}
+	h.renderDue(t, 3)
+	if got := instances(); !slices.Equal(got, []int64{1, other.ID}) {
+		t.Fatalf("renders with the item shown again: %v, want both", got)
+	}
+}

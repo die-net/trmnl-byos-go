@@ -10,20 +10,28 @@ import (
 )
 
 const createPlaylist = `-- name: CreatePlaylist :one
-INSERT INTO playlist (name) VALUES (?) RETURNING id, name
+INSERT INTO playlist (name) VALUES (?) RETURNING id, name, days, window_start, window_end, starts_at, ends_at
 `
 
 func (q *Queries) CreatePlaylist(ctx context.Context, name string) (Playlist, error) {
 	row := q.db.QueryRowContext(ctx, createPlaylist, name)
 	var i Playlist
-	err := row.Scan(&i.ID, &i.Name)
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Days,
+		&i.WindowStart,
+		&i.WindowEnd,
+		&i.StartsAt,
+		&i.EndsAt,
+	)
 	return i, err
 }
 
 const createPlaylistItem = `-- name: CreatePlaylistItem :one
 INSERT INTO playlist_item (playlist_id, position, layout, duration)
 VALUES (?, ?, ?, ?)
-RETURNING id, playlist_id, position, layout, duration
+RETURNING id, playlist_id, position, layout, duration, hidden, days, window_start, window_end, starts_at, ends_at
 `
 
 type CreatePlaylistItemParams struct {
@@ -47,6 +55,12 @@ func (q *Queries) CreatePlaylistItem(ctx context.Context, arg CreatePlaylistItem
 		&i.Position,
 		&i.Layout,
 		&i.Duration,
+		&i.Hidden,
+		&i.Days,
+		&i.WindowStart,
+		&i.WindowEnd,
+		&i.StartsAt,
+		&i.EndsAt,
 	)
 	return i, err
 }
@@ -78,14 +92,64 @@ func (q *Queries) DeletePlaylistItem(ctx context.Context, id int64) (int64, erro
 	return result.RowsAffected()
 }
 
+const getPlaylist = `-- name: GetPlaylist :one
+SELECT id, name, days, window_start, window_end, starts_at, ends_at FROM playlist WHERE id = ?
+`
+
+func (q *Queries) GetPlaylist(ctx context.Context, id int64) (Playlist, error) {
+	row := q.db.QueryRowContext(ctx, getPlaylist, id)
+	var i Playlist
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Days,
+		&i.WindowStart,
+		&i.WindowEnd,
+		&i.StartsAt,
+		&i.EndsAt,
+	)
+	return i, err
+}
+
 const getPlaylistByName = `-- name: GetPlaylistByName :one
-SELECT id, name FROM playlist WHERE name = ?
+SELECT id, name, days, window_start, window_end, starts_at, ends_at FROM playlist WHERE name = ?
 `
 
 func (q *Queries) GetPlaylistByName(ctx context.Context, name string) (Playlist, error) {
 	row := q.db.QueryRowContext(ctx, getPlaylistByName, name)
 	var i Playlist
-	err := row.Scan(&i.ID, &i.Name)
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Days,
+		&i.WindowStart,
+		&i.WindowEnd,
+		&i.StartsAt,
+		&i.EndsAt,
+	)
+	return i, err
+}
+
+const getPlaylistItem = `-- name: GetPlaylistItem :one
+SELECT id, playlist_id, position, layout, duration, hidden, days, window_start, window_end, starts_at, ends_at FROM playlist_item WHERE id = ?
+`
+
+func (q *Queries) GetPlaylistItem(ctx context.Context, id int64) (PlaylistItem, error) {
+	row := q.db.QueryRowContext(ctx, getPlaylistItem, id)
+	var i PlaylistItem
+	err := row.Scan(
+		&i.ID,
+		&i.PlaylistID,
+		&i.Position,
+		&i.Layout,
+		&i.Duration,
+		&i.Hidden,
+		&i.Days,
+		&i.WindowStart,
+		&i.WindowEnd,
+		&i.StartsAt,
+		&i.EndsAt,
+	)
 	return i, err
 }
 
@@ -107,29 +171,44 @@ func (q *Queries) LinkPlaylistDevice(ctx context.Context, arg LinkPlaylistDevice
 }
 
 const listDeviceItems = `-- name: ListDeviceItems :many
-SELECT playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette, plugin_instance.name AS instance_name
-FROM playlist_item
+SELECT playlist.id AS playlist_id, playlist.days AS playlist_days, playlist.window_start AS playlist_window_start,
+  playlist.window_end AS playlist_window_end, playlist.starts_at AS playlist_starts_at, playlist.ends_at AS playlist_ends_at,
+  playlist_item.id, playlist_item.duration, playlist_item.hidden, playlist_item.days AS item_days,
+  playlist_item.window_start AS item_window_start, playlist_item.window_end AS item_window_end,
+  playlist_item.starts_at AS item_starts_at, playlist_item.ends_at AS item_ends_at,
+  playlist_slot.instance_id, plugin_instance.palette, plugin_instance.name AS instance_name
+FROM playlist_device
+JOIN playlist ON playlist.id = playlist_device.playlist_id
+JOIN playlist_item ON playlist_item.playlist_id = playlist.id
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
-WHERE playlist_item.playlist_id = (
-  SELECT playlist_device.playlist_id FROM playlist_device
-  WHERE playlist_device.device_id = ?
-  ORDER BY playlist_device.priority, playlist_device.playlist_id
-  LIMIT 1
-)
-ORDER BY playlist_item.position
+WHERE playlist_device.device_id = ?
+ORDER BY playlist_device.priority, playlist_device.playlist_id, playlist_item.position
 `
 
 type ListDeviceItemsRow struct {
-	ID           int64  `json:"id"`
-	Duration     int64  `json:"duration"`
-	InstanceID   int64  `json:"instance_id"`
-	Palette      string `json:"palette"`
-	InstanceName string `json:"instance_name"`
+	PlaylistID          int64  `json:"playlist_id"`
+	PlaylistDays        int64  `json:"playlist_days"`
+	PlaylistWindowStart int64  `json:"playlist_window_start"`
+	PlaylistWindowEnd   int64  `json:"playlist_window_end"`
+	PlaylistStartsAt    int64  `json:"playlist_starts_at"`
+	PlaylistEndsAt      int64  `json:"playlist_ends_at"`
+	ID                  int64  `json:"id"`
+	Duration            int64  `json:"duration"`
+	Hidden              int64  `json:"hidden"`
+	ItemDays            int64  `json:"item_days"`
+	ItemWindowStart     int64  `json:"item_window_start"`
+	ItemWindowEnd       int64  `json:"item_window_end"`
+	ItemStartsAt        int64  `json:"item_starts_at"`
+	ItemEndsAt          int64  `json:"item_ends_at"`
+	InstanceID          int64  `json:"instance_id"`
+	Palette             string `json:"palette"`
+	InstanceName        string `json:"instance_name"`
 }
 
-// The items of the playlist a device shows, in order, with the instance in
-// each item's first slot.
+// The items of every playlist a device is linked to, in the order they are
+// tried (priority, then playlist ID) and then position, with each
+// playlist's and item's schedule and the instance in each item's first slot.
 func (q *Queries) ListDeviceItems(ctx context.Context, deviceID int64) ([]ListDeviceItemsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDeviceItems, deviceID)
 	if err != nil {
@@ -140,8 +219,20 @@ func (q *Queries) ListDeviceItems(ctx context.Context, deviceID int64) ([]ListDe
 	for rows.Next() {
 		var i ListDeviceItemsRow
 		if err := rows.Scan(
+			&i.PlaylistID,
+			&i.PlaylistDays,
+			&i.PlaylistWindowStart,
+			&i.PlaylistWindowEnd,
+			&i.PlaylistStartsAt,
+			&i.PlaylistEndsAt,
 			&i.ID,
 			&i.Duration,
+			&i.Hidden,
+			&i.ItemDays,
+			&i.ItemWindowStart,
+			&i.ItemWindowEnd,
+			&i.ItemStartsAt,
+			&i.ItemEndsAt,
 			&i.InstanceID,
 			&i.Palette,
 			&i.InstanceName,
@@ -224,8 +315,37 @@ func (q *Queries) ListPlaylistDevices(ctx context.Context) ([]ListPlaylistDevice
 	return items, nil
 }
 
+const listPlaylistItemIDs = `-- name: ListPlaylistItemIDs :many
+SELECT id FROM playlist_item WHERE playlist_id = ? ORDER BY position
+`
+
+// A playlist's item IDs in position order.
+func (q *Queries) ListPlaylistItemIDs(ctx context.Context, playlistID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistItemIDs, playlistID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlaylistItems = `-- name: ListPlaylistItems :many
-SELECT playlist.name AS playlist, playlist_item.id, playlist_item.position, playlist_item.duration,
+SELECT playlist.name AS playlist, playlist_item.id, playlist_item.position, playlist_item.duration, playlist_item.hidden,
+  playlist_item.days, playlist_item.window_start, playlist_item.window_end, playlist_item.starts_at, playlist_item.ends_at,
   plugin_instance.id AS instance_id, plugin_instance.name AS instance_name
 FROM playlist
 JOIN playlist_item ON playlist_item.playlist_id = playlist.id
@@ -239,6 +359,12 @@ type ListPlaylistItemsRow struct {
 	ID           int64  `json:"id"`
 	Position     int64  `json:"position"`
 	Duration     int64  `json:"duration"`
+	Hidden       int64  `json:"hidden"`
+	Days         int64  `json:"days"`
+	WindowStart  int64  `json:"window_start"`
+	WindowEnd    int64  `json:"window_end"`
+	StartsAt     int64  `json:"starts_at"`
+	EndsAt       int64  `json:"ends_at"`
 	InstanceID   int64  `json:"instance_id"`
 	InstanceName string `json:"instance_name"`
 }
@@ -258,6 +384,12 @@ func (q *Queries) ListPlaylistItems(ctx context.Context) ([]ListPlaylistItemsRow
 			&i.ID,
 			&i.Position,
 			&i.Duration,
+			&i.Hidden,
+			&i.Days,
+			&i.WindowStart,
+			&i.WindowEnd,
+			&i.StartsAt,
+			&i.EndsAt,
 			&i.InstanceID,
 			&i.InstanceName,
 		); err != nil {
@@ -275,7 +407,7 @@ func (q *Queries) ListPlaylistItems(ctx context.Context) ([]ListPlaylistItemsRow
 }
 
 const listPlaylists = `-- name: ListPlaylists :many
-SELECT id, name FROM playlist ORDER BY name
+SELECT id, name, days, window_start, window_end, starts_at, ends_at FROM playlist ORDER BY name
 `
 
 func (q *Queries) ListPlaylists(ctx context.Context) ([]Playlist, error) {
@@ -287,7 +419,15 @@ func (q *Queries) ListPlaylists(ctx context.Context) ([]Playlist, error) {
 	items := []Playlist{}
 	for rows.Next() {
 		var i Playlist
-		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Days,
+			&i.WindowStart,
+			&i.WindowEnd,
+			&i.StartsAt,
+			&i.EndsAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -301,6 +441,17 @@ func (q *Queries) ListPlaylists(ctx context.Context) ([]Playlist, error) {
 	return items, nil
 }
 
+const negatePlaylistPositions = `-- name: NegatePlaylistPositions :exec
+UPDATE playlist_item SET position = -1 - position WHERE playlist_id = ?
+`
+
+// Moves a playlist's positions out of the range of indexes, so each item can
+// then be given its index without two items sharing a position at any step.
+func (q *Queries) NegatePlaylistPositions(ctx context.Context, playlistID int64) error {
+	_, err := q.db.ExecContext(ctx, negatePlaylistPositions, playlistID)
+	return err
+}
+
 const nextItemPosition = `-- name: NextItemPosition :one
 SELECT CAST(COALESCE(MAX(position), -1) + 1 AS INTEGER) FROM playlist_item WHERE playlist_id = ?
 `
@@ -310,4 +461,78 @@ func (q *Queries) NextItemPosition(ctx context.Context, playlistID int64) (int64
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const setItemPosition = `-- name: SetItemPosition :exec
+UPDATE playlist_item SET position = ? WHERE id = ?
+`
+
+type SetItemPositionParams struct {
+	Position int64 `json:"position"`
+	ID       int64 `json:"id"`
+}
+
+func (q *Queries) SetItemPosition(ctx context.Context, arg SetItemPositionParams) error {
+	_, err := q.db.ExecContext(ctx, setItemPosition, arg.Position, arg.ID)
+	return err
+}
+
+const updatePlaylistItem = `-- name: UpdatePlaylistItem :exec
+UPDATE playlist_item
+SET duration = ?1, hidden = ?2, days = ?3,
+  window_start = ?4, window_end = ?5,
+  starts_at = ?6, ends_at = ?7
+WHERE id = ?8
+`
+
+type UpdatePlaylistItemParams struct {
+	Duration    int64 `json:"duration"`
+	Hidden      int64 `json:"hidden"`
+	Days        int64 `json:"days"`
+	WindowStart int64 `json:"window_start"`
+	WindowEnd   int64 `json:"window_end"`
+	StartsAt    int64 `json:"starts_at"`
+	EndsAt      int64 `json:"ends_at"`
+	ID          int64 `json:"id"`
+}
+
+func (q *Queries) UpdatePlaylistItem(ctx context.Context, arg UpdatePlaylistItemParams) error {
+	_, err := q.db.ExecContext(ctx, updatePlaylistItem,
+		arg.Duration,
+		arg.Hidden,
+		arg.Days,
+		arg.WindowStart,
+		arg.WindowEnd,
+		arg.StartsAt,
+		arg.EndsAt,
+		arg.ID,
+	)
+	return err
+}
+
+const updatePlaylistSchedule = `-- name: UpdatePlaylistSchedule :exec
+UPDATE playlist
+SET days = ?, window_start = ?, window_end = ?, starts_at = ?, ends_at = ?
+WHERE id = ?
+`
+
+type UpdatePlaylistScheduleParams struct {
+	Days        int64 `json:"days"`
+	WindowStart int64 `json:"window_start"`
+	WindowEnd   int64 `json:"window_end"`
+	StartsAt    int64 `json:"starts_at"`
+	EndsAt      int64 `json:"ends_at"`
+	ID          int64 `json:"id"`
+}
+
+func (q *Queries) UpdatePlaylistSchedule(ctx context.Context, arg UpdatePlaylistScheduleParams) error {
+	_, err := q.db.ExecContext(ctx, updatePlaylistSchedule,
+		arg.Days,
+		arg.WindowStart,
+		arg.WindowEnd,
+		arg.StartsAt,
+		arg.EndsAt,
+		arg.ID,
+	)
+	return err
 }

@@ -344,6 +344,7 @@ JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
 LEFT JOIN instance_data ON instance_data.instance_id = plugin_instance.id
+WHERE playlist_item.hidden = 0
 `
 
 type ListRenderTargetsRow struct {
@@ -359,7 +360,7 @@ type ListRenderTargetsRow struct {
 	DataAt          int64  `json:"data_at"`
 }
 
-// Every instance in a playlist linked to a device, with what the device
+// Every instance in a visible item of a playlist linked to a device, with what the device
 // reported about itself, from which its render size and palette follow.
 // A recipe's device_id is the device the render is for, which the caller
 // drops for a recipe whose renders every device shares. data_at is when
@@ -457,32 +458,45 @@ func (q *Queries) ListRenders(ctx context.Context) ([]ListRendersRow, error) {
 }
 
 const listShownItems = `-- name: ListShownItems :many
-SELECT device.id AS device_id, playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette,
-  recipe.id AS recipe_id, recipe.refresh_interval
+SELECT device.id AS device_id, playlist.id AS playlist_id, playlist.days AS playlist_days, playlist.window_start AS playlist_window_start,
+  playlist.window_end AS playlist_window_end, playlist.starts_at AS playlist_starts_at, playlist.ends_at AS playlist_ends_at,
+  playlist_item.id, playlist_item.duration, playlist_item.hidden, playlist_item.days AS item_days,
+  playlist_item.window_start AS item_window_start, playlist_item.window_end AS item_window_end,
+  playlist_item.starts_at AS item_starts_at, playlist_item.ends_at AS item_ends_at,
+  playlist_slot.instance_id, plugin_instance.palette, recipe.id AS recipe_id, recipe.refresh_interval
 FROM device
-JOIN playlist_item ON playlist_item.playlist_id = (
-  SELECT playlist_device.playlist_id FROM playlist_device
-  WHERE playlist_device.device_id = device.id
-  ORDER BY playlist_device.priority, playlist_device.playlist_id
-  LIMIT 1
-)
+JOIN playlist_device ON playlist_device.device_id = device.id
+JOIN playlist ON playlist.id = playlist_device.playlist_id
+JOIN playlist_item ON playlist_item.playlist_id = playlist.id
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
-ORDER BY device.id, playlist_item.position
+ORDER BY device.id, playlist_device.priority, playlist_device.playlist_id, playlist_item.position
 `
 
 type ListShownItemsRow struct {
-	DeviceID        int64  `json:"device_id"`
-	ID              int64  `json:"id"`
-	Duration        int64  `json:"duration"`
-	InstanceID      int64  `json:"instance_id"`
-	Palette         string `json:"palette"`
-	RecipeID        int64  `json:"recipe_id"`
-	RefreshInterval int64  `json:"refresh_interval"`
+	DeviceID            int64  `json:"device_id"`
+	PlaylistID          int64  `json:"playlist_id"`
+	PlaylistDays        int64  `json:"playlist_days"`
+	PlaylistWindowStart int64  `json:"playlist_window_start"`
+	PlaylistWindowEnd   int64  `json:"playlist_window_end"`
+	PlaylistStartsAt    int64  `json:"playlist_starts_at"`
+	PlaylistEndsAt      int64  `json:"playlist_ends_at"`
+	ID                  int64  `json:"id"`
+	Duration            int64  `json:"duration"`
+	Hidden              int64  `json:"hidden"`
+	ItemDays            int64  `json:"item_days"`
+	ItemWindowStart     int64  `json:"item_window_start"`
+	ItemWindowEnd       int64  `json:"item_window_end"`
+	ItemStartsAt        int64  `json:"item_starts_at"`
+	ItemEndsAt          int64  `json:"item_ends_at"`
+	InstanceID          int64  `json:"instance_id"`
+	Palette             string `json:"palette"`
+	RecipeID            int64  `json:"recipe_id"`
+	RefreshInterval     int64  `json:"refresh_interval"`
 }
 
-// The items of the playlist each device shows, in order, as ListDeviceItems
+// The items of every playlist each device is linked to, as ListDeviceItems
 // gives them for one device, with the instance's recipe.
 func (q *Queries) ListShownItems(ctx context.Context) ([]ListShownItemsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listShownItems)
@@ -495,8 +509,20 @@ func (q *Queries) ListShownItems(ctx context.Context) ([]ListShownItemsRow, erro
 		var i ListShownItemsRow
 		if err := rows.Scan(
 			&i.DeviceID,
+			&i.PlaylistID,
+			&i.PlaylistDays,
+			&i.PlaylistWindowStart,
+			&i.PlaylistWindowEnd,
+			&i.PlaylistStartsAt,
+			&i.PlaylistEndsAt,
 			&i.ID,
 			&i.Duration,
+			&i.Hidden,
+			&i.ItemDays,
+			&i.ItemWindowStart,
+			&i.ItemWindowEnd,
+			&i.ItemStartsAt,
+			&i.ItemEndsAt,
 			&i.InstanceID,
 			&i.Palette,
 			&i.RecipeID,

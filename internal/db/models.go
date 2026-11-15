@@ -97,8 +97,13 @@ type InstanceDatum struct {
 }
 
 type Playlist struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Days        int64  `json:"days"`
+	WindowStart int64  `json:"window_start"`
+	WindowEnd   int64  `json:"window_end"`
+	StartsAt    int64  `json:"starts_at"`
+	EndsAt      int64  `json:"ends_at"`
 }
 
 type PlaylistDevice struct {
@@ -108,11 +113,17 @@ type PlaylistDevice struct {
 }
 
 type PlaylistItem struct {
-	ID         int64  `json:"id"`
-	PlaylistID int64  `json:"playlist_id"`
-	Position   int64  `json:"position"`
-	Layout     string `json:"layout"`
-	Duration   int64  `json:"duration"`
+	ID          int64  `json:"id"`
+	PlaylistID  int64  `json:"playlist_id"`
+	Position    int64  `json:"position"`
+	Layout      string `json:"layout"`
+	Duration    int64  `json:"duration"`
+	Hidden      int64  `json:"hidden"`
+	Days        int64  `json:"days"`
+	WindowStart int64  `json:"window_start"`
+	WindowEnd   int64  `json:"window_end"`
+	StartsAt    int64  `json:"starts_at"`
+	EndsAt      int64  `json:"ends_at"`
 }
 
 type PlaylistSlot struct {

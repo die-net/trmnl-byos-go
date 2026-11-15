@@ -186,20 +186,48 @@ type screenChoice struct {
 	size int64
 	// refresh is the seconds until the device wakes again.
 	refresh int64
-	// shown is false when the device's playlist has no items, so nothing
-	// was chosen.
+	// shown is false when the device has no playlist items, so nothing was
+	// chosen.
 	shown bool
 }
 
-// playlistScreen picks what a device shows from its playlist, moving its
+// untilChange shortens refresh, in seconds, to wake a device when what its
+// playlists show changes: a schedule opens or closes. This wake chose at now
+// plus the slack a wake may come early, so the search starts there. The
+// device is woken at the change itself, as at the end of an item, so a wake
+// up to the slack early still chooses after it.
+func untilChange(lists []playlist.List, now time.Time, refresh int64) int64 {
+	at := now.Add(playlist.WakeSlack)
+	next, ok := playlist.NextChange(lists, at, now.Add(time.Duration(refresh)*time.Second))
+	if !ok {
+		return refresh
+	}
+	// Round up, so the device is not woken just before the change.
+	secs := (next.Sub(now) + time.Second - 1) / time.Second
+	return min(refresh, max(int64(secs), 1))
+}
+
+// playlistScreen picks what a device shows from its playlists, moving its
 // cursor first. The refresh rate it returns is refresh, shortened to wake the
-// device when the item ends or a render is ready.
+// device when the item ends, a schedule changes or a render is ready.
 func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, pressed bool, refresh int64) (screenChoice, error) {
-	item, started, ok, err := s.advance(ctx, dev.ID, pressed)
-	if err != nil || !ok {
+	pick, err := s.advance(ctx, dev.ID, pressed)
+	if err != nil || len(pick.lists) == 0 {
 		return screenChoice{refresh: refresh}, err
 	}
 	now := s.now()
+	refresh = untilChange(pick.lists, now, refresh)
+	if !pick.ok {
+		// Nothing is scheduled, so there is no cursor to move. The text is
+		// constant, so the image name is too.
+		name, size, err := s.screenSized(sp, []screen.Line{
+			{Text: "Nothing scheduled now", Size: 44, Bold: true},
+			{Text: dev.FriendlyID, Size: 28},
+			{Text: "None of this display's playlists is scheduled for now.", Size: 20},
+		})
+		return screenChoice{name: name, size: size, refresh: refresh, shown: true}, err
+	}
+	item, started := pick.item, pick.started
 	if item.Duration > 0 {
 		left := started.Add(time.Duration(item.Duration) * time.Second).Sub(now)
 		refresh = min(refresh, max(int64(left/time.Second), 1))
@@ -280,14 +308,36 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	return screenChoice{name: name, size: size, refresh: refresh, shown: true}, err
 }
 
+// pick is what advance chose for a device.
+type pick struct {
+	// lists are the device's playlists in the order they are tried. It is
+	// empty when the device has no playlist items.
+	lists []playlist.List
+	// ok is true when one of lists is scheduled now and has an item to
+	// show. item is then the item to show, and started is when it started.
+	ok      bool
+	item    db.ListDeviceItemsRow
+	started time.Time
+}
+
 // advance moves a device's playlist cursor for this wake and returns the
-// item it now shows and when that started. ok is false when the device's
-// playlist has no items.
-func (s *Server) advance(ctx context.Context, deviceID int64, pressed bool) (item db.ListDeviceItemsRow, started time.Time, ok bool, err error) {
-	err = s.db.InTx(ctx, func(q *db.Queries) error {
-		items, err := q.ListDeviceItems(ctx, deviceID)
+// item it now shows. The playlist is the first that is scheduled at the
+// wake plus the slack a timer wake may come early, and has an item that is
+// shown then.
+func (s *Server) advance(ctx context.Context, deviceID int64, pressed bool) (pick, error) {
+	var out pick
+	err := s.db.InTx(ctx, func(q *db.Queries) error {
+		out = pick{}
+		rows, err := q.ListDeviceItems(ctx, deviceID)
 		if err != nil {
 			return fmt.Errorf("list playlist items: %w", err)
+		}
+		lists, groups := playlist.DeviceLists(rows)
+		out.lists = lists
+		now := s.now()
+		c := playlist.Choose(lists, now.Add(playlist.WakeSlack))
+		if c < 0 {
+			return nil
 		}
 		cursor, err := q.GetDeviceCursor(ctx, deviceID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -297,29 +347,25 @@ func (s *Server) advance(ctx context.Context, deviceID int64, pressed bool) (ite
 		if err == nil {
 			cur = &playlist.Cursor{ItemID: cursor.ItemID, Started: time.Unix(cursor.ItemStartedAt, 0)}
 		}
-		pl := make([]playlist.Item, len(items))
-		for i := range items {
-			pl[i] = playlist.Item{ID: items[i].ID, Duration: time.Duration(items[i].Duration) * time.Second}
-		}
-		i, start := playlist.Advance(pl, cur, s.now(), pressed)
+		i, start := playlist.Advance(lists[c].Items(now.Add(playlist.WakeSlack)), cur, now, pressed)
 		if i < 0 {
 			return nil
 		}
-		item, started, ok = items[i], start, true
-		if cur != nil && cur.ItemID == item.ID && cur.Started.Equal(started) {
+		out.item, out.started, out.ok = groups[c][i], start, true
+		if cur != nil && cur.ItemID == out.item.ID && cur.Started.Equal(start) {
 			return nil
 		}
 		err = q.SetDeviceCursor(ctx, db.SetDeviceCursorParams{
 			DeviceID:      deviceID,
-			ItemID:        item.ID,
-			ItemStartedAt: started.Unix(),
+			ItemID:        out.item.ID,
+			ItemStartedAt: start.Unix(),
 		})
 		if err != nil {
 			return fmt.Errorf("set cursor: %w", err)
 		}
 		return nil
 	})
-	return item, started, ok, err
+	return out, err
 }
 
 // maxLineRunes bounds a line of text from elsewhere, such as an error, on a

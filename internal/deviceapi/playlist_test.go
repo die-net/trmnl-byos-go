@@ -302,3 +302,165 @@ func TestDisplayMissingRenderImage(t *testing.T) {
 		t.Fatalf("render rows after a conditional delete of an old image: %+v, %v; want the row kept", rows, err)
 	}
 }
+
+// scheduleWindow sets the schedule of the playlist named name to a window
+// every day, in minutes after midnight.
+func (ts *testServer) scheduleWindow(t *testing.T, name string, start, end int64) {
+	t.Helper()
+	pl, err := ts.db.Read.GetPlaylistByName(t.Context(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := playlist.Always
+	s.WindowStart, s.WindowEnd = start, end
+	if err := playlist.SetPlaylistSchedule(t.Context(), ts.db, pl.ID, s.Full()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// nothingScheduled is the name of the "Nothing scheduled now" screen the
+// test device gets.
+func (ts *testServer) nothingScheduled(t *testing.T) string {
+	t.Helper()
+	dev, err := ts.db.Read.GetDeviceByMAC(t.Context(), testMAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := profile.Resolve("xiao_epaper_display", nil, nil)
+	name, _, err := ts.srv.screenSized(screenProfile(p), []screen.Line{
+		{Text: "Nothing scheduled now", Size: 44, Bold: true},
+		{Text: dev.FriendlyID, Size: 28},
+		{Text: "None of this display's playlists is scheduled for now.", Size: 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
+// TestDisplaySchedule walks a device past the end of its playlist's window:
+// the refresh is cut to the minute the window closes, and the wake that
+// follows gets the "Nothing scheduled now" screen, not the last item, with
+// the usual refresh since nothing changes soon.
+func TestDisplaySchedule(t *testing.T) {
+	ts := newTestServer(t)
+	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	key, first, second := ts.playlistDevice(t)
+	img := ts.saveRender(t, first, "")
+	ts.saveRender(t, second, "")
+	// Open from 09:00 to 12:05.
+	ts.scheduleWindow(t, "p", 9*60, 12*60+5)
+	timer := displayHeaders(testMAC, key)
+	timer["Update-Source"] = "timer"
+
+	// The item has 600 s left and the usual rate is 900, but the window
+	// closes at 12:05:00, so the device is woken then.
+	m := ts.getJSON(t, "/api/display", timer)
+	if m["filename"] != img || m["refresh_rate"] != float64(300) {
+		t.Fatalf("in the window: %v; want the first item's image and refresh 300", m)
+	}
+	// A wake 20 s early still chooses after the window closed.
+	ts.now = ts.now.Add(280 * time.Second)
+	m = ts.getJSON(t, "/api/display", timer)
+	closed := ts.nothingScheduled(t)
+	if m["filename"] != closed || m["refresh_rate"] != float64(900) {
+		t.Fatalf("after the window: %v; want the Nothing scheduled now screen %s and refresh 900", m, closed)
+	}
+	ts.fetchImage(t, m["image_url"].(string), closed)
+
+	// A wake at 12:05 that finds the window about to open, at 12:08, is cut
+	// to it.
+	ts.now = time.Date(2026, 11, 13, 12, 5, 0, 0, time.UTC)
+	ts.scheduleWindow(t, "p", 12*60+5+3, 14*60)
+	m = ts.getJSON(t, "/api/display", timer)
+	if m["filename"] != closed || m["refresh_rate"] != float64(180) {
+		t.Fatalf("before the window opens: %v; want the same screen and refresh 180", m)
+	}
+}
+
+// TestDisplayHiddenItem checks that a hidden item is never shown, the next
+// shown one is, and a playlist whose items are all hidden shows the
+// "Nothing scheduled now" screen.
+func TestDisplayHiddenItem(t *testing.T) {
+	ts := newTestServer(t)
+	key, first, second := ts.playlistDevice(t)
+	imgFirst, imgSecond := ts.saveRender(t, first, ""), ts.saveRender(t, second, "")
+	items, err := ts.db.Read.ListPlaylistItemIDs(t.Context(), 1)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("items %v, %v", items, err)
+	}
+	hide := func(id int64, hidden bool) {
+		t.Helper()
+		if err := playlist.UpdateItem(t.Context(), ts.db, id, playlist.ItemUpdate{Hidden: &hidden}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	timer := displayHeaders(testMAC, key)
+	timer["Update-Source"] = "timer"
+	press := displayHeaders(testMAC, key)
+
+	hide(items[0], true)
+	if m := ts.getJSON(t, "/api/display", timer); m["filename"] != imgSecond {
+		t.Fatalf("with the first item hidden: %v; want the second's image %s", m, imgSecond)
+	}
+	// A press on the only shown item stays on it.
+	if m := ts.getJSON(t, "/api/display", press); m["filename"] != imgSecond {
+		t.Fatalf("press with the first item hidden: %v; want the second's image", m)
+	}
+	// The cursor is on the item that is now hidden. It moves to the shown one.
+	hide(items[0], false)
+	hide(items[1], true)
+	ts.now = ts.now.Add(time.Minute)
+	if m := ts.getJSON(t, "/api/display", timer); m["filename"] != imgFirst {
+		t.Fatalf("with the second item hidden under the cursor: %v; want the first's image %s", m, imgFirst)
+	}
+	hide(items[0], true)
+	if m := ts.getJSON(t, "/api/display", timer); m["filename"] != ts.nothingScheduled(t) {
+		t.Fatalf("with every item hidden: %v; want the Nothing scheduled now screen", m)
+	}
+}
+
+// TestDisplayDefaultPlaylist checks that when a scheduled playlist is not
+// active, the device shows the next playlist, which is the unscheduled
+// default, and goes back when the schedule opens.
+func TestDisplayDefaultPlaylist(t *testing.T) {
+	ts := newTestServer(t)
+	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	key, first, _ := ts.playlistDevice(t)
+	dev, err := ts.db.Read.GetDeviceByMAC(t.Context(), testMAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := ts.db.Write.CreateRecipe(t.Context(), db.CreateRecipeParams{Name: "r2", Source: "s", RefreshInterval: 3600, InstalledAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := ts.db.Write.CreateInstance(t.Context(), db.CreateInstanceParams{RecipeID: rec.ID, Name: "Default", FieldValues: "{}", CreatedAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Playlist "p" has the lower ID, so it is tried first.
+	if _, _, err := playlist.AddItem(t.Context(), ts.db, "fallback", dev.ID, inst.ID, 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	imgP := ts.saveRender(t, first, "")
+	ts.scheduleWindow(t, "p", 12*60, 13*60)
+	timer := displayHeaders(testMAC, key)
+	timer["Update-Source"] = "timer"
+
+	if m := ts.getJSON(t, "/api/display", timer); m["filename"] != imgP {
+		t.Fatalf("in the window: %v; want playlist p's image %s", m, imgP)
+	}
+	ts.now = time.Date(2026, 11, 13, 14, 0, 0, 0, time.UTC)
+	// Renders are made again, since they would be too old by now.
+	ts.saveRender(t, first, "")
+	imgDefault := ts.saveRender(t, inst.ID, "")
+	m := ts.getJSON(t, "/api/display", timer)
+	if m["filename"] != imgDefault {
+		t.Fatalf("after the window: %v; want the default playlist's image %s", m, imgDefault)
+	}
+	// The window opens tomorrow at 12:00, 22 hours away, so the usual rate holds.
+	if m["refresh_rate"] != float64(600) {
+		t.Errorf("refresh = %v, want the default item's 600", m["refresh_rate"])
+	}
+}

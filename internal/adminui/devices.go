@@ -415,7 +415,7 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		WakeTime:   missing,
 		WakeCause:  missing,
 		PanelSize:  missing,
-		Playlist:   make([]playlistRow, 0, len(items)),
+		Playlist:   []playlistRow{},
 	}
 	d.View.Firmware = orMissing(dev.FwVersion)
 	if row.LastSeen != nil {
@@ -433,8 +433,16 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	if d.View.Width > 0 {
 		d.PanelSize = fmt.Sprintf("%d × %d", d.View.Width, d.View.Height)
 	}
-	for i := range items {
-		d.Playlist = append(d.Playlist, playlistRow{Name: items[i].InstanceName, Duration: itemDuration(items[i].Duration)})
+	// The playlist the device would show at its next wake, and its items
+	// that are shown then.
+	at := now.Add(playlist.WakeSlack)
+	lists, groups := playlist.DeviceLists(items)
+	if c := playlist.Choose(lists, at); c >= 0 {
+		for i := range groups[c] {
+			if lists[c].Entries[i].Shown(at) {
+				d.Playlist = append(d.Playlist, playlistRow{Name: groups[c][i].InstanceName, Duration: itemDuration(groups[c][i].Duration)})
+			}
+		}
 	}
 	if form == nil {
 		form = &deviceForm{Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin}

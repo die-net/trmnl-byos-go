@@ -26,6 +26,7 @@ var steps = []step{
 	{"adopt a database from before numbered versions", adoptUnversioned},
 	{"move playlist cursors out of device_state", moveCursors},
 	{"add admin sessions", addAdminSessions},
+	{"add playlist schedules and hidden items", addPlaylistSchedules},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -200,6 +201,37 @@ const addAdminSessionsSQL = `CREATE TABLE IF NOT EXISTS admin_session (
 func addAdminSessions(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addAdminSessionsSQL); err != nil {
 		return fmt.Errorf("add admin_session: %w", err)
+	}
+	return nil
+}
+
+// addPlaylistSchedulesSQL is step 4. It adds the schedule columns to playlist
+// and playlist_item and the hidden column to playlist_item, as in schema.sql,
+// and makes each playlist's positions run 0 to n-1 in their old order, since
+// the API now treats position as an index. A position is unique within its
+// playlist and SQLite checks that per row, so the positions are first made
+// negative, which no index is, and then ranked by their old order, which is
+// descending now.
+const addPlaylistSchedulesSQL = `ALTER TABLE playlist ADD COLUMN days INTEGER NOT NULL DEFAULT 127;
+ALTER TABLE playlist ADD COLUMN window_start INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist ADD COLUMN window_end INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist ADD COLUMN starts_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist ADD COLUMN ends_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist_item ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist_item ADD COLUMN days INTEGER NOT NULL DEFAULT 127;
+ALTER TABLE playlist_item ADD COLUMN window_start INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist_item ADD COLUMN window_end INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist_item ADD COLUMN starts_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlist_item ADD COLUMN ends_at INTEGER NOT NULL DEFAULT 0;
+UPDATE playlist_item SET position = -1 - position;
+UPDATE playlist_item SET position = ranked.idx
+  FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY playlist_id ORDER BY position DESC) - 1 AS idx FROM playlist_item) AS ranked
+  WHERE ranked.id = playlist_item.id`
+
+// addPlaylistSchedules is step 4: see addPlaylistSchedulesSQL.
+func addPlaylistSchedules(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addPlaylistSchedulesSQL); err != nil {
+		return fmt.Errorf("add playlist schedules: %w", err)
 	}
 	return nil
 }

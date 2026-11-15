@@ -276,7 +276,8 @@ func (s *Scheduler) pruneRenders(ctx context.Context, cands []*candidate) error 
 // candidates lists what devices' playlists need rendered, each once, in a
 // fixed order, with when each is wanted. A device wants the item it will
 // show at its next wake, which is playlist.Advance's answer, without a
-// press, for last_seen plus the refresh_rate it was sent. A target that is
+// press, for last_seen plus the refresh_rate it was sent, from the playlist
+// playlist.Choose picks at that wake plus playlist.WakeSlack. A target that is
 // per device is wanted by that device alone, and a shared one by every
 // device that will show it.
 func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
@@ -305,27 +306,37 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list shown items: %w", err)
 	}
-	itemsOf := map[int64][]db.ListShownItemsRow{}
-	for _, it := range shown {
-		itemsOf[it.DeviceID] = append(itemsOf[it.DeviceID], it)
+	rowsOf := map[int64][]db.ListShownItemsRow{}
+	for i := range shown {
+		rowsOf[shown[i].DeviceID] = append(rowsOf[shown[i].DeviceID], shown[i])
 	}
 	for i := range wakes {
 		w := &wakes[i]
-		items := itemsOf[w.DeviceID]
-		pl := make([]playlist.Item, len(items))
-		for j := range items {
-			pl[j] = playlist.Item{ID: items[j].ID, Duration: time.Duration(items[j].Duration) * time.Second}
+		lists, groups := playlist.Group(rowsOf[w.DeviceID], func(r *db.ListShownItemsRow) (int64, playlist.Schedule, playlist.Entry) {
+			return r.PlaylistID, playlist.Schedule{
+				Days: r.PlaylistDays, WindowStart: r.PlaylistWindowStart, WindowEnd: r.PlaylistWindowEnd, StartsAt: r.PlaylistStartsAt, EndsAt: r.PlaylistEndsAt,
+			}, playlist.Entry{
+				ID: r.ID, Duration: time.Duration(r.Duration) * time.Second, Hidden: r.Hidden != 0,
+				Schedule: playlist.Schedule{Days: r.ItemDays, WindowStart: r.ItemWindowStart, WindowEnd: r.ItemWindowEnd, StartsAt: r.ItemStartsAt, EndsAt: r.ItemEndsAt},
+			}
+		})
+		// The device chooses at its wake plus the slack a wake may come
+		// early, as /api/display does.
+		next := time.Unix(w.LastSeen+w.LastRefreshRateSent, 0)
+		at := next.Add(playlist.WakeSlack)
+		c := playlist.Choose(lists, at)
+		if c < 0 {
+			continue
 		}
 		var cur *playlist.Cursor
 		if w.ItemID != nil && w.ItemStartedAt != nil {
 			cur = &playlist.Cursor{ItemID: *w.ItemID, Started: time.Unix(*w.ItemStartedAt, 0)}
 		}
-		next := time.Unix(w.LastSeen+w.LastRefreshRateSent, 0)
-		j, _ := playlist.Advance(pl, cur, next, false)
+		j, _ := playlist.Advance(lists[c].Items(at), cur, next, false)
 		if j < 0 {
 			continue
 		}
-		it := &items[j]
+		it := &groups[c][j]
 		t := s.newTarget(it.InstanceID, it.RecipeID, w.DeviceID, w.FwModel, w.Width, w.Height, it.Palette, it.RefreshInterval)
 		if c := byTarget[t]; c != nil {
 			c.wanted = append(c.wanted, next)

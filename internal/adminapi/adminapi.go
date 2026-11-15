@@ -93,6 +93,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"DELETE /api/v1/instances/{id}", handleNoContent(s.deleteInstance)},
 		{"GET /api/v1/playlists", handle(http.StatusOK, s.listPlaylists)},
 		{"POST /api/v1/playlists/items", handle(http.StatusCreated, s.addPlaylistItem)},
+		{"PATCH /api/v1/playlists/{id}", handle(http.StatusOK, s.patchPlaylist)},
+		{"PATCH /api/v1/playlists/items/{id}", handle(http.StatusOK, s.patchPlaylistItem)},
 		{"DELETE /api/v1/playlists/items/{id}", handleNoContent(s.deletePlaylistItem)},
 		{"GET /api/custom_plugins/{id}", handle(http.StatusOK, s.getData)},
 		{"POST /api/custom_plugins/{id}", handle(http.StatusOK, s.pushData)},

@@ -1,5 +1,5 @@
 -- name: ListRenderTargets :many
--- Every instance in a playlist linked to a device, with what the device
+-- Every instance in a visible item of a playlist linked to a device, with what the device
 -- reported about itself, from which its render size and palette follow.
 -- A recipe's device_id is the device the render is for, which the caller
 -- drops for a recipe whose renders every device shares. data_at is when
@@ -15,7 +15,8 @@ JOIN playlist_item ON playlist_item.playlist_id = playlist_device.playlist_id
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
-LEFT JOIN instance_data ON instance_data.instance_id = plugin_instance.id;
+LEFT JOIN instance_data ON instance_data.instance_id = plugin_instance.id
+WHERE playlist_item.hidden = 0;
 
 -- name: ListDeviceWakes :many
 -- What the scheduler needs to know about each device that has woken: its
@@ -28,21 +29,22 @@ JOIN device ON device.id = device_state.device_id
 LEFT JOIN device_cursor ON device_cursor.device_id = device.id;
 
 -- name: ListShownItems :many
--- The items of the playlist each device shows, in order, as ListDeviceItems
+-- The items of every playlist each device is linked to, as ListDeviceItems
 -- gives them for one device, with the instance's recipe.
-SELECT device.id AS device_id, playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette,
-  recipe.id AS recipe_id, recipe.refresh_interval
+SELECT device.id AS device_id, playlist.id AS playlist_id, playlist.days AS playlist_days, playlist.window_start AS playlist_window_start,
+  playlist.window_end AS playlist_window_end, playlist.starts_at AS playlist_starts_at, playlist.ends_at AS playlist_ends_at,
+  playlist_item.id, playlist_item.duration, playlist_item.hidden, playlist_item.days AS item_days,
+  playlist_item.window_start AS item_window_start, playlist_item.window_end AS item_window_end,
+  playlist_item.starts_at AS item_starts_at, playlist_item.ends_at AS item_ends_at,
+  playlist_slot.instance_id, plugin_instance.palette, recipe.id AS recipe_id, recipe.refresh_interval
 FROM device
-JOIN playlist_item ON playlist_item.playlist_id = (
-  SELECT playlist_device.playlist_id FROM playlist_device
-  WHERE playlist_device.device_id = device.id
-  ORDER BY playlist_device.priority, playlist_device.playlist_id
-  LIMIT 1
-)
+JOIN playlist_device ON playlist_device.device_id = device.id
+JOIN playlist ON playlist.id = playlist_device.playlist_id
+JOIN playlist_item ON playlist_item.playlist_id = playlist.id
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
-ORDER BY device.id, playlist_item.position;
+ORDER BY device.id, playlist_device.priority, playlist_device.playlist_id, playlist_item.position;
 
 -- name: GetRenderDevice :one
 -- A device's values as of its last wake, which a per-device render shows

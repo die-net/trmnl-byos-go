@@ -688,12 +688,13 @@ func TestMigrateAdminSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Make the database look like one from before step 3.
-	for _, stmt := range []string{
+	// Make the database look like one from before step 3, which is also from
+	// before step 4.
+	for _, stmt := range append(dropPlaylistSchedules,
 		`DROP TABLE admin_session`,
 		`INSERT INTO setting (key, value, updated_at) VALUES ('kept', 'yes', 1)`,
 		`PRAGMA user_version = 2`,
-	} {
+	) {
 		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)
 		}
@@ -724,5 +725,90 @@ func TestMigrateAdminSessions(t *testing.T) {
 	err = client.Write.CreateAdminSession(ctx, CreateAdminSessionParams{TokenHash: []byte("h"), CreatedAt: 1, LastSeenAt: 1, ExpiresAt: 2})
 	if err == nil {
 		t.Error("a second session with the same hash was accepted")
+	}
+}
+
+// dropPlaylistSchedules takes the columns of step 4 out of a database made
+// from schema.sql, so that it has the shape from before that step.
+var dropPlaylistSchedules = []string{
+	`ALTER TABLE playlist DROP COLUMN days`,
+	`ALTER TABLE playlist DROP COLUMN window_start`,
+	`ALTER TABLE playlist DROP COLUMN window_end`,
+	`ALTER TABLE playlist DROP COLUMN starts_at`,
+	`ALTER TABLE playlist DROP COLUMN ends_at`,
+	`ALTER TABLE playlist_item DROP COLUMN hidden`,
+	`ALTER TABLE playlist_item DROP COLUMN days`,
+	`ALTER TABLE playlist_item DROP COLUMN window_start`,
+	`ALTER TABLE playlist_item DROP COLUMN window_end`,
+	`ALTER TABLE playlist_item DROP COLUMN starts_at`,
+	`ALTER TABLE playlist_item DROP COLUMN ends_at`,
+}
+
+// TestMigratePlaylistSchedules checks step 4: a database at version 3 gets
+// the schedule columns with their defaults, ends with the shape of
+// schema.sql, and has each playlist's positions compacted to 0 to n-1 in
+// their old order, with positions that are far apart, out of order by ID, and
+// that a one-row-at-a-time rewrite would collide on.
+func TestMigratePlaylistSchedules(t *testing.T) {
+	ctx := t.Context()
+	fresh := openTest(t)
+	want := shapeOf(t, fresh.Writer)
+
+	path := filepath.Join(t.TempDir(), "v3.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := append([]string{}, dropPlaylistSchedules...)
+	stmts = append(stmts,
+		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
+		`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
+		`INSERT INTO playlist (id, name) VALUES (1, 'a'), (2, 'b')`,
+		// Playlist a, in position order: items 12, 10, 11, 13. Playlist b: item 20 alone.
+		`INSERT INTO playlist_item (id, playlist_id, position, duration) VALUES (10, 1, 5, 60), (11, 1, 9, 60), (12, 1, 1, 60), (13, 1, 10, 60), (20, 2, 7, 60)`,
+		`INSERT INTO playlist_slot (item_id, slot, instance_id) VALUES (10, 0, 1), (11, 0, 1), (12, 0, 1), (13, 0, 1), (20, 0, 1)`,
+		`PRAGMA user_version = 3`,
+	)
+	for _, stmt := range stmts {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, tc := range []struct {
+		playlist int64
+		want     []int64
+	}{
+		{1, []int64{12, 10, 11, 13}},
+		{2, []int64{20}},
+	} {
+		ids, err := client.Read.ListPlaylistItemIDs(ctx, tc.playlist)
+		if err != nil || fmt.Sprint(ids) != fmt.Sprint(tc.want) {
+			t.Errorf("playlist %d items %v, %v; want %v", tc.playlist, ids, err, tc.want)
+		}
+		for i, id := range tc.want {
+			item, err := client.Read.GetPlaylistItem(ctx, id)
+			if err != nil || item.Position != int64(i) {
+				t.Errorf("item %d position %d, %v; want %d", id, item.Position, err, i)
+			}
+			if item.Hidden != 0 || item.Days != 127 || item.WindowStart != 0 || item.WindowEnd != 0 || item.StartsAt != 0 || item.EndsAt != 0 {
+				t.Errorf("item %d is not the default schedule: %+v", id, item)
+			}
+		}
+	}
+	pl, err := client.Read.GetPlaylist(ctx, 1)
+	if err != nil || pl.Days != 127 || pl.WindowStart != 0 || pl.WindowEnd != 0 || pl.StartsAt != 0 || pl.EndsAt != 0 {
+		t.Errorf("playlist after migration: %+v, %v", pl, err)
 	}
 }
