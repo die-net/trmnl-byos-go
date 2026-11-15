@@ -161,7 +161,7 @@ func TestLoginRedirectIgnoresNext(t *testing.T) {
 	}
 }
 
-func TestHomeNeedsSession(t *testing.T) {
+func TestPagesNeedSession(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	for _, tc := range []struct {
 		name   string
@@ -175,17 +175,21 @@ func TestHomeNeedsSession(t *testing.T) {
 			if tc.cookie != "" {
 				h = []string{"Cookie", tc.cookie}
 			}
-			w := tu.do(t, "GET", "/", "", h...)
-			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
-				t.Fatalf("status %d to %q, want 303 to /login", w.Code, w.Header().Get("Location"))
+			for _, path := range []string{"/", "/devices", "/recipes", "/playlists", "/firmware"} {
+				w := tu.do(t, "GET", path, "", h...)
+				if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
+					t.Fatalf("GET %s: status %d to %q, want 303 to /login", path, w.Code, w.Header().Get("Location"))
+				}
 			}
 		})
 	}
 
 	c := tu.signIn(t)
-	w := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(c))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `action="/logout"`) {
-		t.Fatalf("signed-in home: status %d, body %q", w.Code, w.Body)
+	if w := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/devices" {
+		t.Fatalf("signed-in home: status %d to %q, want 303 to /devices", w.Code, w.Header().Get("Location"))
+	}
+	if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `action="/logout"`) {
+		t.Fatalf("signed-in devices: status %d, body %q", w.Code, w.Body)
 	}
 	// The login page sends a signed-in admin home.
 	if w := tu.do(t, "GET", "/login", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
@@ -193,7 +197,7 @@ func TestHomeNeedsSession(t *testing.T) {
 	}
 	// A session that has expired is not one.
 	tu.now = tu.now.Add(adminauth.Lifetime)
-	if w := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther {
+	if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther {
 		t.Errorf("expired session: status %d, want 303", w.Code)
 	}
 }
@@ -210,10 +214,10 @@ func TestLogout(t *testing.T) {
 	if len(cleared) != 1 || cleared[0].Name != adminauth.CookieName || cleared[0].MaxAge >= 0 || !cleared[0].Secure {
 		t.Errorf("cookies after logout %+v, want the session cookie cleared", cleared)
 	}
-	if w := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther {
-		t.Errorf("signed-out cookie still opens /: status %d", w.Code)
+	if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
+		t.Errorf("signed-out cookie still opens /devices: status %d", w.Code)
 	}
-	if w := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(other)); w.Code != http.StatusOK {
+	if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(other)); w.Code != http.StatusOK {
 		t.Errorf("another session was signed out: status %d", w.Code)
 	}
 }
@@ -249,7 +253,7 @@ func TestCrossOrigin(t *testing.T) {
 			if got := w.Code != http.StatusForbidden; got != tc.allowed {
 				t.Errorf("logout: status %d, allowed %v, want %v", w.Code, got, tc.allowed)
 			}
-			still := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(c)).Code == http.StatusOK
+			still := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)).Code == http.StatusOK
 			if still == tc.allowed {
 				t.Errorf("session still valid = %v after logout allowed = %v", still, tc.allowed)
 			}
@@ -278,7 +282,9 @@ func TestHeaders(t *testing.T) {
 	}{
 		{"login page", "GET", "/login", nil, 200, true},
 		{"failed login", "POST", "/login", nil, 401, true},
-		{"home", "GET", "/", []string{"Cookie", cookieHeader(c)}, 200, true},
+		{"devices", "GET", "/devices", []string{"Cookie", cookieHeader(c)}, 200, true},
+		{"stub page", "GET", "/recipes", []string{"Cookie", cookieHeader(c)}, 200, true},
+		{"home", "GET", "/", []string{"Cookie", cookieHeader(c)}, 303, true},
 		{"home redirect", "GET", "/", nil, 303, true},
 		{"refused cross-origin post", "POST", "/logout", []string{"Sec-Fetch-Site", "cross-site"}, 403, true},
 		{"css", "GET", "/static/app.css", nil, 200, false},
@@ -323,7 +329,7 @@ func TestStaticAndMarkup(t *testing.T) {
 
 	page := tu.do(t, "GET", "/login", "").Body.String()
 	for _, want := range []string{
-		`<meta name="viewport" content="width=device-width, initial-scale=1">`,
+		`<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">`,
 		`<meta name="color-scheme" content="light dark">`,
 		`autocomplete="current-password"`,
 		`<label for="password">`,

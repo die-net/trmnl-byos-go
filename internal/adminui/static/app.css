@@ -16,11 +16,22 @@
   --ok-soft: #dff0e2;
   --danger: #9b1c1c;
   --danger-soft: #fbe4e2;
+  --warn: #8a4b00;
+  --warn-soft: #fdebc8;
+  --neutral: #4d5848;
+  --neutral-soft: #e9ede4;
 
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
   --font-mono: ui-monospace, monospace;
   --radius: 10px;
   --tap: 44px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --tabbar: 3.5rem;
 }
 
 :root[data-theme="light"] {
@@ -42,6 +53,10 @@
     --ok-soft: #17341f;
     --danger: #ffb4ab;
     --danger-soft: #4a1f1b;
+    --warn: #f2c36b;
+    --warn-soft: #3d2e0f;
+    --neutral: #b4c0ab;
+    --neutral-soft: #262d21;
   }
 }
 
@@ -59,6 +74,10 @@
   --ok-soft: #17341f;
   --danger: #ffb4ab;
   --danger-soft: #4a1f1b;
+  --warn: #f2c36b;
+  --warn-soft: #3d2e0f;
+  --neutral: #b4c0ab;
+  --neutral-soft: #262d21;
 }
 
 /* Base. */
@@ -179,37 +198,268 @@ code {
   border-radius: 8px;
 }
 
-.badge-ok {
+/* Status badges. */
+.badge {
   display: inline-block;
+  flex: none;
   padding: 2px 10px;
-  background: var(--ok-soft);
-  color: var(--ok);
   border-radius: 999px;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
-/* A page with a header, for the pages after sign-in. */
-.bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 16px;
+.badge-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.badge-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.badge-neutral {
+  background: var(--neutral-soft);
+  color: var(--neutral);
+}
+
+/* The shell. On a phone the top bar holds the name and sign out, and the
+   nav is a tab bar fixed to the bottom of the screen. */
+.skip {
+  position: absolute;
+  left: var(--space-2);
+  top: -4rem;
+  z-index: 20;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.skip:focus {
+  top: var(--space-2);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-top: env(safe-area-inset-top);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
-.bar form {
+.topbar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: 64rem;
+  min-height: 3rem;
+  margin: 0 auto;
+  padding: 0 max(var(--space-4), env(safe-area-inset-right)) 0 max(var(--space-4), env(safe-area-inset-left));
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.signout {
   margin: 0;
 }
 
-.bar-title {
-  font-weight: 700;
+.btn-quiet {
+  min-height: var(--tap);
+  padding: 0 var(--space-3);
+  background: none;
+  color: var(--muted);
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
 }
 
-main {
-  max-width: 60rem;
+.btn-quiet:hover {
+  color: var(--text);
+}
+
+.nav {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.nav a {
+  display: flex;
+  min-height: var(--tabbar);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.nav a:hover {
+  color: var(--text);
+}
+
+.nav a[aria-current="page"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+}
+
+.page {
+  max-width: 64rem;
   margin: 0 auto;
-  padding: 16px;
+  padding: var(--space-5) max(var(--space-4), env(safe-area-inset-right)) calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--space-5)) max(var(--space-4), env(safe-area-inset-left));
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.3;
+}
+
+/* A grid of cards. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.device {
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.device-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.device-head h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail {
+  margin: var(--space-1) 0 var(--space-4);
+  color: var(--muted);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4) var(--space-3);
+  margin: 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.facts dt {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.facts dd {
+  margin: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* What a page shows when it has nothing to list. */
+.empty {
+  padding: var(--space-6) var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.empty h2 {
+  margin-bottom: var(--space-2);
+}
+
+.empty p {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* From a tablet up, the tab bar becomes text links in the top bar. */
+@media (min-width: 48rem) {
+  .topbar-inner {
+    min-height: 3.5rem;
+    gap: var(--space-5);
+  }
+
+  .nav {
+    position: static;
+    display: flex;
+    flex: 1;
+    gap: var(--space-1);
+    padding: 0;
+    background: none;
+    border-top: 0;
+  }
+
+  .nav a {
+    min-height: var(--tap);
+    flex-direction: row;
+    padding: 0 var(--space-3);
+    border-radius: 8px;
+    font-size: 1rem;
+  }
+
+  .nav a[aria-current="page"] {
+    background: var(--accent-soft);
+  }
+
+  .nav .icon {
+    display: none;
+  }
+
+  .page {
+    padding-top: var(--space-6);
+    padding-bottom: var(--space-6);
+  }
+
+  h1 {
+    font-size: 1.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav a {
+    transition: none;
+  }
 }

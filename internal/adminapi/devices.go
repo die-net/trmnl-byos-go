@@ -39,9 +39,9 @@ func newDevice(d *db.Device, lastSeen *int64, battery *float64, rssi, wakeMs *in
 }
 
 func (s *Server) listDevices(_ http.ResponseWriter, r *http.Request) ([]deviceJSON, error) {
-	rows, err := s.db.Read.ListDeviceStatus(r.Context())
+	rows, err := device.ListStatus(r.Context(), s.db.Read)
 	if err != nil {
-		return nil, fmt.Errorf("list devices: %w", err)
+		return nil, err
 	}
 	out := make([]deviceJSON, 0, len(rows))
 	for i := range rows {

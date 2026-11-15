@@ -150,3 +150,47 @@ func ParseMAC(s string) (string, bool) {
 	}
 	return strings.ToUpper(hw.String()), true
 }
+
+// Health is how a device's last contact compares with when it should have
+// woken.
+type Health int
+
+// The values of Health.
+const (
+	// NeverSeen is a device that has not contacted the server since it
+	// registered.
+	NeverSeen Health = iota
+	// Online is a device that woke within twice its refresh interval.
+	Online
+	// Late is a device that has been quiet for more than twice its refresh
+	// interval.
+	Late
+)
+
+// lateFactor is how many refresh intervals a device may stay quiet before it
+// is late. One missed wake does not make it so.
+const lateFactor = 2
+
+// StatusHealth says whether a device is online. lastSeen is its last contact
+// in Unix seconds, or nil if it never made one, and refreshSeconds is the
+// refresh_rate the server last sent it. A device with no recorded interval
+// is late once it has been seen, since there is nothing to compare with.
+func StatusHealth(lastSeen, refreshSeconds *int64, now time.Time) Health {
+	if lastSeen == nil {
+		return NeverSeen
+	}
+	if refreshSeconds != nil && now.Unix()-*lastSeen <= lateFactor**refreshSeconds {
+		return Online
+	}
+	return Late
+}
+
+// ListStatus returns every device with what it last reported, ordered by
+// name. It is one query, however many devices there are.
+func ListStatus(ctx context.Context, q *db.Queries) ([]db.ListDeviceStatusRow, error) {
+	rows, err := q.ListDeviceStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list devices: %w", err)
+	}
+	return rows, nil
+}
