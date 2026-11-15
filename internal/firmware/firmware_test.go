@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,6 +230,42 @@ func TestAddDuplicates(t *testing.T) {
 	}
 	// Another version of the same model is fine.
 	f.add("1.8.20")
+}
+
+// TestAddEqualVersions checks that a version that compares equal to a
+// build's, though it is spelled differently, is a conflict that leaves no
+// file and no row, while another model may have the same version.
+func TestAddEqualVersions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ have, add string }{
+		{"1.8.19", "1.8.19.0"},
+		{"1.8.19.0", "1.8.19"},
+	} {
+		t.Run(tc.have+" then "+tc.add, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			existing := f.add(tc.have)
+			body := buildImage(imageSpec{version: "1.8.19", idf: "v5.4"})
+			_, err := Add(t.Context(), f.client, f.dir, testModel, tc.add, bytes.NewReader(body), testNow)
+			if !errors.Is(err, ErrExists) || !errors.Is(err, errkind.ErrConflict) {
+				t.Fatalf("err = %v, want ErrExists, a conflict", err)
+			}
+			if !strings.Contains(err.Error(), existing.Version) {
+				t.Errorf("err = %q, want it to name %s", err, existing.Version)
+			}
+			if names := f.files(); len(names) != 1 {
+				t.Errorf("files = %v", names)
+			}
+			if rows, err := List(t.Context(), f.client.Read); err != nil || len(rows) != 1 {
+				t.Errorf("rows = %v, %v", rows, err)
+			}
+			// Another model may have the same version.
+			other := buildImage(imageSpec{version: "1.8.19", idf: "v5.4"})
+			if _, err := Add(t.Context(), f.client, f.dir, "reterminal_e1001", tc.add, bytes.NewReader(other), testNow); err != nil {
+				t.Errorf("another model: %v", err)
+			}
+		})
+	}
 }
 
 func TestStartRollout(t *testing.T) {
