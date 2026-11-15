@@ -2,14 +2,17 @@ package adminui
 
 import (
 	"bytes"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
@@ -517,7 +520,7 @@ func TestInstanceSave(t *testing.T) {
 		{
 			name:    "unmark with no value",
 			change:  url.Values{"s.api_key": nil},
-			wantErr: "API key is secret; give it a new value or clear it to make it plain.",
+			wantErr: "API key is secret. Give it a new value to make it plain.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -577,7 +580,7 @@ func TestInstanceUnmarkRefusedPage(t *testing.T) {
 	wantInOrder(t, body,
 		`<label for="field-10">Webhook token</label>`, `<input id="field-10" name="f.webhook_token" type="text" value="" aria-describedby="field-10-hint0 field-10-err" aria-invalid="true">`,
 		`A secret value is stored and cannot be shown.`,
-		`<p class="field-error" id="field-10-err">Webhook token is secret; give it a new value or clear it to make it plain.</p>`,
+		`<p class="field-error" id="field-10-err">Webhook token is secret. Give it a new value, or tick Remove the stored value, to make it plain.</p>`,
 		`<input id="field-10-secret" name="s.webhook_token" type="checkbox" value="1" aria-describedby="field-10-secret-hint">`,
 		`<input id="field-10-clear" name="c.webhook_token" type="checkbox" value="1" aria-describedby="field-10-clear-hint">`,
 	)
@@ -846,7 +849,8 @@ func TestInstanceSaveStale(t *testing.T) {
 		{"palette", recipe.InstanceUpdate{Palette: str("bw")}, []string{"name", "palette", "field-0"}},
 		// The token is a field the admin does not touch, which the other change altered.
 		{"plain value", recipe.InstanceUpdate{Values: map[string]recipe.Value{"city": {One: "Bergen"}, "webhook_token": {One: "changed-elsewhere"}}}, []string{"name", "field-0", "field-10"}},
-		{"mark", recipe.InstanceUpdate{Secret: map[string]bool{"webhook_token": true}}, []string{"name", "field-0", "field-10"}},
+		// The token is sealed now, so it is neither compared nor shown.
+		{"mark", recipe.InstanceUpdate{Secret: map[string]bool{"webhook_token": true}}, []string{"name", "field-0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -911,12 +915,19 @@ func blockOf(t *testing.T, body, field string) string {
 		_, rest, ok = strings.Cut(body, `<label for="`+field+`"><input`)
 	}
 	if !ok {
+		// A group of boxes has no label of its own.
+		_, rest, ok = strings.Cut(body, `id="`+field+`-o0"`)
+	}
+	if !ok {
 		t.Fatalf("page has no block for %s", field)
 	}
-	if end := strings.Index(rest, `<div class="field`); end >= 0 {
-		rest = rest[:end]
+	end := len(rest)
+	for _, next := range []string{`<div class="field field-setting`, `<div class="field">`, `<fieldset class="field`} {
+		if i := strings.Index(rest, next); i >= 0 && i < end {
+			end = i
+		}
 	}
-	return rest
+	return rest[:end]
 }
 
 // TestInstanceSaveSecretOnlyChange checks that a change that sets or
@@ -1050,32 +1061,54 @@ func TestInstancePasswordWithPlainValue(t *testing.T) {
 	}
 }
 
+// TestInstanceMarkWhileEmptying checks that a field that is secret in the
+// form keeps its stored value when its input is blank. The form cannot tell
+// an input the admin emptied from one a re-render hid, since a hidden value
+// posts as blank either way, so a blank never clears. Ticking the box with a
+// plain value stored seals that value.
 func TestInstanceMarkWhileEmptying(t *testing.T) {
 	t.Parallel()
-	// An optional plain field that is marked with its input emptied is cleared, and stays marked.
-	t.Run("optional", func(t *testing.T) {
+	for _, tc := range []struct {
+		name, key string
+	}{
+		{"optional", "webhook_token"},
+		{"required", "api_key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu, rec := newFormUI(t, formRecipe, true)
+			inst := createdInstance(t, tu, rec, good(url.Values{"s.api_key": nil, "f.webhook_token": {"plain-token-1"}}))
+			w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"s." + tc.key: {"1"}, "f." + tc.key: {""}}))
+			cur, all, marks := current(t, tu, inst.ID)
+			plain, names := publicOf(t, tu, &cur)
+			if _, ok := plain[tc.key]; w.Code != http.StatusSeeOther || ok || !slices.Contains(names, tc.key) || !slices.Contains(marks, tc.key) {
+				t.Errorf("status %d, plain %+v, sealed %v, marks %v: %s", w.Code, plain, names, marks, w.Body)
+			}
+			if all[tc.key].One == "" {
+				t.Errorf("%s lost its value: %+v", tc.key, all)
+			}
+		})
+	}
+
+	// Emptying the input of a plain field with its box unticked clears it.
+	t.Run("clear optional", func(t *testing.T) {
 		t.Parallel()
 		tu, rec := newFormUI(t, formRecipe, true)
 		inst := savedInstance(t, tu, rec)
-		w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"s.webhook_token": {"1"}, "f.webhook_token": {""}}))
-		_, all, marks := current(t, tu, inst.ID)
-		if _, ok := all["webhook_token"]; w.Code != http.StatusSeeOther || ok || strings.Join(marks, ",") != "api_key,webhook_token" {
-			t.Errorf("status %d, fields %+v, marks %v: %s", w.Code, all, marks, w.Body)
+		w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"f.webhook_token": {""}}))
+		if _, all, _ := current(t, tu, inst.ID); w.Code != http.StatusSeeOther || all["webhook_token"].One != "" {
+			t.Errorf("status %d, fields %+v", w.Code, all)
 		}
 	})
-	// A required one is refused and nothing changes.
-	t.Run("required", func(t *testing.T) {
+	t.Run("clear required", func(t *testing.T) {
 		t.Parallel()
 		tu, rec := newFormUI(t, formRecipe, true)
 		inst := createdInstance(t, tu, rec, good(url.Values{"s.api_key": nil}))
-		before, beforeAll, _ := current(t, tu, inst.ID)
-		w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"f.api_key": {""}, "s.api_key": {"1"}}))
-		after, all, marks := current(t, tu, inst.ID)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "API key is required.") {
-			t.Errorf("status %d: %s", w.Code, w.Body)
-		}
-		if after.FieldValues != before.FieldValues || len(marks) != 0 || all["api_key"].One != beforeAll["api_key"].One || all["api_key"].One == "" {
-			t.Errorf("a refused save changed the instance: %+v, marks %v", all, marks)
+		before, _, _ := current(t, tu, inst.ID)
+		w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"s.api_key": nil, "f.api_key": {""}}))
+		after, all, _ := current(t, tu, inst.ID)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "API key is required.") || after.FieldValues != before.FieldValues || all["api_key"].One == "" {
+			t.Errorf("status %d, fields %+v: %s", w.Code, all, w.Body)
 		}
 	})
 	// A mark with the value left in place still seals it.
@@ -1090,4 +1123,385 @@ func TestInstanceMarkWhileEmptying(t *testing.T) {
 			t.Errorf("status %d, fields %+v, marks %v", w.Code, all, marks)
 		}
 	})
+}
+
+var (
+	controlRE = regexp.MustCompile(`(?s)<input[^>]*>|<textarea[^>]*>.*?</textarea>|<select[^>]*>.*?</select>`)
+	attrRE    = regexp.MustCompile(`([a-zA-Z][a-zA-Z-]*)(?:="([^"]*)")?`)
+	optionRE  = regexp.MustCompile(`(?s)<option([^>]*)>`)
+)
+
+// attrs returns the attributes of an opening tag, unescaped. A boolean
+// attribute has the value "".
+func attrs(tag string) map[string]string {
+	tag = strings.TrimPrefix(strings.TrimSuffix(tag, ">"), "<")
+	_, tag, ok := strings.Cut(tag, " ")
+	if !ok {
+		return nil
+	}
+	out := map[string]string{}
+	for _, m := range attrRE.FindAllStringSubmatch(tag, -1) {
+		out[m[1]] = html.UnescapeString(m[2])
+	}
+	return out
+}
+
+// formControls returns what a browser would post for the edit or add form of
+// a page: each input's value, each checked box, each select's chosen option
+// and each textarea's text, with the first newline of a textarea dropped and
+// its line breaks sent as CR LF.
+func formControls(t *testing.T, body string) url.Values {
+	t.Helper()
+	_, rest, ok := strings.Cut(body, `<form method="post" action="/recipes/`)
+	if !ok {
+		t.Fatalf("page has no instance form:\n%s", body)
+	}
+	form, _, _ := strings.Cut(rest, "</form>")
+	out := url.Values{}
+	for _, c := range controlRE.FindAllString(form, -1) {
+		open, _, _ := strings.Cut(c, ">")
+		a := attrs(open + ">")
+		name, named := a["name"]
+		if !named {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(c, "<input"):
+			if typ := a["type"]; typ == "checkbox" || typ == "radio" {
+				if _, checked := a["checked"]; checked {
+					v, ok := a["value"]
+					if !ok {
+						v = "on"
+					}
+					out.Add(name, v)
+				}
+				continue
+			}
+			out.Add(name, a["value"])
+		case strings.HasPrefix(c, "<textarea"):
+			text := strings.TrimSuffix(strings.TrimPrefix(c, open+">"), "</textarea>")
+			text = strings.TrimPrefix(html.UnescapeString(text), "\n")
+			out.Add(name, strings.ReplaceAll(text, "\n", "\r\n"))
+		case strings.HasPrefix(c, "<select"):
+			chosen, first, found := "", "", false
+			for i, m := range optionRE.FindAllStringSubmatch(c, -1) {
+				oa := attrs("<option" + m[1] + ">")
+				if i == 0 {
+					first = oa["value"]
+				}
+				if _, sel := oa["selected"]; sel && !found {
+					chosen, found = oa["value"], true
+				}
+			}
+			if !found {
+				chosen = first
+			}
+			out.Add(name, chosen)
+		}
+	}
+	return out
+}
+
+// TestInstanceRefusedPostKeepsTickedValue checks that a plain value whose
+// secret box was ticked in a post that was refused is still stored, and is
+// sealed, when the page that came back is saved after the other field is
+// fixed. The second post is built from the page, as a browser builds it.
+func TestInstanceRefusedPostKeepsTickedValue(t *testing.T) {
+	t.Parallel()
+	tu, rec := newFormUI(t, formRecipe, true)
+	const notes = "line one\nline two"
+	inst := createdInstance(t, tu, rec, good(url.Values{"f.notes": {notes}, "f.webhook_token": {"plain-token-1"}}))
+	c := tu.signIn(t)
+
+	// The page as a browser posts it, with the boxes of two plain values
+	// ticked, and a 4 character new api_key, which is refused as a secret.
+	page := tu.get(t, c, "/recipes/instances/"+id(inst.ID)).Body.String()
+	form := formControls(t, page)
+	if form.Get("f.webhook_token") != "plain-token-1" || form.Get("f.notes") != "line one\r\nline two" || form.Get("seen") == "" {
+		t.Fatalf("the page's form is %v", form)
+	}
+	for _, k := range []string{"webhook_token", "notes"} {
+		form.Set("s."+k, "1")
+	}
+	form.Set("f.api_key", "abcd")
+	w := tu.post(t, c, "/recipes/instances/"+id(inst.ID), form)
+	body := w.Body.String()
+	if w.Code != http.StatusBadRequest || !strings.Contains(body, "API key must be at least 6 characters to be secret.") {
+		t.Fatalf("status %d: %s", w.Code, body)
+	}
+	for _, field := range []string{"field-2", "field-10"} {
+		block := blockOf(t, body, field)
+		for _, want := range []string{"A value is stored. Leave this empty to keep it.", `name="c.`} {
+			if !strings.Contains(block, want) {
+				t.Errorf("%s lacks %q:\n%s", field, want, block)
+			}
+		}
+		for _, bad := range []string{"No value is stored.", "Enter the secret value again", "plain-token-1", "line one"} {
+			if strings.Contains(block, bad) {
+				t.Errorf("%s has %q:\n%s", field, bad, block)
+			}
+		}
+	}
+	if !strings.Contains(body, `<input id="field-10" name="f.webhook_token" type="text" autocomplete="off"`) || strings.Contains(body, `name="f.webhook_token" type="text" autocomplete="off" value=`) {
+		t.Error("the hidden text input is not empty")
+	}
+
+	// The next post comes from the re-rendered page, with the api_key fixed.
+	next := formControls(t, body)
+	next.Set("f.api_key", "abcdef12345")
+	if w = tu.post(t, c, "/recipes/instances/"+id(inst.ID), next); w.Code != http.StatusSeeOther {
+		t.Fatalf("second post: status %d: %s", w.Code, w.Body)
+	}
+	cur, all, marks := current(t, tu, inst.ID)
+	plain, names := publicOf(t, tu, &cur)
+	if all["webhook_token"].One != "plain-token-1" || all["notes"].One != notes {
+		t.Errorf("the values were lost: %+v", all)
+	}
+	for _, k := range []string{"webhook_token", "notes"} {
+		if _, ok := plain[k]; ok || !slices.Contains(names, k) || !slices.Contains(marks, k) {
+			t.Errorf("%s is not sealed and marked: plain %+v, sealed %v, marks %v", k, plain, names, marks)
+		}
+	}
+	if all["api_key"].One != "abcdef12345" || plain["city"].One != "Oslo" {
+		t.Errorf("api_key %q, plain %+v", all["api_key"].One, plain)
+	}
+}
+
+// TestInstanceUntickHiddenValueKeepsIt checks that unticking the secret box
+// on a page that hid a plain value behind the tick keeps the value. The
+// input is blank only because the page hid it, which the page says with its
+// h. field. The value stays plain, through a second refused post too, which
+// shows it again.
+func TestInstanceUntickHiddenValueKeepsIt(t *testing.T) {
+	t.Parallel()
+	tu, rec := newFormUI(t, formRecipe, true)
+	const notes = "line one\nline two"
+	inst := createdInstance(t, tu, rec, good(url.Values{"f.notes": {notes}, "f.webhook_token": {"plain-token-1"}}))
+	c := tu.signIn(t)
+	path := "/recipes/instances/" + id(inst.ID)
+	form := formControls(t, tu.get(t, c, path).Body.String())
+	for _, k := range []string{"webhook_token", "notes"} {
+		form.Set("s."+k, "1")
+	}
+	form.Set("f.api_key", "abcd")
+	w := tu.post(t, c, path, form)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+
+	// The admin changes their mind and unticks both boxes on the page that
+	// hid the values, and the api_key is still wrong.
+	next := formControls(t, w.Body.String())
+	if !next.Has("h.webhook_token") || !next.Has("h.notes") || next.Get("f.webhook_token") != "" || next.Get("f.notes") != "" {
+		t.Fatalf("the re-rendered form is %v", next)
+	}
+	next.Del("s.webhook_token")
+	next.Del("s.notes")
+	next.Set("f.api_key", "abcd")
+	w = tu.post(t, c, path, next)
+	body := w.Body.String()
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("second post: status %d: %s", w.Code, body)
+	}
+	// The values are plain and the boxes unticked, so the page shows them.
+	last := formControls(t, body)
+	if last.Get("f.webhook_token") != "plain-token-1" || last.Get("f.notes") != "line one\r\nline two" || last.Has("h.webhook_token") || last.Has("h.notes") {
+		t.Fatalf("the form after unticking is %v", last)
+	}
+	last.Set("f.api_key", "abcdef12345")
+	if w = tu.post(t, c, path, last); w.Code != http.StatusSeeOther {
+		t.Fatalf("third post: status %d: %s", w.Code, w.Body)
+	}
+	cur, _, marks := current(t, tu, inst.ID)
+	plain, _ := publicOf(t, tu, &cur)
+	if plain["webhook_token"].One != "plain-token-1" || plain["notes"].One != notes || slices.Contains(marks, "notes") || slices.Contains(marks, "webhook_token") {
+		t.Errorf("plain %+v, marks %v", plain, marks)
+	}
+
+	// Unticking on the page that hid them and saving at once keeps them too.
+	form = formControls(t, tu.get(t, c, path).Body.String())
+	form.Set("s.notes", "1")
+	form.Set("f.city", "")
+	w = tu.post(t, c, path, form)
+	next = formControls(t, w.Body.String())
+	next.Del("s.notes")
+	next.Set("f.city", "Oslo")
+	if w = tu.post(t, c, path, next); w.Code != http.StatusSeeOther {
+		t.Fatalf("save after untick: status %d: %s", w.Code, w.Body)
+	}
+	cur, _, _ = current(t, tu, inst.ID)
+	if plain, _ = publicOf(t, tu, &cur); plain["notes"].One != notes {
+		t.Errorf("notes were lost: %+v", plain)
+	}
+}
+
+// TestInstanceRemoveHiddenPlainValue checks the Remove box of a plain value
+// that a ticked box hides, and with the value still in the input.
+func TestInstanceRemoveHiddenPlainValue(t *testing.T) {
+	t.Parallel()
+	t.Run("from the re-rendered page", func(t *testing.T) {
+		t.Parallel()
+		tu, rec := newFormUI(t, formRecipe, true)
+		inst := createdInstance(t, tu, rec, good(url.Values{"f.webhook_token": {"plain-token-1"}}))
+		c := tu.signIn(t)
+		form := formControls(t, tu.get(t, c, "/recipes/instances/"+id(inst.ID)).Body.String())
+		form.Set("s.webhook_token", "1")
+		form.Set("f.api_key", "abcd")
+		w := tu.post(t, c, "/recipes/instances/"+id(inst.ID), form)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status %d", w.Code)
+		}
+		next := formControls(t, w.Body.String())
+		next.Set("f.api_key", "abcdef12345")
+		next.Set("c.webhook_token", "1")
+		if w = tu.post(t, c, "/recipes/instances/"+id(inst.ID), next); w.Code != http.StatusSeeOther {
+			t.Fatalf("status %d: %s", w.Code, w.Body)
+		}
+		if _, all, _ := current(t, tu, inst.ID); all["webhook_token"].One != "" {
+			t.Errorf("the value is still stored: %+v", all)
+		}
+	})
+	// A Remove tick with the stored value still in the input is a plain clear.
+	for _, tc := range []struct {
+		name string
+		form url.Values
+	}{
+		{"value shown", editForm(url.Values{"c.webhook_token": {"1"}})},
+		{"value shown and box ticked", editForm(url.Values{"c.webhook_token": {"1"}, "s.webhook_token": {"1"}})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu, rec := newFormUI(t, formRecipe, true)
+			inst := savedInstance(t, tu, rec)
+			w := postEdit(t, tu, tu.signIn(t), inst.ID, tc.form)
+			if _, all, _ := current(t, tu, inst.ID); w.Code != http.StatusSeeOther || all["webhook_token"].One != "" {
+				t.Errorf("status %d, fields %+v: %s", w.Code, all, w.Body)
+			}
+		})
+	}
+}
+
+// TestInstanceStaleStoredNow checks the notes a refused stale save puts on
+// each field whose value is not what is stored now.
+func TestInstanceStaleStoredNow(t *testing.T) {
+	t.Parallel()
+	tu, rec := newFormUI(t, formRecipe, true)
+	inst := createdInstance(t, tu, rec, good(url.Values{
+		"f.units": {"imperial"}, "f.days": {"mon", "tue"}, "f.alerts": {"true"}, "f.notes": {"short"},
+		"f.webhook_token": {"plain-token-1"},
+	}))
+	c := tu.signIn(t)
+	old := instanceStateOf(t, tu, inst.ID)
+	long := strings.Repeat("x", maxStoredShown+50)
+	str := func(s string) *string { return &s }
+	change := recipe.InstanceUpdate{
+		Name: str("Renamed"), Palette: str("bw"), Clear: []string{"webhook_token"},
+		Values: map[string]recipe.Value{"city": {One: "Bergen"}, "notes": {One: long}},
+	}
+	if _, err := recipe.UpdateInstance(t.Context(), tu.db, tu.srv.secrets, tu.srv.recipesDir, inst.ID, change, tu.now); err != nil {
+		t.Fatal(err)
+	}
+	typed := url.Values{
+		"seen": {old}, "name": {"Typed name"}, "palette": {""}, "f.city": {"Typed city"}, "f.units": {"metric"}, "f.days": {"wed"},
+		"f.alerts": nil, "f.notes": {""}, "f.webhook_token": {"typed-token"},
+	}
+	w := postEdit(t, tu, c, inst.ID, editForm(typed))
+	body := w.Body.String()
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status %d: %s", w.Code, body)
+	}
+	for _, tc := range []struct{ block, want string }{
+		{"name", "Stored now: Renamed"},
+		{"palette", "Stored now: Black &amp; White (1-bit)"},
+		{"field-0", "Stored now: Bergen"},
+		{"field-2", "Stored now, cut short: " + strings.Repeat("x", maxStoredShown) + "<"},
+		{"field-4", "Stored now: Imperial"},
+		{"field-6", "Stored now: Mon, Tue"},
+		{"field-7", "Stored now: on"},
+		{"field-10", "Nothing is stored now."},
+	} {
+		block := blockOf(t, body, tc.block)
+		if !strings.Contains(block, differsText) || !strings.Contains(block, tc.want) {
+			t.Errorf("block %s lacks the note %q:\n%s", tc.block, tc.want, block)
+		}
+		if strings.Index(block, differsText) > strings.Index(block, tc.want) {
+			t.Errorf("block %s has the notes in the wrong order", tc.block)
+		}
+	}
+	if strings.Contains(body, strings.Repeat("x", maxStoredShown+1)) {
+		t.Error("a long stored value is shown whole")
+	}
+}
+
+// TestInstanceStaleSealedGetsNoNote checks that a field whose stored value is
+// sealed has no note and that the sealed text is nowhere on the page.
+func TestInstanceStaleSealedGetsNoNote(t *testing.T) {
+	t.Parallel()
+	tu, rec := newFormUI(t, formRecipe, true)
+	inst := createdInstance(t, tu, rec, good(url.Values{"f.webhook_token": {"sealed-secret-xyz"}, "s.webhook_token": {"1"}}))
+	old := instanceStateOf(t, tu, inst.ID)
+	name := "Renamed"
+	if _, err := recipe.UpdateInstance(t.Context(), tu.db, tu.srv.secrets, tu.srv.recipesDir, inst.ID, recipe.InstanceUpdate{Name: &name}, tu.now); err != nil {
+		t.Fatal(err)
+	}
+	// The page's box is unticked, so the field shows as a plain one.
+	w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"seen": {old}, "s.webhook_token": nil, "f.webhook_token": {"typed-token"}}))
+	body := w.Body.String()
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status %d", w.Code)
+	}
+	block := blockOf(t, body, "field-10")
+	if strings.Contains(block, differsText) || strings.Contains(block, "Stored now") || strings.Contains(body, "sealed-secret-xyz") {
+		t.Errorf("a sealed value is noted or shown:\n%s", block)
+	}
+}
+
+// TestInstanceStaleAtUpdate checks the refusal that UpdateInstance makes
+// when the instance changes after the handler read it. The server's clock is
+// the hook: the handler calls it, after its own read and its check of seen,
+// as the argument of UpdateInstance, and the session check calls it once
+// before that. The hook renames the instance on its second call, so the
+// handler sees a change only the domain's own check can find.
+func TestInstanceStaleAtUpdate(t *testing.T) {
+	t.Parallel()
+	tu, rec := newFormUI(t, formRecipe, true)
+	inst := savedInstance(t, tu, rec)
+	c := tu.signIn(t)
+	old := instanceStateOf(t, tu, inst.ID)
+	calls, fired := 0, false
+	tu.srv.now = func() time.Time {
+		calls++
+		if calls == 2 {
+			fired = true
+			name := "Renamed"
+			if _, err := recipe.UpdateInstance(t.Context(), tu.db, tu.srv.secrets, tu.srv.recipesDir, inst.ID, recipe.InstanceUpdate{Name: &name}, tu.now); err != nil {
+				t.Error(err)
+			}
+		}
+		return tu.now.UTC()
+	}
+	typed := url.Values{"seen": {old}, "name": {"Typed name"}, "f.city": {"Typed city"}}
+	w := postEdit(t, tu, c, inst.ID, editForm(typed))
+	body := w.Body.String()
+	if !fired {
+		t.Fatalf("the clock was called %d times, so the hook never ran", calls)
+	}
+	cur := instanceStateOf(t, tu, inst.ID)
+	if w.Code != http.StatusConflict || !strings.Contains(body, instanceChanged) {
+		t.Fatalf("status %d: %s", w.Code, body)
+	}
+	if !strings.Contains(body, `value="Typed name"`) || !strings.Contains(body, `value="Typed city"`) || hiddenSeen(t, body) != cur {
+		t.Errorf("typed values or seen wrong (current state %s):\n%s", cur, body)
+	}
+	if !strings.Contains(blockOf(t, body, "name"), "Stored now: Renamed") {
+		t.Error("the name has no note for the other rename")
+	}
+	if got, _, _ := current(t, tu, inst.ID); got.Name != "Renamed" {
+		t.Errorf("name = %q: the refused save changed the instance", got.Name)
+	}
+	typed.Set("seen", hiddenSeen(t, body))
+	w = postEdit(t, tu, c, inst.ID, editForm(typed))
+	if got, all, _ := current(t, tu, inst.ID); w.Code != http.StatusSeeOther || got.Name != "Typed name" || all["city"].One != "Typed city" {
+		t.Errorf("second save: status %d, name %q", w.Code, got.Name)
+	}
 }

@@ -73,6 +73,11 @@ type InstanceUpdate struct {
 	Seen *string
 }
 
+// SealedUnmarkText is the FieldErrors message for unmarking a field that has
+// a sealed value, with no new value and no clear in the same update. A form
+// that calls the clear something else matches it to say so in its own words.
+const SealedUnmarkText = "is secret; give it a new value or clear it to make it plain"
+
 // ErrInstanceChanged means an instance is not what the caller saw, so its
 // change was refused.
 var ErrInstanceChanged = errkind.New(errkind.ErrConflict, "the instance has changed")
@@ -360,7 +365,7 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 				continue
 			}
 			if _, replaced := values[k]; !replaced {
-				bad[k] = "is secret; give it a new value or clear it to make it plain"
+				bad[k] = SealedUnmarkText
 			}
 		}
 		if len(bad) > 0 {
