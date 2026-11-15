@@ -8,6 +8,11 @@ name: Claude Code Review
 # pull request's Go code with a read-only GITHUB_TOKEN, and returns its
 # findings as an artifact. The post job runs no code from the pull request:
 # it checks the artifact against a fixed schema and posts it.
+#
+# Never add pull_request_target or workflow_run to any workflow here. They
+# run with this repository's secrets and a token that can write, so a
+# workflow that checks out or runs a pull request's code under them hands
+# both to whoever wrote that code, including a fork's author.
 
 on:
   pull_request:
