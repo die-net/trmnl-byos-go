@@ -1,0 +1,13 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "content"}}{{with .Cancel}}{{if .Active}}<section class="panel form-panel" aria-labelledby="cancel-title">
+<h2 id="cancel-title">Cancel the rollout of {{.Name}}?</h2>
+<p class="rel">No device is offered this build after that, and its file is no longer served. A device partway through a download may fail it and keeps what it has. Devices that already installed it keep it.</p>
+<form method="post" action="{{.Action}}">
+<button class="btn btn-primary btn-danger-solid" type="submit">Cancel rollout</button>
+</form>
+<p class="more"><a class="btn btn-secondary" href="{{.Keep}}">Keep rollout</a></p>
+</section>{{else}}<section class="panel form-panel" aria-labelledby="cancel-title">
+<h2 id="cancel-title">No active rollout</h2>
+<p class="rel">{{.Name}} has no active rollout.</p>
+<p class="more"><a class="btn btn-secondary" href="{{.Keep}}">Back</a></p>
+</section>{{end}}{{end}}{{end}}

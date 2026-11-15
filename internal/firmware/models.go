@@ -1,6 +1,10 @@
 package firmware
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // Chip is an ESP32 family, as the chip_id in an app image's header names it.
 type Chip struct {
@@ -102,4 +106,18 @@ func MaxUploadBytes() int64 {
 		m = max(m, model.MaxBytes)
 	}
 	return m
+}
+
+// ByteSize describes a size in bytes, such as "1.2 MB".
+func ByteSize(n int64) string {
+	unit := func(v float64, name string) string {
+		return strings.TrimSuffix(strconv.FormatFloat(v, 'f', 1, 64), ".0") + " " + name
+	}
+	switch {
+	case n >= 1<<20:
+		return unit(float64(n)/(1<<20), "MB")
+	case n >= 1<<10:
+		return unit(float64(n)/(1<<10), "KB")
+	}
+	return strconv.FormatInt(n, 10) + " bytes"
 }

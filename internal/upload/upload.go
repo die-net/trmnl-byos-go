@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"time"
 
@@ -70,4 +71,22 @@ func CutOff(err error) error {
 		return err
 	}
 	return errkind.Wrap(ErrCutOff, ErrCutOff.Error(), err)
+}
+
+// NextPart returns the next part of a multipart upload body. It returns
+// nil and no error at the closing boundary, which is the clean end of the
+// form. Any error is from a body that ended without one, is not a form, or
+// could not be read, and is marked by CutOff. It is not io.EOF, which a
+// cut-off error would also match.
+func NextPart(mr *multipart.Reader) (*multipart.Part, error) {
+	part, err := mr.NextPart()
+	switch {
+	case errors.Is(err, io.EOF) && errors.Unwrap(err) == nil:
+		// An EOF the reader wraps ("NextPart: EOF") is a body that ended
+		// without the closing boundary, which falls through to CutOff.
+		return nil, nil
+	case err != nil:
+		return nil, CutOff(err)
+	}
+	return part, nil
 }

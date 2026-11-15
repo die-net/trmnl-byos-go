@@ -267,6 +267,15 @@ code {
   border-radius: 8px;
 }
 
+/* A warning above a button, which has to be read before it is pressed. */
+.note {
+  margin: 0 0 1rem;
+  padding: 10px 12px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-radius: 8px;
+}
+
 /* Status badges. */
 .badge {
   display: inline-block;

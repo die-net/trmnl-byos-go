@@ -21,16 +21,16 @@ type Version []uint32
 func ParseVersion(s string) (Version, error) {
 	parts := strings.Split(s, ".")
 	if len(parts) > maxVersionParts {
-		return nil, fmt.Errorf("%w: version %q has more than %d parts", errkind.ErrInvalid, s, maxVersionParts)
+		return nil, errkind.New(errkind.ErrInvalid, fmt.Sprintf("the version %q has more than %d parts", s, maxVersionParts))
 	}
 	v := make(Version, len(parts))
 	for i, p := range parts {
 		if p == "" || len(p) > 9 || strings.Trim(p, "0123456789") != "" {
-			return nil, fmt.Errorf("%w: version %q is not dotted numbers", errkind.ErrInvalid, s)
+			return nil, errkind.New(errkind.ErrInvalid, fmt.Sprintf("the version %q is not dotted numbers, such as 1.8.19", s))
 		}
 		n, err := strconv.ParseUint(p, 10, 32)
 		if err != nil {
-			return nil, fmt.Errorf("%w: version %q is not dotted numbers", errkind.ErrInvalid, s)
+			return nil, errkind.New(errkind.ErrInvalid, fmt.Sprintf("the version %q is not dotted numbers, such as 1.8.19", s))
 		}
 		v[i] = uint32(n)
 	}

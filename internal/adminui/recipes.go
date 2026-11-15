@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
@@ -175,14 +174,12 @@ var errNoFile = errors.New("no recipe file")
 // part is skipped without being read.
 func recipePart(mr *multipart.Reader) (*multipart.Part, error) {
 	for {
-		part, err := mr.NextPart()
+		part, err := upload.NextPart(mr)
 		switch {
-		case errors.Is(err, io.EOF) && errors.Unwrap(err) == nil:
-			// The closing boundary. An EOF the reader wraps ("NextPart:
-			// EOF") is a body that ended without one.
-			return nil, errNoFile
 		case err != nil:
-			return nil, upload.CutOff(err)
+			return nil, err
+		case part == nil:
+			return nil, errNoFile
 		}
 		if part.FormName() != uploadField {
 			continue
@@ -235,7 +232,7 @@ func (s *Server) uploadRecipe(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, upload.ErrCutOff):
 		s.renderRecipes(w, r, http.StatusBadRequest, "The upload was cut off or could not be read.")
 	case errors.Is(err, errkind.ErrInvalid):
-		s.renderRecipes(w, r, http.StatusBadRequest, invalidText(err))
+		s.renderRecipes(w, r, http.StatusBadRequest, kindText(err))
 	default:
 		serverError(w, r, "install recipe", err)
 	}
@@ -312,7 +309,7 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, recipe.ErrNoRecipe):
 		s.renderNotFound(w, r, noRecipe)
 	case errors.Is(err, errkind.ErrInvalid):
-		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, invalidText(err))
+		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err))
 	default:
 		serverError(w, r, "add instance", err)
 	}
