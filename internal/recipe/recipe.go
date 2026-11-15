@@ -89,7 +89,35 @@ func Dir(recipesDir string, id int64) string {
 // settings.yml at its top, or a trmnlp project holding it in src/; a zip
 // may also hold either inside one top-level directory, as GitHub's do.
 func Install(ctx context.Context, client *db.Client, recipesDir, src string, now time.Time) (db.Recipe, error) {
-	return installFrom(ctx, client, recipesDir, src, src, strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)), now)
+	info, err := os.Stat(src)
+	if err != nil {
+		return db.Recipe{}, fmt.Errorf("recipe source: %w", err)
+	}
+	from := func(c *copier) error { return c.fromDir(src) }
+	if !info.IsDir() {
+		f, err := openFile(src)
+		if err != nil {
+			return db.Recipe{}, fmt.Errorf("recipe source: %w", err)
+		}
+		defer f.Close()
+		// The size is the open file's, not the path's a moment ago.
+		if info, err = f.Stat(); err != nil {
+			return db.Recipe{}, fmt.Errorf("recipe source: %w", err)
+		}
+		from = func(c *copier) error { return c.fromZip(f, info.Size()) }
+	}
+	return installFrom(ctx, client, recipesDir, from, src, strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)), now)
+}
+
+// openFile opens the file at name, which the admin gave on the command
+// line. It follows links to the file, then opens it by its own name inside
+// its own directory.
+func openFile(name string) (*os.File, error) {
+	name, err := filepath.EvalSymlinks(name)
+	if err != nil {
+		return nil, err
+	}
+	return os.OpenInRoot(filepath.Dir(name), filepath.Base(name))
 }
 
 // UploadSource is the recorded source of a recipe installed from an upload,
@@ -110,7 +138,10 @@ func uploadName(filename string) string {
 
 // InstallZip installs the recipe in the zip file r streams, as Install does
 // a zip file. A zip needs random access, so r is copied to a temporary file
-// in recipesDir first, and the file is removed afterwards. The caller
+// in recipesDir first, the zip is read from that open file, and the file is
+// removed afterwards. Creating and writing the file can only fail on the
+// server's side, unless the error is r's own. What reading it as a zip then
+// reports is about the upload, and is invalid input. The caller
 // bounds r, with http.MaxBytesReader for a request body, since this reads
 // until it ends. filename is the name the file was uploaded with, or "". It
 // only names a recipe whose settings.yml has no name.
@@ -123,20 +154,21 @@ func InstallZip(ctx context.Context, client *db.Client, recipesDir string, r io.
 	if err != nil {
 		return db.Recipe{}, fmt.Errorf("create upload file: %w", err)
 	}
-	defer func() { _ = os.Remove(f.Name()) }()
-	_, err = io.Copy(f, r)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+	}()
+	size, err := io.Copy(f, r)
 	if err != nil {
 		return db.Recipe{}, fmt.Errorf("save upload: %w", err)
 	}
-	return installFrom(ctx, client, recipesDir, f.Name(), UploadSource, uploadName(filename), now)
+	from := func(c *copier) error { return c.fromZip(f, size) }
+	return installFrom(ctx, client, recipesDir, from, UploadSource, uploadName(filename), now)
 }
 
-// installFrom copies the recipe at src and records it as coming from source.
-// A recipe whose settings.yml has no name is called fallback.
-func installFrom(ctx context.Context, client *db.Client, recipesDir, src, source, fallback string, now time.Time) (db.Recipe, error) {
+// installFrom copies the recipe that from reads and records it as coming
+// from source. A recipe whose settings.yml has no name is called fallback.
+func installFrom(ctx context.Context, client *db.Client, recipesDir string, from func(*copier) error, source, fallback string, now time.Time) (db.Recipe, error) {
 	if err := os.MkdirAll(recipesDir, 0o750); err != nil {
 		return db.Recipe{}, fmt.Errorf("create recipes dir: %w", err)
 	}
@@ -147,7 +179,7 @@ func installFrom(ctx context.Context, client *db.Client, recipesDir, src, source
 	// Once renamed into place, tmp is gone and this does nothing.
 	defer func() { _ = os.RemoveAll(tmp) }()
 
-	if err := copyRecipe(src, tmp); err != nil {
+	if err := copyRecipe(from, tmp); err != nil {
 		return db.Recipe{}, err
 	}
 	settings, err := ReadSettings(tmp)
@@ -296,27 +328,16 @@ func ReadSettings(dir string) (Settings, error) {
 	return s, nil
 }
 
-// copyRecipe copies the recipe's files from src into dst.
-func copyRecipe(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return fmt.Errorf("recipe source: %w", err)
-	}
-	if info.Mode().IsRegular() && info.Size() == 0 {
-		return errkind.New(errkind.ErrInvalid, "the file is empty")
-	}
+// copyRecipe copies the recipe's files into dst. from reads them from the
+// source, a directory or a zip, into the copier it is given.
+func copyRecipe(from func(*copier) error, dst string) error {
 	out, err := os.OpenRoot(dst)
 	if err != nil {
 		return fmt.Errorf("open install dir: %w", err)
 	}
 	defer out.Close()
 	c := &copier{out: out}
-	if info.IsDir() {
-		err = c.fromDir(src)
-	} else {
-		err = c.fromZip(src)
-	}
-	if err != nil {
+	if err := from(c); err != nil {
 		return err
 	}
 	for _, name := range []string{"settings.yml", "full.liquid"} {
@@ -371,23 +392,19 @@ func (c *copier) fromDir(dir string) error {
 	})
 }
 
-// fromZip copies the recipe in a zip file: the files under the directory
-// holding its shallowest settings.yml.
-func (c *copier) fromZip(file string) error {
-	zr, err := zip.OpenReader(file)
-	var pathErr *fs.PathError
-	switch {
-	case errors.As(err, &pathErr):
-		// Opening the file or reading its size failed, which is the
-		// server's side.
-		return fmt.Errorf("open recipe zip: %w", err)
-	case err != nil:
-		// Anything else is about the file's contents. It is not only
-		// zip.ErrFormat: a directory that runs off the end of the file is a
-		// bare io.ErrUnexpectedEOF.
+// fromZip copies the recipe in the zip file that r holds in its first size
+// bytes: the files under the directory holding its shallowest settings.yml.
+// Whatever reading the zip reports is about its contents, so it is invalid
+// input. That is not only zip.ErrFormat: a directory that runs off the end
+// of the file is a bare io.ErrUnexpectedEOF.
+func (c *copier) fromZip(r io.ReaderAt, size int64) error {
+	if size == 0 {
+		return errkind.New(errkind.ErrInvalid, "the file is empty")
+	}
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
 		return errkind.Wrap(errkind.ErrInvalid, "the file is not a zip archive", err)
 	}
-	defer zr.Close()
 	top, depth := "", -1
 	for _, f := range zr.File {
 		name := path.Clean(f.Name)
