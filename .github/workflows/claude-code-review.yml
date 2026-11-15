@@ -1,45 +1,197 @@
 name: Claude Code Review
 
+# Reviews every push to a pull request with the prompt in
+# .github/claude-review/review.md. The prompt is read from the default
+# branch, so a pull request cannot change its own review. A pull request
+# that changes this workflow is skipped by the action itself until it
+# merges, because the Claude GitHub App only issues a token to a workflow
+# that matches the default branch.
+
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+
+permissions: {}
+
+# A new push makes the review of the previous one moot, so stop it rather
+# than pay for both.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
+  review:
+    # The review runs the pull request's Go code in a job that holds
+    # CLAUDE_CODE_OAUTH_TOKEN, so it runs only for branches in this
+    # repository written by people who can already push here.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: read
+      # Read only: inline comments are posted with the Claude GitHub App's
+      # token, which the action gets through id-token, not with this job's
+      # GITHUB_TOKEN.
       pull-requests: read
-      issues: read
       id-token: write
-
+    env:
+      # Keeps the OAuth and GitHub tokens out of the environment of the
+      # commands Claude runs, such as go test on the pull request's code.
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
+      # A cold build of SQLite's C code can take longer than Claude's
+      # default two-minute command timeout.
+      BASH_DEFAULT_TIMEOUT_MS: '600000'
+      BASH_MAX_TIMEOUT_MS: '600000'
+    outputs:
+      result: ${{ steps.claude.outputs.structured_output }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # The head commit, so line numbers match the pull request's diff.
+      # Full history, for git diff, log and blame against the base.
+      - uses: actions/checkout@v7.0.1
         with:
-          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Run Claude Code Review
-        id: claude-review
-        uses: anthropics/claude-code-action@v1
+      - name: Load the review prompt from the default branch
+        id: prompt
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          src="origin/$DEFAULT_BRANCH:.github/claude-review/review.md"
+          # Only before the pull request that adds the prompt has merged.
+          if ! git cat-file -e "$src" 2>/dev/null; then
+            echo "::warning::No review prompt on $DEFAULT_BRANCH yet, so no review."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dir="$RUNNER_TEMP/review"
+          mkdir -p "$dir/scratch"
+          eof="EOF_$(openssl rand -hex 16)"
+          {
+            echo "found=true"
+            echo "text<<$eof"
+            git show "$src"
+            cat <<EOT
+
+          ## This run
+
+          - Repository: $REPO
+          - Pull request: #$PR
+          - Base commit: $BASE
+          - Head commit: $HEAD
+          - Checkout: $GITHUB_WORKSPACE
+          - Pull request title, description and author: $dir/pr.json
+          - Unresolved review threads: $dir/threads.json
+          - Scratch directory: $dir/scratch
+          EOT
+            echo "$eof"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the pull request and its open review threads
+        if: steps.prompt.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ github.event.repository.name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          dir="$RUNNER_TEMP/review"
+          jq '.pull_request | {title, body, author: .user.login}' "$GITHUB_EVENT_PATH" > "$dir/pr.json"
+          # shellcheck disable=SC2016 # GraphQL variables, not shell.
+          gh api graphql --paginate \
+            -F owner="$OWNER" -F name="$NAME" -F pr="$PR" \
+            -f query='
+              query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $pr) {
+                    reviewThreads(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        isResolved isOutdated path line
+                        comments(first: 20) { nodes { author { login } body } }
+                      }
+                    }
+                  }
+                }
+              }' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+              | select(.isResolved | not)
+              | {path, line, isOutdated, comments: [.comments.nodes[] | {author: .author.login, body}]}' \
+            | jq -s . > "$dir/threads.json"
+
+      - id: go
+        if: steps.prompt.outputs.found == 'true'
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Compiles the packages and test binaries with both SQLite drivers, so
+      # the tests Claude runs start from a warm build cache. A build failure
+      # here is for the review to find, so it does not stop the job.
+      - name: Warm the build cache
+        if: steps.prompt.outputs.found == 'true'
+        continue-on-error: true
+        run: |
+          go test -count=1 -run '^$' ./...
+          CGO_ENABLED=0 go test -count=1 -run '^$' ./...
+
+      # Opus runs the main loop; the prompt picks a model for each subagent.
+      # --max-turns bounds the main loop only: a review needs about 20 turns
+      # plus one per posted comment. Manual permission mode runs only the
+      # commands listed, and the git write commands are denied outright
+      # because the action's wrapper scripts would otherwise allow them.
+      - name: Review
+        id: claude
+        if: steps.prompt.outputs.found == 'true'
+        uses: anthropics/claude-code-action@v1.0.276
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          prompt: ${{ steps.prompt.outputs.text }}
+          claude_args: >-
+            --model opus
+            --max-turns 60
+            --permission-mode default
+            --add-dir ${{ runner.temp }}/review
+            --allowedTools
+            "mcp__github_inline_comment__create_inline_comment,Edit(/${{ runner.temp }}/review/scratch/**),Bash(go build *),Bash(go vet *),Bash(go test *),Bash(CGO_ENABLED=0 go build *),Bash(CGO_ENABLED=0 go vet *),Bash(CGO_ENABLED=0 go test *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git blame *)"
+            --disallowedTools
+            "Bash(git add *),Bash(git rm *),Bash(git commit *),Bash(git push *)"
+            --json-schema
+            '{"type":"object","properties":{"open_findings":{"type":"integer","minimum":0},"posted":{"type":"integer","minimum":0}},"required":["open_findings","posted"]}'
 
+  # Marks a clean review with a thumbs-up on the pull request instead of a
+  # comment, and takes it back when a later push has findings. This job can
+  # write to the pull request, so it runs no code from it.
+  react:
+    needs: review
+    if: needs.review.outputs.result != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.review.outputs.result }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          open=$(jq -r .open_findings <<<"$RESULT")
+          if [ "$open" -eq 0 ]; then
+            # Answers 200 instead of 201 when the reaction is already there.
+            gh api -X POST "repos/$REPO/issues/$PR/reactions" -f content=+1 --silent
+          else
+            gh api --paginate "repos/$REPO/issues/$PR/reactions?content=%2B1" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .id' |
+            while read -r id; do
+              gh api -X DELETE "repos/$REPO/issues/$PR/reactions/$id" --silent
+            done
+          fi
