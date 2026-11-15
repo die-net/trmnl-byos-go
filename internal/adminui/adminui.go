@@ -18,6 +18,8 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/adminauth"
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/render"
+	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
 //go:embed templates static
@@ -26,6 +28,13 @@ var assets embed.FS
 const (
 	// maxFormBody bounds a form post. The longest password is 1024 bytes.
 	maxFormBody = 4 << 10
+
+	// maxInstanceFormBody bounds a post of an instance's settings form. The
+	// field values may total render.MaxEnvBytes, and form encoding can turn
+	// each byte into six: a line break is sent as CR LF, and each of those
+	// as "%XX". So the bound is six times that, plus room for the name,
+	// palette, marks and the keynames of the fields.
+	maxInstanceFormBody = 6*render.MaxEnvBytes + 64<<10
 
 	// contentSecurityPolicy lets a page load only its own files, which
 	// leaves out inline scripts and styles, and keeps it from being framed.
@@ -47,6 +56,10 @@ type Config struct {
 	// FirmwareDir is the directory firmware builds are stored in, which an
 	// uploaded build is added to.
 	FirmwareDir string
+	// Secrets is the key that seals and opens the secret field values of
+	// recipe instances. Nil means there is none, and then a form that sets a
+	// secret value is refused by the domain.
+	Secrets *secrets.Key
 }
 
 // Server handles admin UI requests.
@@ -59,6 +72,8 @@ type Server struct {
 	recipesDir string
 	// firmwareDir is Config.FirmwareDir.
 	firmwareDir string
+	// secrets is Config.Secrets.
+	secrets *secrets.Key
 	// secureURL is whether PublicURL is https.
 	secureURL bool
 	// cop refuses a cross-origin request that is not safe.
@@ -74,6 +89,7 @@ func New(client *db.Client, cfg Config) *Server {
 		zone:        cmp.Or(cfg.Zone, time.UTC),
 		recipesDir:  cfg.RecipesDir,
 		firmwareDir: cfg.FirmwareDir,
+		secrets:     cfg.Secrets,
 		cop:         http.NewCrossOriginProtection(),
 		pages:       map[string]*template.Template{},
 	}
@@ -83,8 +99,8 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "settings", "notfound"} {
-		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/"+name+".html"))
+	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "settings", "notfound"} {
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/instance_fields.html", "templates/"+name+".html"))
 	}
 	return s
 }
@@ -105,6 +121,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /recipes", page(s.requireSession(s.uploadRecipe)))
 	mux.Handle("GET /recipes/{id}", page(s.requireSession(s.recipePage)))
 	mux.Handle("POST /recipes/add-instance/{id}", page(s.requireSession(s.addInstance)))
+	mux.Handle("GET /recipes/instances/{id}", page(s.requireSession(s.instancePage)))
+	mux.Handle("POST /recipes/instances/{id}", page(s.requireSession(s.saveInstance)))
 	mux.Handle("GET /recipes/instances/{id}/delete", page(s.requireSession(s.confirmRemoveInstance)))
 	mux.Handle("POST /recipes/instances/{id}/delete", page(s.requireSession(s.removeInstance)))
 	mux.Handle("GET /playlists", page(s.requireSession(s.playlists)))
@@ -224,6 +242,8 @@ type pageData struct {
 	UploadError string
 	// RecipeEdit is the recipe its page shows.
 	RecipeEdit *recipeEdit
+	// InstanceEdit is the instance its page edits.
+	InstanceEdit *instanceEdit
 	// InstanceDelete is the instance removal the confirm page asks about.
 	InstanceDelete *instanceDeleteView
 	// Firmware is what the firmware page lists, FirmwareModels the models
@@ -266,7 +286,12 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 // parseForm reads a posted form of at most maxFormBody bytes. If it cannot,
 // it calls fail with a status and a message to show, and returns false.
 func parseForm(w http.ResponseWriter, r *http.Request, fail func(status int, msg string)) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
+	return parseFormLimit(w, r, maxFormBody, fail)
+}
+
+// parseFormLimit is parseForm with a bound of limit bytes.
+func parseFormLimit(w http.ResponseWriter, r *http.Request, limit int64, fail func(status int, msg string)) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	err := r.ParseForm()
 	if err == nil {
 		return true

@@ -1,0 +1,52 @@
+{{define "instance-fields"}}{{range .Orphans}}<p class="error" role="alert">{{.}}</p>
+{{end}}<div class="field">
+<label for="name">Name</label>
+<input id="name" name="name" type="text" autocomplete="off" placeholder="{{.NamePlaceholder}}" value="{{.Form.Name}}">
+<p class="hint">Leave empty to use the recipe's name.</p>
+{{if .NameDiffers}}<p class="hint">{{.Differs}}</p>
+{{end}}</div>
+<div class="field">
+<label for="palette">Palette</label>
+<select id="palette" name="palette">
+{{range .Palettes}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+{{if .PaletteDiffers}}<p class="hint">{{.Differs}}</p>
+{{end}}</div>
+{{if .Unreadable}}<p class="note">The stored secret values cannot be read, because the server has no secrets key or the key changed. This form cannot say which secret fields have a value.</p>
+{{end}}{{range .Fields}}{{template "field" .}}{{end}}{{end}}
+
+{{define "field"}}{{$f := .}}{{if eq .Input "none"}}<div class="field field-setting">
+<p class="field-title">{{.Label}}</p>
+{{template "hints" .}}</div>
+{{else if eq .Input "boolean"}}<div class="field field-setting field-check">
+<label for="{{.ID}}"><input id="{{.ID}}" name="{{.Name}}" type="checkbox" value="true"{{if .Checked}} checked{{end}}{{if .Described}} aria-describedby="{{.Described}}"{{end}}{{if .Error}} aria-invalid="true"{{end}}><span>{{.Label}}</span></label>
+{{template "hints" .}}{{template "fielderr" .}}</div>
+{{else if .Multiple}}<fieldset class="field field-setting field-check"{{if .Described}} aria-describedby="{{.Described}}"{{end}}>
+<legend>{{.Label}}{{if .Required}} <span class="req">Required</span>{{end}}</legend>
+{{range .Options}}<label for="{{.ID}}"><input id="{{.ID}}" name="{{$f.Name}}" type="checkbox" value="{{.Value}}"{{if .Selected}} checked{{end}}><span>{{.Label}}</span></label>
+{{end}}{{template "hints" .}}{{template "fielderr" .}}</fieldset>
+{{else}}<div class="field field-setting">
+<label for="{{.ID}}">{{.Label}}{{if .Required}} <span class="req">Required</span>{{end}}</label>
+{{if eq .Input "textarea"}}<textarea id="{{.ID}}" name="{{.Name}}" rows="{{.Rows}}"{{if .MaxLength}} maxlength="{{.MaxLength}}"{{end}}{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}{{if .Secret}} autocomplete="off"{{end}}{{if .HTMLRequired}} required{{end}}{{if .Described}} aria-describedby="{{.Described}}"{{end}}{{if .Error}} aria-invalid="true"{{end}}>
+{{if not .Secret}}{{.Value}}{{end}}</textarea>
+{{else if eq .Input "select"}}<select id="{{.ID}}" name="{{.Name}}"{{if .HTMLRequired}} required{{end}}{{if .Described}} aria-describedby="{{.Described}}"{{end}}{{if .Error}} aria-invalid="true"{{end}}>
+{{if .BlankOption}}<option value=""></option>
+{{end}}{{range .Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+{{else}}<input id="{{.ID}}" name="{{.Name}}" type="{{.Input}}"{{if eq .Input "number"}} step="any"{{if .Min}} min="{{.Min}}"{{end}}{{if .Max}} max="{{.Max}}"{{end}}{{end}}{{if .MaxLength}} maxlength="{{.MaxLength}}"{{end}}{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}{{if eq .Input "password"}} autocomplete="new-password"{{else if .Secret}} autocomplete="off"{{end}}{{if not .Secret}} value="{{.Value}}"{{end}}{{if .HTMLRequired}} required{{end}}{{if .Described}} aria-describedby="{{.Described}}"{{end}}{{if .Error}} aria-invalid="true"{{end}}>
+{{end}}{{template "hints" .}}{{template "fielderr" .}}{{if .CanMark}}<div class="field-check">
+<label for="{{.ID}}-secret"><input id="{{.ID}}-secret" name="{{.SecretName}}" type="checkbox" value="1"{{if .Marked}} checked{{end}} aria-describedby="{{.ID}}-secret-hint"><span>Keep this value secret</span></label>
+<p class="hint" id="{{.ID}}-secret-hint">A secret value is stored encrypted and never shown again.</p>
+</div>
+{{end}}{{if .CanClear}}<div class="field-check">
+<label for="{{.ID}}-clear"><input id="{{.ID}}-clear" name="{{.ClearName}}" type="checkbox" value="1"{{if .ClearChecked}} checked{{end}} aria-describedby="{{.ID}}-clear-hint"><span>Remove the stored value</span></label>
+<p class="hint" id="{{.ID}}-clear-hint">Saving removes whatever value is stored then, even one saved after this page loaded.</p>
+</div>
+{{end}}</div>
+{{end}}{{end}}
+
+{{define "hints"}}{{$f := .}}{{range $i, $h := .Hints}}<p class="hint" id="{{$f.ID}}-hint{{$i}}">{{$h}}</p>
+{{end}}{{end}}
+
+{{define "fielderr"}}{{if .Error}}<p class="field-error" id="{{.ID}}-err">{{.Error}}</p>
+{{end}}{{end}}
