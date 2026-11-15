@@ -627,6 +627,177 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+/* The playlists page. A card per playlist, with an item list whose rows
+   put the actions under the text on a phone. */
+.stack {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.list-head h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.list-head .btn {
+  width: auto;
+}
+
+.panel .facts + .items,
+.panel .facts + .rel {
+  margin-top: var(--space-4);
+}
+
+.items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+
+.item-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.item-name {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.item-actions form {
+  margin: 0;
+}
+
+.panel .item-actions .btn {
+  width: auto;
+  min-width: var(--tap);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+a.btn {
+  text-decoration: none;
+}
+
+.btn-danger {
+  color: var(--danger);
+}
+
+.btn-danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--surface);
+}
+
+.panel .item-actions .btn-icon {
+  width: var(--tap);
+  padding: 0;
+}
+
+.btn-icon:disabled {
+  opacity: 0.3;
+  border-style: dashed;
+}
+
+.more a:not(.btn) {
+  display: inline-flex;
+  min-height: var(--tap);
+  align-items: center;
+}
+
+.btn-danger:hover {
+  background: var(--danger-soft);
+}
+
+.more {
+  margin: var(--space-4) 0 0;
+}
+
+.panel .playlist + .more,
+.panel .rel + .more {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+/* The schedule fields: weekday chips, and pairs of fields side by side. */
+.days {
+  min-width: 0;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  border: 0;
+}
+
+.days legend {
+  margin-bottom: var(--space-1);
+  padding: 0;
+  font-weight: 600;
+}
+
+.day-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(5rem, 1fr));
+  gap: var(--space-2);
+}
+
+.chip {
+  margin: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.chip:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.hint-form {
+  margin: calc(var(--space-2) * -1) 0 var(--space-4);
+}
+
+.form-panel {
+  max-width: 32rem;
+}
+
 /* What a page shows when it has nothing to list. */
 .empty {
   padding: var(--space-6) var(--space-5);

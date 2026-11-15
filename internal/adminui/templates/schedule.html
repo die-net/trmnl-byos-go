@@ -1,0 +1,28 @@
+{{define "schedule-fields"}}<fieldset class="days">
+<legend>Days</legend>
+<div class="day-grid">
+{{range .Days}}<label class="check chip"><input type="checkbox" name="days" value="{{.Value}}"{{if .Checked}} checked{{end}}><span>{{.Label}}</span></label>
+{{end}}</div>
+</fieldset>
+<div class="pair">
+<div class="field">
+<label for="window_start">Window start</label>
+<input id="window_start" name="window_start" type="time" value="{{.WindowStart}}">
+</div>
+<div class="field">
+<label for="window_end">Window end</label>
+<input id="window_end" name="window_end" type="time" value="{{.WindowEnd}}">
+</div>
+</div>
+<p class="hint hint-form">Leave both empty for all day. An end before the start runs past midnight.</p>
+<div class="pair">
+<div class="field">
+<label for="from">First day</label>
+<input id="from" name="from" type="date" value="{{.From}}">
+</div>
+<div class="field">
+<label for="until">Last day</label>
+<input id="until" name="until" type="date" value="{{.Until}}">
+</div>
+</div>
+<p class="hint hint-form">Both days are included, in the server's time zone. Leave one empty for no limit.</p>{{end}}

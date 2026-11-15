@@ -164,7 +164,7 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) (addIte
 	dur := playlist.DefaultDuration
 	if req.DurationSeconds != nil {
 		var err error
-		if dur, err = duration(*req.DurationSeconds); err != nil {
+		if dur, err = playlist.DurationFromSeconds(*req.DurationSeconds); err != nil {
 			return addItemResponse{}, err
 		}
 	}
@@ -252,7 +252,7 @@ func (s *Server) patchPlaylistItem(w http.ResponseWriter, r *http.Request) (play
 	}
 	u := playlist.ItemUpdate{Position: req.Position, Hidden: req.Hidden}
 	if req.DurationSeconds != nil {
-		d, err := duration(*req.DurationSeconds)
+		d, err := playlist.DurationFromSeconds(*req.DurationSeconds)
 		if err != nil {
 			return playlistItemJSON{}, err
 		}

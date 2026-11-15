@@ -177,7 +177,7 @@ func TestStubPages(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	for _, tc := range []struct{ path, heading string }{
-		{"/recipes", "Recipes"}, {"/playlists", "Playlists"}, {"/firmware", "Firmware"},
+		{"/recipes", "Recipes"}, {"/firmware", "Firmware"},
 	} {
 		body := tu.do(t, "GET", tc.path, "", "Cookie", cookieHeader(c)).Body.String()
 		for _, want := range []string{"<h1>" + tc.heading + "</h1>", "This page is not built yet."} {

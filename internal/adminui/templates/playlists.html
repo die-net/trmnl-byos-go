@@ -1,0 +1,33 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "content"}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{if .Playlists}}<ul class="stack">
+{{range .Playlists}}<li class="panel" id="playlist-{{.ID}}">
+<div class="list-head">
+<h2>{{.Name}}</h2>
+<a class="btn btn-secondary" href="{{.Href}}" aria-label="Edit schedule and add an item to {{.Name}}">Edit</a>
+</div>
+<dl class="facts">
+<div class="wide"><dt>Schedule</dt><dd>{{.Schedule}}</dd></div>
+<div class="wide"><dt>Devices</dt><dd>{{if .Devices}}{{range $i, $d := .Devices}}{{if $i}}, {{end}}<a href="{{$d.Href}}">{{$d.Name}}</a>{{end}}{{else}}None{{end}}</dd></div>
+</dl>
+{{if .Items}}<ol class="items">
+{{range .Items}}<li class="item">
+<div class="item-main">
+<span class="item-name">{{.Instance}}</span>{{if .Hidden}} <span class="badge badge-neutral">Hidden</span>{{end}}
+<span class="rel">{{.Duration}}</span>
+{{if .Schedule}}<span class="rel">{{.Schedule}}</span>{{end}}
+</div>
+<div class="item-actions">
+<form method="post" action="{{.MoveHref}}"><input type="hidden" name="index" value="{{.Up}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Instance}} up"{{if not .CanUp}} disabled{{end}}>{{template "icon-up"}}</button></form>
+<form method="post" action="{{.MoveHref}}"><input type="hidden" name="index" value="{{.Down}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Instance}} down"{{if not .CanDown}} disabled{{end}}>{{template "icon-down"}}</button></form>
+<form method="post" action="{{.HideHref}}"><input type="hidden" name="hidden" value="{{if .Hidden}}0{{else}}1{{end}}"><button class="btn btn-secondary" type="submit" aria-label="{{if .Hidden}}Show{{else}}Hide{{end}} {{.Instance}}">{{if .Hidden}}Show{{else}}Hide{{end}}</button></form>
+<a class="btn btn-secondary" href="{{.EditHref}}" aria-label="Edit {{.Instance}}">Edit</a>
+<a class="btn btn-secondary btn-danger" href="{{.DeleteHref}}" aria-label="Remove {{.Instance}}">Remove</a>
+</div>
+</li>
+{{end}}</ol>{{else}}<p class="rel">This playlist has no items.</p>{{end}}
+</li>
+{{end}}</ul>{{else}}<div class="empty">
+<h2>No playlists yet</h2>
+<p>Add an item to a device with the <code>trmnl-byos</code> command or the JSON API, and its playlist shows here.</p>
+</div>{{end}}{{end}}

@@ -17,7 +17,6 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
-	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
@@ -315,31 +314,18 @@ func (f scheduleFlags) edit(loc *time.Location) (*playlist.ScheduleEdit, error) 
 		case "from":
 			given = true
 			e.StartsAt = new(int64)
-			*e.StartsAt, err = parseDate(*f.from, 0, loc)
+			*e.StartsAt, err = playlist.ParseDay(*f.from, loc)
 		case "until":
 			given = true
 			e.EndsAt = new(int64)
 			// The last day is included, so the schedule ends when the next begins.
-			*e.EndsAt, err = parseDate(*f.until, 1, loc)
+			*e.EndsAt, err = playlist.ParseLastDay(*f.until, loc)
 		}
 	})
 	if err != nil || !given {
 		return nil, err
 	}
 	return &e, nil
-}
-
-// parseDate returns the Unix time of midnight in loc at the start of the
-// day YYYY-MM-DD, plus plusDays days, or 0 for an empty string.
-func parseDate(s string, plusDays int, loc *time.Location) (int64, error) {
-	if s == "" {
-		return 0, nil
-	}
-	d, err := time.ParseInLocation(time.DateOnly, s, loc)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %q is not a date as YYYY-MM-DD", errkind.ErrInvalid, s)
-	}
-	return d.AddDate(0, 0, plusDays).Unix(), nil
 }
 
 func playlistMove(ctx context.Context, args []string, out io.Writer) error {
