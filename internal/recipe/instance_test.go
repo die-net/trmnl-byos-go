@@ -215,10 +215,9 @@ func TestUpdateInstance(t *testing.T) {
 			fields: map[string]Value{"city": {One: "Bern"}, "tags": {Many: []string{"a", "b"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
 		},
 		{desc: "same values", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"a", "b"}}, "token": {One: "hunter2"}}}, key: "a"},
-		{
-			desc: "same list in another order", update: InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{"b", "a"}}}}, key: "a",
-			fields: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"b", "a"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
-		},
+		// A list is stored in option order, so the same choices in another
+		// order are no change.
+		{desc: "same list in another order", update: InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{"b", "a"}}}}, key: "a"},
 		{desc: "rename and palette are not settings", update: InstanceUpdate{Name: ptr("Home"), Palette: ptr("bw")}, key: "a", name: "Home", palette: "bw"},
 		{desc: "empty name is the recipe's", update: InstanceUpdate{Name: ptr("")}, key: "a", name: "Weather"},
 		{
@@ -1271,4 +1270,113 @@ func TestInstanceState(t *testing.T) {
 	if _, err := InstanceState(&bad); err == nil {
 		t.Error("undecodable field_values gave a state")
 	}
+}
+
+// TestFormShowableValues checks that an instance stores only values a
+// browser form can show back unchanged: a number in the HTML number
+// grammar, a single-line text value with no line break, and a multi-select
+// in option order. Each rule is checked through CreateInstance and
+// UpdateInstance.
+func TestFormShowableValues(t *testing.T) {
+	t.Parallel()
+	key := testKey(t, keyA)
+	now := time.Unix(5000, 0)
+	for _, tc := range []struct {
+		name  string
+		value map[string]Value
+		want  map[string]string // field errors, nil to accept
+	}{
+		{"a whole number", map[string]Value{"days": {One: "3"}}, nil},
+		{"a fraction and exponent", map[string]Value{"days": {One: "0.25e1"}}, nil},
+		{"a negative number below the minimum is checked as a number", map[string]Value{"days": {One: "-1"}}, map[string]string{"days": "must be at least 1"}},
+		{"a leading plus", map[string]Value{"days": {One: "+5"}}, map[string]string{"days": "must be a number"}},
+		{"no digit before the point", map[string]Value{"days": {One: ".5"}}, map[string]string{"days": "must be a number"}},
+		{"no digit after the point", map[string]Value{"days": {One: "5."}}, map[string]string{"days": "must be a number"}},
+		{"hex", map[string]Value{"days": {One: "0x10"}}, map[string]string{"days": "must be a number"}},
+		{"underscores", map[string]Value{"days": {One: "1_0"}}, map[string]string{"days": "must be a number"}},
+		{"space around", map[string]Value{"days": {One: " 5"}}, map[string]string{"days": "must be a number"}},
+		{"a line feed in a one-line field", map[string]Value{"city": {One: "Zurich\nNorth"}}, map[string]string{"city": "must be one line"}},
+		{"a carriage return in a one-line field", map[string]Value{"city": {One: "Zurich\rNorth"}}, map[string]string{"city": "must be one line"}},
+		{"a line break in a password", map[string]Value{"token": {One: "hunter2\n2"}}, map[string]string{"token": "must be one line"}},
+		{"a line break in a multi-line field", map[string]Value{"notes": {One: "line one\nline two"}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			values := map[string]Value{"city": {One: "Zurich"}}
+			maps.Copy(values, tc.value)
+			_, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: values}, now)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+			} else {
+				wantFieldErrors(t, err, tc.want)
+			}
+			inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: tc.value}, now)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("update: %v", err)
+				}
+				return
+			}
+			wantFieldErrors(t, err, tc.want)
+			if stored, err := f.client.Read.GetInstance(t.Context(), inst.ID); err != nil || !reflect.DeepEqual(stored, inst) {
+				t.Errorf("a refused update changed the instance: %+v, %v", stored, err)
+			}
+		})
+	}
+
+	t.Run("a multi-select is stored in option order", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"c", "a"}}}}, now)
+		if err != nil || inst.FieldValues != `{"city":"Zurich","tags":["a","c"]}` {
+			t.Fatalf("create: %s, %v", inst.FieldValues, err)
+		}
+		got, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{"c", "b", "a"}}}}, now)
+		if err != nil || got.FieldValues != `{"city":"Zurich","tags":["a","b","c"]}` {
+			t.Fatalf("update: %s, %v", got.FieldValues, err)
+		}
+		// The same choices in another order are no change, so no rebuild.
+		again, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{"b", "c", "a"}}}}, now.Add(time.Minute))
+		if err != nil || again.SettingsAt != got.SettingsAt {
+			t.Errorf("same choices reordered: settings_at %d, was %d, %v", again.SettingsAt, got.SettingsAt, err)
+		}
+	})
+
+	t.Run("an existing value that breaks a rule", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// As a row written before these rules could hold, with a required
+		// field among them.
+		bad := `{"city":"Zurich\nNorth","days":"+5","tags":["c","a"]}`
+		inst, err = f.client.Write.UpdateInstance(t.Context(), db.UpdateInstanceParams{
+			ID: inst.ID, Name: inst.Name, Palette: inst.Palette, FieldValues: bad,
+			SecretValues: inst.SecretValues, SecretKeys: inst.SecretKeys, SettingsAt: inst.SettingsAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// An update that leaves the fields out, such as a rename, keeps them.
+		got, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Name: ptr("Home")}, now)
+		if err != nil || got.Name != "Home" || got.FieldValues != bad {
+			t.Fatalf("rename: %+v, %v", got, err)
+		}
+		// One that gives a field its value back checks it like any other.
+		_, err = UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Zurich\nNorth"}, "days": {One: "+5"}}}, now)
+		wantFieldErrors(t, err, map[string]string{"city": "must be one line", "days": "must be a number"})
+		got, err = UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Zurich North"}, "days": {One: "5"}, "tags": {Many: []string{"c", "a"}}}}, now)
+		if err != nil || got.FieldValues != `{"city":"Zurich North","days":"5","tags":["a","c"]}` {
+			t.Errorf("normalizing update: %s, %v", got.FieldValues, err)
+		}
+	})
 }

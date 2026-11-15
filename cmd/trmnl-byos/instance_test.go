@@ -235,15 +235,22 @@ func TestInstanceFieldFile(t *testing.T) {
 		}
 		return path
 	}
-	city := write("city", "Zurich\n\n")
+	city := write("city", "Zurich\n")
 	tag := write("tag", "b")
 	var out bytes.Buffer
-	err := instanceAdd(t.Context(), []string{"-data", dir, "-recipe", "1", "-field-file", "city=" + city, "-field", "tags=a", "-field-file", "tags=" + tag}, strings.NewReader(""), &out)
+	// Only one trailing newline is dropped, so a second one stays, and a
+	// one-line field refuses it.
+	twoLines := write("two", "Zurich\n\n")
+	err := instanceAdd(t.Context(), []string{"-data", dir, "-recipe", "1", "-field-file", "city=" + twoLines}, strings.NewReader(""), &out)
+	if err == nil || !strings.Contains(err.Error(), "city: must be one line") {
+		t.Errorf("two trailing newlines: %v", err)
+	}
+	err = instanceAdd(t.Context(), []string{"-data", dir, "-recipe", "1", "-field-file", "city=" + city, "-field", "tags=a", "-field-file", "tags=" + tag}, strings.NewReader(""), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fields := storedValues(t, dir)
-	want := map[string]recipe.Value{"city": {One: "Zurich\n"}, "tags": {Many: []string{"a", "b"}}}
+	want := map[string]recipe.Value{"city": {One: "Zurich"}, "tags": {Many: []string{"a", "b"}}}
 	if !valuesEqual(fields, want) {
 		t.Errorf("after a file: %v, want %v", fields, want)
 	}

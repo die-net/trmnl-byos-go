@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -120,6 +121,11 @@ func (f *Field) check(v Value, sealed bool) (Value, string) {
 				return v, "is not one of the options"
 			}
 		}
+		if multi {
+			// A form lists the choices in option order, so they are stored
+			// in it, and a save that changes nothing stores the same list.
+			v = Value{Many: f.inOptionOrder(v.Many)}
+		}
 	case "number":
 		return v, f.checkNumber(v.One)
 	case "boolean":
@@ -136,6 +142,11 @@ func (f *Field) check(v Value, sealed bool) (Value, string) {
 			return v, "must be a time as HH:MM, from 00:00 to 23:59"
 		}
 	default:
+		// A one-line input cannot show a line break, so a form saving the
+		// value back would change it.
+		if (input == "text" || input == "password") && strings.ContainsAny(v.One, "\r\n") {
+			return v, "must be one line"
+		}
 		if msg := f.checkText(v.One); msg != "" || !sealed {
 			return v, msg
 		}
@@ -154,6 +165,9 @@ func (v Value) items() []string {
 
 // checkNumber returns why s is not a number the field takes, "" if it is.
 func (f *Field) checkNumber(s string) string {
+	if !numberSyntax.MatchString(s) {
+		return "must be a number"
+	}
 	n, err := strconv.ParseFloat(s, 64)
 	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 		return "must be a number"
@@ -165,6 +179,25 @@ func (f *Field) checkNumber(s string) string {
 		return fmt.Sprintf("must be at most %g", *f.Max)
 	}
 	return ""
+}
+
+// numberSyntax is the grammar of a number an HTML number input shows back
+// as written: an optional minus, digits, an optional fraction with digits on
+// both sides of the point, and an optional exponent. ParseFloat also takes
+// "+5", ".5", "5.", "0x10", "1_000" and "Inf", which such an input would not
+// show, so a form saving the value back would change it.
+var numberSyntax = regexp.MustCompile(`^-?\d+(\.\d+)?([eE][+-]?\d+)?$`)
+
+// inOptionOrder returns the chosen values in the order of the field's
+// options. Every value is one of them.
+func (f *Field) inOptionOrder(chosen []string) []string {
+	out := make([]string, 0, len(chosen))
+	for _, o := range f.Options {
+		if slices.Contains(chosen, o.Value) {
+			out = append(out, o.Value)
+		}
+	}
+	return out
 }
 
 // checkText returns why s is too long for the field, "" if it is not.
