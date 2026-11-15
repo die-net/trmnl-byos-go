@@ -43,7 +43,7 @@ func addInstance(t *testing.T, tu *testUI, name string) int64 {
 // playlist, and returns the item.
 func addItem(t *testing.T, tu *testUI, list, instance string, d time.Duration) db.PlaylistItem {
 	t.Helper()
-	item, _, err := playlist.AddItem(t.Context(), tu.db, list, "", addInstance(t, tu, instance), d)
+	item, err := addItemTo(t.Context(), tu.db, list, "", addInstance(t, tu, instance), d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestPlaylistsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := playlist.AddItem(ctx, tu.db, "", dev.FriendlyID, addInstance(t, tu, "Solo"), 0); err != nil {
+	if _, err := addItemTo(ctx, tu.db, "", dev.FriendlyID, addInstance(t, tu, "Solo"), 0); err != nil {
 		t.Fatal(err)
 	}
 	other, err := device.FindDevice(ctx, tu.db.Read, "DEF456")

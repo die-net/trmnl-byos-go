@@ -43,7 +43,7 @@ func playlistFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	for range 3 {
-		if _, _, err := playlist.AddItem(t.Context(), client, "p", "", inst.ID, playlist.DefaultDuration); err != nil {
+		if _, err := addItemTo(t.Context(), client, "p", "", inst.ID, playlist.DefaultDuration); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -273,7 +273,7 @@ func TestPlaylistManage(t *testing.T) {
 	run("rename", "Mornings", "Evenings")
 	run("link", "Evenings", "ABC001")
 	run("link", "p", "d8:3b:da:12:34:01")
-	run("order", "p", "ABC001", "0")
+	run("order", "p", "ABC001", "1", "0")
 	run("link", "Evenings", "ABC002")
 	devices := func(friendly string) []string {
 		t.Helper()
@@ -296,9 +296,13 @@ func TestPlaylistManage(t *testing.T) {
 	// A negative index reaches the command and is refused as out of range, not
 	// read as a flag, and nothing moves.
 	for _, index := range []string{"-1", "2"} {
-		if _, err := runPlaylist(t, dir, "order", "p", "ABC001", index); !errors.Is(err, errkind.ErrInvalid) || !strings.Contains(err.Error(), index+" is not a place in the device's playlist order") {
+		if _, err := runPlaylist(t, dir, "order", "p", "ABC001", "0", index); !errors.Is(err, errkind.ErrInvalid) || !strings.Contains(err.Error(), index+" is not a place in the device's playlist order") {
 			t.Errorf("order %s: %v", index, err)
 		}
+	}
+	// A move from a place the link is not at is refused too.
+	if _, err := runPlaylist(t, dir, "order", "p", "ABC001", "1", "0"); !errors.Is(err, playlist.ErrOrderChanged) {
+		t.Errorf("order from a stale index: %v", err)
 	}
 	if got := devices("ABC001"); !slices.Equal(got, []string{"Evenings@1", "p@0"}) {
 		t.Errorf("ABC001 links after refused moves = %v", got)
@@ -328,9 +332,9 @@ func TestPlaylistManage(t *testing.T) {
 		{"delete missing", []string{"delete", "nope"}, playlist.ErrNoPlaylist},
 		{"link missing playlist", []string{"link", "nope", "ABC001"}, playlist.ErrNoPlaylist},
 		{"link missing device", []string{"link", "p", "ZZZ999"}, device.ErrNoDevice},
-		{"order not linked", []string{"order", "p", "ABC002", "0"}, playlist.ErrNotLinked},
-		{"order missing device", []string{"order", "p", "ZZZ999", "0"}, device.ErrNoDevice},
-		{"order missing playlist", []string{"order", "nope", "ABC001", "0"}, playlist.ErrNoPlaylist},
+		{"order not linked", []string{"order", "p", "ABC002", "0", "0"}, playlist.ErrNotLinked},
+		{"order missing device", []string{"order", "p", "ZZZ999", "0", "0"}, device.ErrNoDevice},
+		{"order missing playlist", []string{"order", "nope", "ABC001", "0", "0"}, playlist.ErrNoPlaylist},
 		{"move negative", []string{"move", "1", "-1"}, errkind.ErrInvalid},
 		{"unlink missing device", []string{"unlink", "p", "ZZZ999"}, device.ErrNoDevice},
 		{"unlink missing playlist", []string{"unlink", "nope", "ABC001"}, playlist.ErrNoPlaylist},
@@ -344,5 +348,45 @@ func TestPlaylistManage(t *testing.T) {
 	}
 	if devs, err := client.Read.ListPlaylistDevices(t.Context()); err != nil || len(devs) != 0 {
 		t.Errorf("a refused link left %v, %v", devs, err)
+	}
+}
+
+// TestPlaylistAddCreates checks that playlist add makes the playlist when it
+// is missing, named by -playlist or by the device's friendly ID, and adds to
+// it when it exists.
+func TestPlaylistAddCreates(t *testing.T) {
+	t.Parallel()
+	dir := playlistFixture(t)
+	client, err := openDB(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write.CreateDevice(t.Context(), db.CreateDeviceParams{Mac: "D8:3B:DA:12:34:01", ApiKeyHash: []byte("key"), FriendlyID: "ABC001", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "-instance", "1", "-playlist", "new"},
+		{"add", "-instance", "1", "-playlist", "new"},
+		{"add", "-instance", "1", "-device", "d8:3b:da:12:34:01"},
+	} {
+		if _, err := runPlaylist(t, dir, args...); err != nil {
+			t.Fatalf("playlist %v: %v", args, err)
+		}
+	}
+	for name, items := range map[string]int{"new": 2, "ABC001": 1} {
+		pl, err := client.Read.GetPlaylistByName(t.Context(), name)
+		if err != nil {
+			t.Fatalf("playlist %q: %v", name, err)
+		}
+		if ids, err := client.Read.ListPlaylistItemIDs(t.Context(), pl.ID); err != nil || len(ids) != items {
+			t.Errorf("playlist %q has items %v, %v; want %d", name, ids, err, items)
+		}
+	}
+	if devs, err := client.Read.ListPlaylistDevices(t.Context()); err != nil || len(devs) != 1 || devs[0].Playlist != "ABC001" {
+		t.Errorf("devices = %+v, %v", devs, err)
+	}
+	if _, err := runPlaylist(t, dir, "add", "-instance", "1", "-device", "ZZZ999"); !errors.Is(err, device.ErrNoDevice) {
+		t.Errorf("unknown device: %v", err)
 	}
 }

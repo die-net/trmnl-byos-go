@@ -32,13 +32,13 @@ func newPlaylist(t *testing.T, n int) (*db.Client, []int64, int64) {
 	}
 	ids := make([]int64, 0, n)
 	for range n {
-		item, _, err := AddItem(ctx, client, "p", "", inst.ID, DefaultDuration)
+		item, err := addItemTo(ctx, client, "p", "", inst.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, item.ID)
 	}
-	if _, _, err := AddItem(ctx, client, "q", "", inst.ID, DefaultDuration); err != nil {
+	if _, err := addItemTo(ctx, client, "q", "", inst.ID); err != nil {
 		t.Fatal(err)
 	}
 	return client, ids, inst.ID
@@ -145,7 +145,7 @@ func TestDeleteItemRenumbers(t *testing.T) {
 		t.Errorf("q = %v", got)
 	}
 	// An item added after a delete takes the next index.
-	item, _, err := AddItem(ctx, client, "p", "", 1, DefaultDuration)
+	item, err := addItemTo(ctx, client, "p", "", 1)
 	if err != nil || item.Position != 2 {
 		t.Errorf("AddItem = %+v, %v; want position 2", item, err)
 	}
@@ -276,7 +276,7 @@ func TestDeviceLists(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := MoveLink(ctx, client, ByID(q.ID), dev.FriendlyID, 0); err != nil {
+	if err := MoveLink(ctx, client, ByID(q.ID), dev.FriendlyID, 1, 0); err != nil {
 		t.Fatal(err)
 	}
 	yes := true

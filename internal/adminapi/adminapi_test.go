@@ -552,8 +552,9 @@ func TestInstances(t *testing.T) {
 
 	// An instance in a playlist cannot be removed until its item is.
 	ta.addDevice(t)
+	ta.call(t, "POST", "/api/v1/playlists", `{"name": "p"}`, 201, nil)
 	var item addItemResponse
-	ta.call(t, "POST", "/api/v1/playlists/items", `{"device": "`+testFriend+`", "instance_id": `+id+`}`, 201, &item)
+	ta.call(t, "POST", "/api/v1/playlists/items", `{"playlist": "p", "device": "`+testFriend+`", "instance_id": `+id+`}`, 201, &item)
 	ta.wantError(t, "DELETE", "/api/v1/instances/"+id, "", 409, "item IDs "+strconv.FormatInt(item.ID, 10))
 	ta.call(t, "DELETE", "/api/v1/playlists/items/"+strconv.FormatInt(item.ID, 10), "", 204, nil)
 	ta.call(t, "DELETE", "/api/v1/instances/"+id, "", 204, nil)
@@ -614,10 +615,13 @@ func TestPlaylists(t *testing.T) {
 	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "Home"}`, 201, &inst)
 	instID := strconv.FormatInt(inst.ID, 10)
 
+	var pa, pk playlistJSON
+	ta.call(t, "POST", "/api/v1/playlists", `{"name": "`+testFriend+`"}`, 201, &pa)
+	ta.call(t, "POST", "/api/v1/playlists", `{"name": "kitchen"}`, 201, &pk)
 	var a, b addItemResponse
-	ta.call(t, "POST", "/api/v1/playlists/items", `{"device": "`+testMAC+`", "instance_id": `+instID+`, "duration_seconds": 600}`, 201, &a)
+	ta.call(t, "POST", "/api/v1/playlists/items", `{"playlist_id": `+strconv.FormatInt(pa.ID, 10)+`, "device": "`+testMAC+`", "instance_id": `+instID+`, "duration_seconds": 600}`, 201, &a)
 	ta.call(t, "POST", "/api/v1/playlists/items", `{"playlist": "kitchen", "instance_id": `+instID+`, "duration_seconds": 0}`, 201, &b)
-	if a.Playlist != testFriend || a.Position != 0 || b.Playlist != "kitchen" {
+	if a.PlaylistID != pa.ID || a.Position != 0 || b.PlaylistID != pk.ID {
 		t.Errorf("added %+v and %+v", a, b)
 	}
 	var lists []playlistJSON
@@ -647,12 +651,16 @@ func TestPlaylists(t *testing.T) {
 		status     int
 		contains   string
 	}{
-		{"unknown instance", `{"playlist": "p", "instance_id": 99}`, 404, "no such instance"},
-		{"unknown device", `{"device": "ZZZ999", "instance_id": ` + instID + `}`, 404, "no such device"},
-		{"no playlist or device", `{"instance_id": ` + instID + `}`, 400, "playlist name or a device"},
-		{"too short", `{"playlist": "p", "instance_id": ` + instID + `, "duration_seconds": 10}`, 400, "under"},
-		{"negative", `{"playlist": "p", "instance_id": ` + instID + `, "duration_seconds": -1}`, 400, "seconds"},
-		{"unknown field", `{"playlist": "p", "instance": ` + instID + `}`, 400, "unknown field"},
+		{"unknown instance", `{"playlist": "kitchen", "instance_id": 99}`, 404, "no such instance"},
+		{"missing playlist", `{"playlist": "nope", "instance_id": ` + instID + `}`, 404, "no such playlist"},
+		{"missing playlist ID", `{"playlist_id": 999, "instance_id": ` + instID + `}`, 404, "no such playlist"},
+		{"both playlist and ID", `{"playlist": "kitchen", "playlist_id": ` + strconv.FormatInt(pk.ID, 10) + `, "instance_id": ` + instID + `}`, 400, "exactly one of"},
+		{"device alone", `{"device": "` + testFriend + `", "instance_id": ` + instID + `}`, 400, "exactly one of"},
+		{"unknown device", `{"playlist": "kitchen", "device": "ZZZ999", "instance_id": ` + instID + `}`, 404, "no such device"},
+		{"no playlist", `{"instance_id": ` + instID + `}`, 400, "exactly one of"},
+		{"too short", `{"playlist": "kitchen", "instance_id": ` + instID + `, "duration_seconds": 10}`, 400, "under"},
+		{"negative", `{"playlist": "kitchen", "instance_id": ` + instID + `, "duration_seconds": -1}`, 400, "seconds"},
+		{"unknown field", `{"playlist": "kitchen", "instance": ` + instID + `}`, 400, "unknown field"},
 	} {
 		ta.wantError(t, "POST", "/api/v1/playlists/items", tc.body, tc.status, tc.contains)
 	}
@@ -699,12 +707,13 @@ func TestPlaylistCRUD(t *testing.T) {
 		{"link unknown playlist", "PUT", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
 		{"link unknown device", "PUT", pa + "/devices/ZZZ999", "", 404, "no such device"},
 		{"link takes no priority", "PUT", pa + "/devices/" + testFriend, `{"priority": 0}`, 400, "unknown field"},
-		{"move unlinked", "PATCH", pa + "/devices/" + testFriend, `{"priority": 0}`, 404, "not linked"},
-		{"move unknown playlist", "PATCH", "/api/v1/playlists/999/devices/" + testFriend, `{"priority": 0}`, 404, "no such playlist"},
-		{"move unknown device", "PATCH", pa + "/devices/ZZZ999", `{"priority": 0}`, 404, "no such device"},
-		{"move no priority", "PATCH", pa + "/devices/" + testFriend, `{}`, 400, "give a priority"},
+		{"move unlinked", "PATCH", pa + "/devices/" + testFriend, `{"from": 0, "priority": 0}`, 404, "not linked"},
+		{"move unknown playlist", "PATCH", "/api/v1/playlists/999/devices/" + testFriend, `{"from": 0, "priority": 0}`, 404, "no such playlist"},
+		{"move unknown device", "PATCH", pa + "/devices/ZZZ999", `{"from": 0, "priority": 0}`, 404, "no such device"},
+		{"move no priority", "PATCH", pa + "/devices/" + testFriend, `{"from": 0}`, 400, "give both from and priority"},
+		{"move no from", "PATCH", pa + "/devices/" + testFriend, `{"priority": 0}`, 400, "give both from and priority"},
 		{"move no body", "PATCH", pa + "/devices/" + testFriend, ``, 400, "bad request body"},
-		{"move priority not a number", "PATCH", pa + "/devices/" + testFriend, `{"priority": "first"}`, 400, "bad request body"},
+		{"move priority not a number", "PATCH", pa + "/devices/" + testFriend, `{"from": 0, "priority": "first"}`, 400, "bad request body"},
 		{"unlink not linked", "DELETE", pa + "/devices/" + testFriend, "", 404, "not linked"},
 		{"unlink unknown device", "DELETE", pa + "/devices/ZZZ999", "", 404, "no such device"},
 		{"unlink unknown playlist", "DELETE", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
@@ -727,7 +736,7 @@ func TestPlaylistCRUD(t *testing.T) {
 	ta.call(t, "PATCH", pa, `{"name": "Early"}`, 200, &got)
 
 	// A move that is refused makes no link.
-	ta.wantError(t, "PATCH", pa+"/devices/"+testFriend, `{"priority": 0}`, 404, "not linked")
+	ta.wantError(t, "PATCH", pa+"/devices/"+testFriend, `{"from": 0, "priority": 0}`, 404, "not linked")
 	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
 	if len(lists[0].Devices)+len(lists[1].Devices) != 0 {
 		t.Errorf("a refused move linked a device: %+v", lists)
@@ -741,9 +750,10 @@ func TestPlaylistCRUD(t *testing.T) {
 	if len(got.Devices) != 1 || got.Devices[0].Priority != 1 {
 		t.Errorf("linked last %+v", got.Devices)
 	}
-	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"priority": 2}`, 400, "2 is not a place in the device's playlist order, which runs from 0 to 1")
-	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"priority": -1}`, 400, "-1 is not a place")
-	ta.call(t, "PATCH", pb+"/devices/"+testMAC, `{"priority": 0}`, 200, &got)
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 1, "priority": 2}`, 400, "2 is not a place in the device's playlist order, which runs from 0 to 1")
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 1, "priority": -1}`, 400, "-1 is not a place")
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 0, "priority": 0}`, 409, "the playlist is now at 1, not 0")
+	ta.call(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 1, "priority": 0}`, 200, &got)
 	if len(got.Devices) != 1 || got.Devices[0].Priority != 0 {
 		t.Errorf("moved to the front %+v", got.Devices)
 	}
@@ -757,7 +767,7 @@ func TestPlaylistCRUD(t *testing.T) {
 	if got.Devices[0].Priority != 1 {
 		t.Errorf("relinked %+v", got.Devices)
 	}
-	ta.call(t, "PATCH", pa+"/devices/"+testFriend, `{"priority": 0}`, 200, &got)
+	ta.call(t, "PATCH", pa+"/devices/"+testFriend, `{"from": 1, "priority": 0}`, 200, &got)
 	if got.Devices[0].Priority != 0 {
 		t.Errorf("moved %+v", got.Devices)
 	}
@@ -788,6 +798,7 @@ func TestPatchPlaylists(t *testing.T) {
 	var inst instanceJSON
 	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "Home"}`, 201, &inst)
 	instID := strconv.FormatInt(inst.ID, 10)
+	ta.call(t, "POST", "/api/v1/playlists", `{"name": "kitchen"}`, 201, nil)
 	var items [3]addItemResponse
 	for i := range items {
 		ta.call(t, "POST", "/api/v1/playlists/items", `{"playlist": "kitchen", "instance_id": `+instID+`}`, 201, &items[i])

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
@@ -33,18 +34,19 @@ func TestAddItem(t *testing.T) {
 
 	for _, tc := range []struct {
 		name     string
-		playlist string
+		playlist Ref
 		device   string
 		instance int64
 		duration time.Duration
 		want     error
 	}{
-		{"unknown instance", "p", "", inst.ID + 1, time.Hour, errkind.ErrNotFound},
-		{"unknown instance for a device", "", dev.FriendlyID, inst.ID + 1, time.Hour, errkind.ErrNotFound},
-		{"no playlist and no device", "", "", inst.ID, time.Hour, errkind.ErrInvalid},
-		{"too short", "p", "", inst.ID, time.Second, errkind.ErrInvalid},
+		{"unknown instance", ByName("p"), "", inst.ID + 1, time.Hour, errkind.ErrNotFound},
+		{"unknown instance for a device", ByName("ABC123"), dev.FriendlyID, inst.ID + 1, time.Hour, errkind.ErrNotFound},
+		{"missing playlist by name", ByName("p"), "", inst.ID, time.Hour, ErrNoPlaylist},
+		{"missing playlist by ID", ByID(99), dev.FriendlyID, inst.ID, time.Hour, ErrNoPlaylist},
+		{"missing playlist for a device", ByName("ABC123"), dev.FriendlyID, inst.ID, time.Hour, ErrNoPlaylist},
 	} {
-		if _, _, err := AddItem(ctx, client, tc.playlist, tc.device, tc.instance, tc.duration); !errors.Is(err, tc.want) {
+		if _, err := AddItem(ctx, client, tc.playlist, tc.device, tc.instance, tc.duration); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
 		}
 	}
@@ -52,10 +54,16 @@ func TestAddItem(t *testing.T) {
 		t.Fatalf("a refused item made a playlist: %v, %v", lists, err)
 	}
 
-	// With no name, the playlist is the device's friendly ID.
-	item, name, err := AddItem(ctx, client, "", dev.FriendlyID, inst.ID, DefaultDuration)
-	if err != nil || name != "ABC123" || item.Position != 0 || item.Duration != 900 {
-		t.Fatalf("AddItem = %+v, %q, %v", item, name, err)
+	pl, err := CreatePlaylist(ctx, client, "ABC123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddItem(ctx, client, ByID(pl.ID), "ZZZ999", inst.ID, DefaultDuration); !errors.Is(err, device.ErrNoDevice) {
+		t.Errorf("unknown device: %v", err)
+	}
+	item, err := AddItem(ctx, client, ByID(pl.ID), dev.FriendlyID, inst.ID, DefaultDuration)
+	if err != nil || item.PlaylistID != pl.ID || item.Position != 0 || item.Duration != 900 {
+		t.Fatalf("AddItem = %+v, %v", item, err)
 	}
 	devs, err := client.Read.ListPlaylistDevices(ctx)
 	if err != nil || len(devs) != 1 || devs[0].Playlist != "ABC123" {

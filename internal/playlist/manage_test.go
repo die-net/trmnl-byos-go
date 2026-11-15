@@ -255,7 +255,7 @@ func TestLinkDevice(t *testing.T) {
 		t.Errorf("links = %v, want %v", got, pl)
 	}
 	// Linking again leaves the link where it is.
-	if err := MoveLink(ctx, client, ByID(pl[2]), dev.FriendlyID, 0); err != nil {
+	if err := MoveLink(ctx, client, ByID(pl[2]), dev.FriendlyID, 2, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := LinkDevice(ctx, client, ByID(pl[2]), dev.FriendlyID); err != nil {
@@ -295,7 +295,7 @@ func TestMoveLink(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := MoveLink(ctx, client, ByID(byName[tc.playlist]), dev.FriendlyID, tc.index); err != nil {
+			if err := MoveLink(ctx, client, ByID(byName[tc.playlist]), dev.FriendlyID, int64(strings.Index("abcd", tc.playlist)), tc.index); err != nil {
 				t.Fatal(err)
 			}
 			var got strings.Builder
@@ -325,27 +325,34 @@ func TestMoveLinkRefused(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name  string
-		ref   Ref
-		dev   string
-		index int64
-		kind  error
+		name     string
+		ref      Ref
+		dev      string
+		from, to int64
+		kind     error
+		text     string
 	}{
-		{"not linked", ByID(pl[2]), dev.FriendlyID, 0, ErrNotLinked},
-		{"other device not linked", ByID(pl[0]), other.FriendlyID, 0, ErrNotLinked},
-		{"unknown playlist", ByID(999), dev.FriendlyID, 0, ErrNoPlaylist},
-		{"unknown playlist name", ByName("nope"), dev.FriendlyID, 0, ErrNoPlaylist},
-		{"unknown device", ByID(pl[0]), "ZZZ999", 0, device.ErrNoDevice},
-		{"negative index", ByID(pl[0]), dev.FriendlyID, -1, errkind.ErrInvalid},
-		{"index n", ByID(pl[0]), dev.FriendlyID, 2, errkind.ErrInvalid},
+		{"not linked", ByID(pl[2]), dev.FriendlyID, 0, 0, ErrNotLinked, "not linked"},
+		{"other device not linked", ByID(pl[0]), other.FriendlyID, 0, 0, ErrNotLinked, ""},
+		{"unknown playlist", ByID(999), dev.FriendlyID, 0, 0, ErrNoPlaylist, ""},
+		{"unknown playlist name", ByName("nope"), dev.FriendlyID, 0, 0, ErrNoPlaylist, ""},
+		{"unknown device", ByID(pl[0]), "ZZZ999", 0, 0, device.ErrNoDevice, ""},
+		{"negative index", ByID(pl[0]), dev.FriendlyID, 0, -1, errkind.ErrInvalid, "-1 is not a place in the device's playlist order, which runs from 0 to 1"},
+		{"index n", ByID(pl[0]), dev.FriendlyID, 0, 2, errkind.ErrInvalid, "2 is not a place in the device's playlist order, which runs from 0 to 1"},
+		{"stale from", ByID(pl[1]), dev.FriendlyID, 0, 0, ErrOrderChanged, "the device's playlist order has changed: the playlist is now at 1, not 0"},
+		{"stale from, same place", ByID(pl[0]), dev.FriendlyID, 1, 1, ErrOrderChanged, "the playlist is now at 0, not 1"},
+		{"stale from, out of range", ByID(pl[0]), dev.FriendlyID, 7, 1, ErrOrderChanged, ""},
+		{"range before stale", ByID(pl[0]), dev.FriendlyID, 7, 5, errkind.ErrInvalid, ""},
 	} {
-		err := MoveLink(ctx, client, tc.ref, tc.dev, tc.index)
+		err := MoveLink(ctx, client, tc.ref, tc.dev, tc.from, tc.to)
 		if !errors.Is(err, tc.kind) {
 			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.kind)
+		} else if !strings.Contains(err.Error(), tc.text) {
+			t.Errorf("%s: message %q, want it to contain %q", tc.name, err, tc.text)
 		}
-		if errors.Is(tc.kind, errkind.ErrInvalid) && !strings.Contains(err.Error(), "is not a place in the device's playlist order, which runs from 0 to 1") {
-			t.Errorf("%s: message %q", tc.name, err)
-		}
+	}
+	if !errors.Is(ErrOrderChanged, errkind.ErrConflict) {
+		t.Error("ErrOrderChanged is not a conflict")
 	}
 	// Nothing changed, and no link was made for the pairs that had none.
 	if got := links(t, client, dev.ID); !slices.Equal(got, pl[:2]) {
@@ -440,33 +447,18 @@ func TestAddItemKeepsPriority(t *testing.T) {
 		}
 	}
 	// p is first. Adding to it must not move it, nor collide with q.
-	if _, _, err := AddItem(ctx, client, "p", dev.FriendlyID, inst, DefaultDuration); err != nil {
+	if _, err := addItemTo(ctx, client, "p", dev.FriendlyID, inst); err != nil {
 		t.Fatal(err)
 	}
 	if got := links(t, client, dev.ID); !slices.Equal(got, []int64{p.ID, q.ID}) {
 		t.Errorf("links = %v, want p then q", got)
 	}
 	// An item for a playlist the device is not on links it last.
-	if _, name, err := AddItem(ctx, client, "", dev.FriendlyID, inst, DefaultDuration); err != nil || name != dev.FriendlyID {
-		t.Fatalf("add to the device's playlist: %q, %v", name, err)
+	if _, err := addItemTo(ctx, client, "", dev.FriendlyID, inst); err != nil {
+		t.Fatal(err)
 	}
 	if got := links(t, client, dev.ID); len(got) != 3 || got[0] != p.ID || got[1] != q.ID {
 		t.Errorf("links = %v", got)
-	}
-}
-
-func TestAddItemName(t *testing.T) {
-	t.Parallel()
-	client, _, inst := newPlaylist(t, 1)
-	ctx := t.Context()
-	if _, name, err := AddItem(ctx, client, "  spaced ", "", inst, DefaultDuration); err != nil || name != "spaced" {
-		t.Errorf("name = %q, %v", name, err)
-	}
-	if _, _, err := AddItem(ctx, client, "a\nb", "", inst, DefaultDuration); !errors.Is(err, errkind.ErrInvalid) {
-		t.Errorf("control character: %v", err)
-	}
-	if _, _, err := AddItem(ctx, client, "   ", "", inst, DefaultDuration); !errors.Is(err, errkind.ErrInvalid) {
-		t.Errorf("blank name: %v", err)
 	}
 }
 
@@ -518,7 +510,7 @@ func TestMoveLinkLong(t *testing.T) {
 		id := want[m.from]
 		want = slices.Insert(slices.Delete(want, m.from, m.from+1), m.to, id)
 		to := int64(m.to)
-		if err := MoveLink(ctx, client, ByID(id), dev.FriendlyID, to); err != nil {
+		if err := MoveLink(ctx, client, ByID(id), dev.FriendlyID, int64(m.from), to); err != nil {
 			t.Fatal(err)
 		}
 		if got := links(t, client, dev.ID); !slices.Equal(got, want) {

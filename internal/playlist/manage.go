@@ -226,14 +226,17 @@ func LinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName stri
 }
 
 // MoveLink moves the link between a playlist and a device, named by friendly
-// ID or MAC, to index in the device's playlist order, which shifts the links
-// between its old and new place by one. Index 0 is tried first, and moving to
-// the current index changes nothing. It never makes a link: it returns an
-// error wrapping ErrNotLinked if there is none, ErrNoPlaylist or
-// device.ErrNoDevice for a name that matches nothing, and one wrapping
-// errkind.ErrInvalid if index is not in 0 to n-1 for the n links the device
-// has.
-func MoveLink(ctx context.Context, client *db.Client, ref Ref, deviceName string, index int64) error {
+// ID or MAC, from index from to index to in the device's playlist order,
+// which shifts the links between them by one. Index 0 is tried first. The
+// caller says where it saw the link, so a move made from a stale view is
+// refused instead of putting the playlist somewhere the caller did not mean.
+// It never makes a link. The checks run in this order, and the first to fail
+// is the error: an error wrapping ErrNoPlaylist or device.ErrNoDevice for a
+// name that matches nothing, ErrNotLinked if there is no link, one wrapping
+// errkind.ErrInvalid if to is not in 0 to n-1 for the n links the device has,
+// ErrOrderChanged if the link is not at from, and then nothing is changed if
+// to is from.
+func MoveLink(ctx context.Context, client *db.Client, ref Ref, deviceName string, from, to int64) error {
 	return client.InTx(ctx, func(q *db.Queries) error {
 		pl, err := ref.resolve(ctx, q)
 		if err != nil {
@@ -247,17 +250,20 @@ func MoveLink(ctx context.Context, client *db.Client, ref Ref, deviceName string
 		if err != nil {
 			return fmt.Errorf("list links: %w", err)
 		}
-		from := slices.Index(ids, pl.ID)
-		if from < 0 {
+		at := slices.Index(ids, pl.ID)
+		if at < 0 {
 			return fmt.Errorf("%w: playlist %q, device %s", ErrNotLinked, pl.Name, dev.FriendlyID)
 		}
-		if index < 0 || index >= int64(len(ids)) {
-			return fmt.Errorf("%w: %d is not a place in the device's playlist order, which runs from 0 to %d", errkind.ErrInvalid, index, len(ids)-1)
+		if to < 0 || to >= int64(len(ids)) {
+			return fmt.Errorf("%w: %d is not a place in the device's playlist order, which runs from 0 to %d", errkind.ErrInvalid, to, len(ids)-1)
 		}
-		if index == int64(from) {
+		if int64(at) != from {
+			return fmt.Errorf("%w: the playlist is now at %d, not %d", ErrOrderChanged, at, from)
+		}
+		if to == from {
 			return nil
 		}
-		return renumberLinks(ctx, q, dev.ID, pl.ID, int64(from), index)
+		return renumberLinks(ctx, q, dev.ID, pl.ID, from, to)
 	})
 }
 

@@ -21,7 +21,6 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/adminauth"
 	"github.com/die-net/trmnl-byos-go/internal/db"
-	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 )
 
@@ -193,7 +192,7 @@ func TestRecipesList(t *testing.T) {
 	}
 	// An instance in two playlists, one of them twice.
 	for _, name := range []string{"Morning", "Evening", "Morning"} {
-		if _, _, err := playlist.AddItem(ctx, tu.db, name, "", bw.ID, 0); err != nil {
+		if _, err := addItemTo(ctx, tu.db, name, "", bw.ID, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -564,7 +563,7 @@ func TestInstanceDeleteConfirm(t *testing.T) {
 	free := newInstance(t, tu, rec.ID, "Free <b>", "")
 	used := newInstance(t, tu, rec.ID, "Busy & <i>", "")
 	for _, name := range []string{"Zed", "Alpha"} {
-		if _, _, err := playlist.AddItem(t.Context(), tu.db, name, "", used.ID, 0); err != nil {
+		if _, err := addItemTo(t.Context(), tu.db, name, "", used.ID, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -611,7 +610,7 @@ func TestInstanceDelete(t *testing.T) {
 	rec := addRecipe(t, tu, "Weather")
 	free := newInstance(t, tu, rec.ID, "Free", "")
 	used := newInstance(t, tu, rec.ID, "Busy", "")
-	if _, _, err := playlist.AddItem(t.Context(), tu.db, "Morning", "", used.ID, 0); err != nil {
+	if _, err := addItemTo(t.Context(), tu.db, "Morning", "", used.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	c := tu.signIn(t)

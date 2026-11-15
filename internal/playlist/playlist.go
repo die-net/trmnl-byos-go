@@ -140,28 +140,21 @@ var (
 	ErrNameTaken = errkind.New(errkind.ErrConflict, "a playlist has that name")
 	// ErrNotLinked means the device is not linked to the playlist.
 	ErrNotLinked = errkind.New(errkind.ErrNotFound, "device is not linked to the playlist")
+	// ErrOrderChanged means a device's playlist order is not what the caller
+	// saw, so its change was refused.
+	ErrOrderChanged = errkind.New(errkind.ErrConflict, "the device's playlist order has changed")
 )
 
 // AddItem appends an item showing one instance on the whole screen to the
-// named playlist, checked by CleanName, creating the playlist if it does not
-// exist, and links the device, named by friendly ID or MAC, to it, last in the
-// device's order, when deviceName is not empty and it is not linked already.
-// The device is looked up in the same transaction, and an unknown one is an
-// error wrapping device.ErrNoDevice. An empty name is the device's friendly
-// ID, so the device needs to be given then. duration is 0, to show
+// playlist ref names, which must exist, and links the device, named by friendly
+// ID or MAC, to it, last in the device's order, when deviceName is not empty
+// and it is not linked already. The playlist and device are looked up in the
+// same transaction. A missing playlist is an error wrapping ErrNoPlaylist, and
+// an unknown device one wrapping device.ErrNoDevice. duration is 0, to show
 // the item until a button press, or at least MinDuration.
-func AddItem(ctx context.Context, client *db.Client, name, deviceName string, instanceID int64, duration time.Duration) (db.PlaylistItem, string, error) {
+func AddItem(ctx context.Context, client *db.Client, ref Ref, deviceName string, instanceID int64, duration time.Duration) (db.PlaylistItem, error) {
 	if err := validDuration(duration); err != nil {
-		return db.PlaylistItem{}, "", err
-	}
-	if name == "" && deviceName == "" {
-		return db.PlaylistItem{}, "", fmt.Errorf("%w: give a playlist name or a device", errkind.ErrInvalid)
-	}
-	if name != "" {
-		var err error
-		if name, err = CleanName(name); err != nil {
-			return db.PlaylistItem{}, "", err
-		}
+		return db.PlaylistItem{}, err
 	}
 	var item db.PlaylistItem
 	err := client.InTx(ctx, func(q *db.Queries) error {
@@ -170,24 +163,15 @@ func AddItem(ctx context.Context, client *db.Client, name, deviceName string, in
 		} else if err != nil {
 			return fmt.Errorf("get instance: %w", err)
 		}
-		var dev db.Device
+		pl, err := ref.resolve(ctx, q)
+		if err != nil {
+			return err
+		}
 		if deviceName != "" {
-			var err error
-			if dev, err = device.FindDevice(ctx, q, deviceName); err != nil {
+			dev, err := device.FindDevice(ctx, q, deviceName)
+			if err != nil {
 				return err
 			}
-		}
-		if name == "" {
-			name = dev.FriendlyID
-		}
-		pl, err := q.GetPlaylistByName(ctx, name)
-		if errors.Is(err, sql.ErrNoRows) {
-			pl, err = q.CreatePlaylist(ctx, name)
-		}
-		if err != nil {
-			return fmt.Errorf("get playlist: %w", err)
-		}
-		if deviceName != "" {
 			if err := q.AppendPlaylistDevice(ctx, db.AppendPlaylistDeviceParams{DeviceID: dev.ID, PlaylistID: pl.ID}); err != nil {
 				return fmt.Errorf("link device: %w", err)
 			}
@@ -210,7 +194,7 @@ func AddItem(ctx context.Context, client *db.Client, name, deviceName string, in
 		}
 		return nil
 	})
-	return item, name, err
+	return item, err
 }
 
 // validDuration refuses an item duration that is neither 0, to show until a
