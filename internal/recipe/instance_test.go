@@ -1129,54 +1129,55 @@ func TestClearDroppedField(t *testing.T) {
 	wantFieldErrors(t, err, map[string]string{"notes": "no such field"})
 }
 
-// TestUpdateInstanceSeen checks that an update with the instance as the page
-// saw it saves, with no key for a rename even when the instance has secrets,
-// that a difference in the name, palette, a plain value or a mark refuses it
-// with ErrInstanceChanged and changes nothing, that the stored JSON's key
-// order does not matter, and that no seen state lets the last write win.
+// TestUpdateInstanceSeen checks that an update with the state the page saw
+// saves, with no key for a rename even when the instance has secrets, that a
+// change since to the name, palette, a plain value or a mark refuses it with
+// ErrInstanceChanged and changes nothing, and that no seen state lets the
+// last write win.
 func TestUpdateInstanceSeen(t *testing.T) {
 	t.Parallel()
 	key := testKey(t, keyA)
 	now := time.Unix(5000, 0)
 	values := map[string]Value{"notes": {One: "a sealed note"}, "tags": {Many: []string{"a", "c"}}, "token": {One: "hunter22"}}
 	marks := map[string]bool{"notes": true}
-	seenOf := func(t *testing.T, inst *db.PluginInstance) InstanceSeen {
+	stateOf := func(t *testing.T, inst *db.PluginInstance) string {
 		t.Helper()
-		fields, _, err := PublicFields(inst, nil)
+		s, err := InstanceState(inst)
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys, err := SecretKeys(inst)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return InstanceSeen{Name: inst.Name, Palette: inst.Palette, Fields: fields, SecretKeys: keys}
+		return s
 	}
 
 	for _, tc := range []struct {
 		name   string
-		change func(s *InstanceSeen)
+		change InstanceUpdate // made after the page loaded
 	}{
-		{"name", func(s *InstanceSeen) { s.Name = "Elsewhere" }},
-		{"palette", func(s *InstanceSeen) { s.Palette = "bw" }},
-		{"a plain value", func(s *InstanceSeen) { s.Fields["city"] = Value{One: "Bern"} }},
-		{"a plain value the page lacked", func(s *InstanceSeen) { delete(s.Fields, "tags") }},
-		{"a plain value the instance lacks", func(s *InstanceSeen) { s.Fields["days"] = Value{One: "3"} }},
-		{"a list's choices", func(s *InstanceSeen) { s.Fields["tags"] = Value{Many: []string{"a"}} }},
-		{"a list as one value", func(s *InstanceSeen) { s.Fields["tags"] = Value{One: "a"} }},
-		{"a mark the instance lacks", func(s *InstanceSeen) { s.SecretKeys = append(s.SecretKeys, "city") }},
-		{"a mark the page lacked", func(s *InstanceSeen) { s.SecretKeys = nil }},
+		{"name", InstanceUpdate{Name: ptr("Elsewhere")}},
+		{"palette", InstanceUpdate{Palette: ptr("bw")}},
+		{"a plain value", InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}},
+		{"a plain value added", InstanceUpdate{Values: map[string]Value{"days": {One: "3"}}}},
+		{"a plain value cleared", InstanceUpdate{Clear: []string{"tags"}}},
+		{"a list's choices", InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{"a"}}}}},
+		{"a mark added", InstanceUpdate{Secret: map[string]bool{"city": true}}},
+		{"a mark removed", InstanceUpdate{Secret: map[string]bool{"notes": false}, Values: map[string]Value{"notes": {One: "a plain note"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			f, before := markFixture(t, key, values, marks)
-			seen := seenOf(t, &before)
-			tc.change(&seen)
-			_, err := UpdateInstance(t.Context(), f.client, nil, f.recipesDir, before.ID, InstanceUpdate{Name: ptr("New"), Seen: &seen}, now)
+			seen := stateOf(t, &before)
+			changed, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, before.ID, tc.change, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stateOf(t, &changed) == seen {
+				t.Fatal("the change left the state as it was")
+			}
+			_, err = UpdateInstance(t.Context(), f.client, nil, f.recipesDir, before.ID, InstanceUpdate{Name: ptr("New"), Seen: &seen}, now)
 			if !errors.Is(err, ErrInstanceChanged) || !errors.Is(err, errkind.ErrConflict) {
 				t.Fatalf("err = %v, want ErrInstanceChanged", err)
 			}
-			if stored, err := f.client.Read.GetInstance(t.Context(), before.ID); err != nil || !reflect.DeepEqual(stored, before) {
+			if stored, err := f.client.Read.GetInstance(t.Context(), before.ID); err != nil || !reflect.DeepEqual(stored, changed) {
 				t.Errorf("a refused update changed the instance: %+v, %v", stored, err)
 			}
 		})
@@ -1185,16 +1186,15 @@ func TestUpdateInstanceSeen(t *testing.T) {
 	t.Run("a match saves, with no key for a rename", func(t *testing.T) {
 		t.Parallel()
 		f, before := markFixture(t, key, values, marks)
-		seen := seenOf(t, &before)
+		seen := stateOf(t, &before)
 		got, err := UpdateInstance(t.Context(), f.client, nil, f.recipesDir, before.ID, InstanceUpdate{Name: ptr("New"), Palette: ptr("bw"), Seen: &seen}, now)
 		if err != nil || got.Name != "New" || got.Palette != "bw" {
 			t.Fatalf("rename: %+v, %v", got, err)
 		}
 		// The page reloaded, and a value change with the key saves too.
-		seen = seenOf(t, &got)
-		got, err = UpdateInstance(t.Context(), f.client, key, f.recipesDir, before.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}, Seen: &seen}, now)
-		if err != nil || !strings.Contains(got.FieldValues, `"city":"Bern"`) {
-			t.Fatalf("value change: %+v, %v", got, err)
+		seen = stateOf(t, &got)
+		if _, err = UpdateInstance(t.Context(), f.client, key, f.recipesDir, before.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}, Seen: &seen}, now); err != nil {
+			t.Fatalf("value change: %v", err)
 		}
 		// The stale page's next save is refused.
 		if _, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, before.ID, InstanceUpdate{Name: ptr("Again"), Seen: &seen}, now); !errors.Is(err, ErrInstanceChanged) {
@@ -1202,20 +1202,19 @@ func TestUpdateInstanceSeen(t *testing.T) {
 		}
 	})
 
-	t.Run("the stored key order does not matter", func(t *testing.T) {
+	t.Run("a secret change leaves the state alone", func(t *testing.T) {
 		t.Parallel()
 		f, before := markFixture(t, key, values, marks)
-		seen := seenOf(t, &before)
-		// The same values, written with the keys in another order.
-		_, err := f.client.Write.UpdateInstance(t.Context(), db.UpdateInstanceParams{
-			ID: before.ID, Name: before.Name, Palette: before.Palette, FieldValues: `{"tags":["a","c"],"city":"Zurich"}`,
-			SecretValues: before.SecretValues, SecretKeys: before.SecretKeys, SettingsAt: before.SettingsAt,
-		})
+		seen := stateOf(t, &before)
+		got, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, before.ID, InstanceUpdate{Values: map[string]Value{"token": {One: "swordfish"}, "notes": {One: "another sealed note"}}}, now)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if bytes.Equal(got.SecretValues, before.SecretValues) || stateOf(t, &got) != seen {
+			t.Errorf("secrets resealed %v, state %s, want %s", !bytes.Equal(got.SecretValues, before.SecretValues), stateOf(t, &got), seen)
+		}
 		if _, err := UpdateInstance(t.Context(), f.client, nil, f.recipesDir, before.ID, InstanceUpdate{Name: ptr("New"), Seen: &seen}, now); err != nil {
-			t.Errorf("same values in another order: %v", err)
+			t.Errorf("save after a secret change: %v", err)
 		}
 	})
 
@@ -1230,4 +1229,41 @@ func TestUpdateInstanceSeen(t *testing.T) {
 			t.Errorf("second write: %+v, %v", got, err)
 		}
 	})
+}
+
+// TestInstanceState checks that the digest does not depend on the stored
+// JSON's key order or the order of the marks, and that its framing keeps
+// different states apart where plain concatenation would not.
+func TestInstanceState(t *testing.T) {
+	t.Parallel()
+	state := func(inst db.PluginInstance) string {
+		t.Helper()
+		s, err := InstanceState(&inst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	marks, reordered := `["a","b"]`, `["b","a"]`
+	base := db.PluginInstance{Name: "ab", Palette: "", FieldValues: `{"city":"Zurich","tags":["a","c"]}`, SecretKeys: marks}
+	same := base
+	same.FieldValues, same.SecretKeys = `{"tags":["a","c"], "city":"Zurich"}`, reordered
+	if state(base) != state(same) {
+		t.Error("key or mark order changed the state")
+	}
+	moved := base
+	moved.Name, moved.Palette = "a", "b"
+	if state(base) == state(moved) {
+		t.Error(`name "ab" with no palette and name "a" with palette "b" have one state`)
+	}
+	asList := base
+	asList.FieldValues = `{"city":["Zurich"],"tags":["a","c"]}`
+	if state(base) == state(asList) {
+		t.Error("a value and a one-element list have one state")
+	}
+	bad := base
+	bad.FieldValues = `{`
+	if _, err := InstanceState(&bad); err == nil {
+		t.Error("undecodable field_values gave a state")
+	}
 }

@@ -2,7 +2,10 @@ package recipe
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,45 +66,55 @@ type InstanceUpdate struct {
 	// is never shown back, so unmarking a field that has one is refused
 	// unless the same update gives it a new value or clears it.
 	Secret map[string]bool
-	// Seen, if not nil, is the instance as the caller saw it. The update is
-	// refused with ErrInstanceChanged if the instance differs from it now.
-	// Nil makes the last write win, as for the API and the command line.
-	Seen *InstanceSeen
-}
-
-// InstanceSeen is an instance's settings as a page showed them: its name,
-// palette, plain field values and secret marks, as PublicFields and
-// SecretKeys return them. UpdateInstance compares it with the instance as it
-// is, so a save from a page that is out of date is refused instead of
-// undoing a change made since. Sealed values are not compared: a page never
-// shows them, and comparing them would need the secrets key, which a rename
-// does not.
-type InstanceSeen struct {
-	Name    string
-	Palette string
-	// Fields are the plain field values by keyname. Nil and empty are the
-	// same.
-	Fields map[string]Value
-	// SecretKeys are the keynames marked secret, in any order.
-	SecretKeys []string
+	// Seen, if not nil, is the InstanceState of the instance as the caller
+	// saw it. The update is refused with ErrInstanceChanged if the instance's
+	// state differs now. Nil makes the last write win, as for the API and
+	// the command line.
+	Seen *string
 }
 
 // ErrInstanceChanged means an instance is not what the caller saw, so its
 // change was refused.
 var ErrInstanceChanged = errkind.New(errkind.ErrConflict, "the instance has changed")
 
-// matches reports whether the instance, with its decoded plain values and
-// marks, is what was seen. The values are compared as values, so the order of
-// keys in the stored JSON does not matter.
-func (s *InstanceSeen) matches(inst *db.PluginInstance, plain map[string]Value, marks map[string]bool) bool {
-	if s.Name != inst.Name || s.Palette != inst.Palette || !maps.EqualFunc(plain, s.Fields, Value.equal) {
-		return false
+// InstanceState returns a digest of what a page shows of an instance: its
+// name, palette, plain field values and marks. A form sends it back as
+// InstanceUpdate.Seen, so a save from a page that is out of date is refused
+// instead of undoing a change made since, without posting every value back.
+// Sealed values are left out: a page never shows them, and reading them
+// would need the secrets key, which a rename does not. The values are
+// digested decoded, in a canonical encoding, so a write that does not change
+// them, such as sealing the secrets again, leaves the digest alone.
+//
+// It is the hex SHA-256 of four parts, each framed by its length as an
+// unsigned varint, so no two different states encode to the same bytes:
+// the name, the palette, the plain values as JSON with sorted keys, and the
+// sorted marks as a JSON array.
+func InstanceState(inst *db.PluginInstance) (string, error) {
+	plain, _, err := decodeFields(inst, nil, false)
+	if err != nil {
+		return "", err
 	}
-	seen := make(map[string]bool, len(s.SecretKeys))
-	for _, k := range s.SecretKeys {
-		seen[k] = true
+	marks, err := SecretKeys(inst)
+	if err != nil {
+		return "", err
 	}
-	return maps.Equal(seen, marks)
+	// encoding/json writes a map's keys sorted, and Value encodes the same
+	// way every time, so equal values give equal bytes.
+	values, err := json.Marshal(plain)
+	if err != nil {
+		return "", fmt.Errorf("encode fields: %w", err)
+	}
+	marked, err := json.Marshal(marks)
+	if err != nil {
+		return "", fmt.Errorf("encode secret marks: %w", err)
+	}
+	h := sha256.New()
+	for _, part := range [][]byte{[]byte(inst.Name), []byte(inst.Palette), values, marked} {
+		h.Write(binary.AppendUvarint(nil, uint64(len(part))))
+		h.Write(part)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // readFields returns the custom fields of the recipe with the given ID. It
@@ -236,8 +249,8 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 // its renders stale: moving a value between stores does not change what a
 // build gets.
 //
-// When u.Seen is set, the instance is compared with it first, inside the
-// transaction, which needs no key.
+// When u.Seen is set, the instance's InstanceState is compared with it
+// first, inside the transaction, which needs no key.
 //
 // It returns ErrNoInstance for an unknown ID, an error wrapping
 // ErrInstanceChanged when the instance is not what u.Seen says,
@@ -286,11 +299,11 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 			return err
 		}
 		if u.Seen != nil {
-			seenPlain, _, err := decodeFields(&cur, nil, false)
+			state, err := InstanceState(&cur)
 			if err != nil {
 				return err
 			}
-			if !u.Seen.matches(&cur, seenPlain, curMarks) {
+			if state != *u.Seen {
 				return fmt.Errorf("%w: instance %d", ErrInstanceChanged, id)
 			}
 		}
