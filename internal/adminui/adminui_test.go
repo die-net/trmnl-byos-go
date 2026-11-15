@@ -2,6 +2,8 @@ package adminui
 
 import (
 	"crypto/tls"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,11 +12,24 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/argon2"
+
 	"github.com/die-net/trmnl-byos-go/internal/adminauth"
 	"github.com/die-net/trmnl-byos-go/internal/db"
 )
 
 const testPassword = "correct horse battery"
+
+// cheapHash returns password as an argon2id PHC string at 64 KiB and one
+// pass. adminauth.SetPassword always hashes at the production cost, which
+// would make each test spend most of its time hashing. A login checks a
+// password at the cost the stored hash names, so this keeps logins cheap too.
+func cheapHash(password string) string {
+	salt := []byte("test salt, fixed")
+	key := argon2.IDKey([]byte(password), salt, 1, 64, 1, 32)
+	enc := base64.RawStdEncoding
+	return fmt.Sprintf("$argon2id$v=%d$m=64,t=1,p=1$%s$%s", argon2.Version, enc.EncodeToString(salt), enc.EncodeToString(key))
+}
 
 // testZone is the zone the tests show times in, which no machine runs in.
 var testZone = time.FixedZone("TST", 5*3600+1800)
@@ -40,7 +55,9 @@ func newTestUI(t *testing.T, cfg Config, setPassword bool) *testUI {
 	tu.srv.zone = testZone
 	tu.srv.Register(tu.mux)
 	if setPassword {
-		if err := adminauth.SetPassword(t.Context(), client, testPassword, tu.now); err != nil {
+		// The setting adminauth keeps the hash in.
+		err := client.Write.SetSetting(t.Context(), db.SetSettingParams{Key: "admin_password_hash", Value: cheapHash(testPassword), UpdatedAt: tu.now.Unix()})
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
