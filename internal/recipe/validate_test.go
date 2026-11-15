@@ -168,6 +168,32 @@ func TestCheckValuesNormalizes(t *testing.T) {
 	}
 }
 
+// TestOptionsSharingAValue checks that a multi-select whose options share a
+// value, as Red and red do, or Metric: m and Meters: m, stores the value
+// once, in the order of its first option, and still refuses it chosen twice.
+func TestOptionsSharingAValue(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		options []Option
+		chosen  []string
+		want    []string
+	}{
+		{"labels that lowercase alike", []Option{{"Blue", "blue"}, {"Red", "red"}, {"red", "red"}}, []string{"red", "blue"}, []string{"blue", "red"}},
+		{"two labels with one value", []Option{{"Metric", "m"}, {"Meters", "m"}, {"Imperial", "i"}}, []string{"i", "m"}, []string{"m", "i"}},
+	} {
+		fields := []Field{{Keyname: "multi", Type: "select", Multiple: true, Optional: true, Options: tc.options}}
+		got, err := checkPasswords(fields, map[string]Value{"multi": {Many: tc.chosen}}, false)
+		if err != nil || !slices.Equal(got["multi"].Many, tc.want) {
+			t.Errorf("%s: got %v, %v; want %v", tc.name, got["multi"], err, tc.want)
+		}
+		twice := []string{tc.chosen[0], tc.chosen[0]}
+		if _, err := checkPasswords(fields, map[string]Value{"multi": {Many: twice}}, false); err == nil || !strings.Contains(err.Error(), "chooses an option twice") {
+			t.Errorf("%s: a value chosen twice: %v", tc.name, err)
+		}
+	}
+}
+
 // TestMessagesDoNotEchoValues checks that no message of a bad value repeats
 // the value, since one may be a secret put in the wrong field.
 func TestMessagesDoNotEchoValues(t *testing.T) {
