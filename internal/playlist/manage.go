@@ -204,15 +204,11 @@ func renumberLinks(ctx context.Context, q *db.Queries, deviceID, moved, from, to
 	return nil
 }
 
-// LinkDevice links a device, named by friendly ID or MAC, to a playlist, last in the device's order, if it
-// is not linked, and then, if priority is not nil, moves the link to that
-// index in the device's order, which shifts the links between its old and new
-// place by one. A device that is linked already and a nil priority leave
-// everything as it is. It returns an error wrapping ErrNoPlaylist or
-// device.ErrNoDevice for a name that matches nothing, and one wrapping
-// errkind.ErrInvalid if priority is not in 0 to n-1 for the n links the
-// device has once this one is added, in which case no link is made.
-func LinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName string, priority *int64) error {
+// LinkDevice links a device, named by friendly ID or MAC, to a playlist, last
+// in the device's order. A device that is linked already stays where it is.
+// It returns an error wrapping ErrNoPlaylist or device.ErrNoDevice for a name
+// that matches nothing. MoveLink changes a link's place.
+func LinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName string) error {
 	return client.InTx(ctx, func(q *db.Queries) error {
 		pl, err := ref.resolve(ctx, q)
 		if err != nil {
@@ -222,29 +218,46 @@ func LinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName stri
 		if err != nil {
 			return err
 		}
-		playlistID, deviceID := pl.ID, dev.ID
-		ids, err := q.ListDevicePlaylistIDs(ctx, deviceID)
+		if err := q.AppendPlaylistDevice(ctx, db.AppendPlaylistDeviceParams{DeviceID: dev.ID, PlaylistID: pl.ID}); err != nil {
+			return fmt.Errorf("link device: %w", err)
+		}
+		return nil
+	})
+}
+
+// MoveLink moves the link between a playlist and a device, named by friendly
+// ID or MAC, to index in the device's playlist order, which shifts the links
+// between its old and new place by one. Index 0 is tried first, and moving to
+// the current index changes nothing. It never makes a link: it returns an
+// error wrapping ErrNotLinked if there is none, ErrNoPlaylist or
+// device.ErrNoDevice for a name that matches nothing, and one wrapping
+// errkind.ErrInvalid if index is not in 0 to n-1 for the n links the device
+// has.
+func MoveLink(ctx context.Context, client *db.Client, ref Ref, deviceName string, index int64) error {
+	return client.InTx(ctx, func(q *db.Queries) error {
+		pl, err := ref.resolve(ctx, q)
+		if err != nil {
+			return err
+		}
+		dev, err := device.FindDevice(ctx, q, deviceName)
+		if err != nil {
+			return err
+		}
+		ids, err := q.ListDevicePlaylistIDs(ctx, dev.ID)
 		if err != nil {
 			return fmt.Errorf("list links: %w", err)
 		}
-		from := slices.Index(ids, playlistID)
-		n := len(ids)
+		from := slices.Index(ids, pl.ID)
 		if from < 0 {
-			n++
+			return fmt.Errorf("%w: playlist %q, device %s", ErrNotLinked, pl.Name, dev.FriendlyID)
 		}
-		if priority != nil && (*priority < 0 || *priority >= int64(n)) {
-			return fmt.Errorf("%w: priority %d is not between 0 and %d", errkind.ErrInvalid, *priority, n-1)
+		if index < 0 || index >= int64(len(ids)) {
+			return fmt.Errorf("%w: %d is not a place in the device's playlist order, which runs from 0 to %d", errkind.ErrInvalid, index, len(ids)-1)
 		}
-		if from < 0 {
-			if err := q.AppendPlaylistDevice(ctx, db.AppendPlaylistDeviceParams{DeviceID: deviceID, PlaylistID: playlistID}); err != nil {
-				return fmt.Errorf("link device: %w", err)
-			}
-			from = len(ids)
-		}
-		if priority == nil || *priority == int64(from) {
+		if index == int64(from) {
 			return nil
 		}
-		return renumberLinks(ctx, q, deviceID, playlistID, int64(from), *priority)
+		return renumberLinks(ctx, q, dev.ID, pl.ID, int64(from), index)
 	})
 }
 

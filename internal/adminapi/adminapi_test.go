@@ -698,10 +698,13 @@ func TestPlaylistCRUD(t *testing.T) {
 		{"delete malformed", "DELETE", "/api/v1/playlists/x", "", 404, "no such playlist"},
 		{"link unknown playlist", "PUT", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
 		{"link unknown device", "PUT", pa + "/devices/ZZZ999", "", 404, "no such device"},
-		{"link priority too big", "PUT", pa + "/devices/" + testFriend, `{"priority": 1}`, 400, "priority 1"},
-		{"link negative priority", "PUT", pa + "/devices/" + testFriend, `{"priority": -1}`, 400, "priority -1"},
-		{"link unknown field", "PUT", pa + "/devices/" + testFriend, `{"order": 1}`, 400, "unknown field"},
-		{"link priority not a number", "PUT", pa + "/devices/" + testFriend, `{"priority": "first"}`, 400, "bad request body"},
+		{"link takes no priority", "PUT", pa + "/devices/" + testFriend, `{"priority": 0}`, 400, "unknown field"},
+		{"move unlinked", "PATCH", pa + "/devices/" + testFriend, `{"priority": 0}`, 404, "not linked"},
+		{"move unknown playlist", "PATCH", "/api/v1/playlists/999/devices/" + testFriend, `{"priority": 0}`, 404, "no such playlist"},
+		{"move unknown device", "PATCH", pa + "/devices/ZZZ999", `{"priority": 0}`, 404, "no such device"},
+		{"move no priority", "PATCH", pa + "/devices/" + testFriend, `{}`, 400, "give a priority"},
+		{"move no body", "PATCH", pa + "/devices/" + testFriend, ``, 400, "bad request body"},
+		{"move priority not a number", "PATCH", pa + "/devices/" + testFriend, `{"priority": "first"}`, 400, "bad request body"},
 		{"unlink not linked", "DELETE", pa + "/devices/" + testFriend, "", 404, "not linked"},
 		{"unlink unknown device", "DELETE", pa + "/devices/ZZZ999", "", 404, "no such device"},
 		{"unlink unknown playlist", "DELETE", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
@@ -723,26 +726,38 @@ func TestPlaylistCRUD(t *testing.T) {
 	}
 	ta.call(t, "PATCH", pa, `{"name": "Early"}`, 200, &got)
 
-	// Link by friendly ID with an empty body, then by MAC with a priority.
+	// A move that is refused makes no link.
+	ta.wantError(t, "PATCH", pa+"/devices/"+testFriend, `{"priority": 0}`, 404, "not linked")
+	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
+	if len(lists[0].Devices)+len(lists[1].Devices) != 0 {
+		t.Errorf("a refused move linked a device: %+v", lists)
+	}
+	// Link by friendly ID and then by MAC, with no body, then move one.
 	ta.call(t, "PUT", pa+"/devices/"+testFriend, "", 200, &got)
 	if len(got.Devices) != 1 || got.Devices[0] != (playlistDeviceJSON{Device: testFriend, Priority: 0}) {
 		t.Errorf("linked %+v", got.Devices)
 	}
-	ta.call(t, "PUT", pb+"/devices/"+testMAC, `{"priority": 0}`, 200, &got)
+	ta.call(t, "PUT", pb+"/devices/"+testMAC, "", 200, &got)
+	if len(got.Devices) != 1 || got.Devices[0].Priority != 1 {
+		t.Errorf("linked last %+v", got.Devices)
+	}
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"priority": 2}`, 400, "2 is not a place in the device's playlist order, which runs from 0 to 1")
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"priority": -1}`, 400, "-1 is not a place")
+	ta.call(t, "PATCH", pb+"/devices/"+testMAC, `{"priority": 0}`, 200, &got)
 	if len(got.Devices) != 1 || got.Devices[0].Priority != 0 {
-		t.Errorf("linked at the front %+v", got.Devices)
+		t.Errorf("moved to the front %+v", got.Devices)
 	}
 	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
 	// Playlists list by name: Early, then Evenings.
 	if lists[0].Devices[0].Priority != 1 || lists[1].Devices[0].Priority != 0 {
 		t.Errorf("priorities after the move: %+v", lists)
 	}
-	// Linking again with no priority leaves it, and with one moves it.
+	// Linking again leaves it, and a move changes it.
 	ta.call(t, "PUT", pa+"/devices/"+testFriend, `{}`, 200, &got)
 	if got.Devices[0].Priority != 1 {
 		t.Errorf("relinked %+v", got.Devices)
 	}
-	ta.call(t, "PUT", pa+"/devices/"+testFriend, `{"priority": 0}`, 200, &got)
+	ta.call(t, "PATCH", pa+"/devices/"+testFriend, `{"priority": 0}`, 200, &got)
 	if got.Devices[0].Priority != 0 {
 		t.Errorf("moved %+v", got.Devices)
 	}
@@ -845,8 +860,8 @@ func TestPatchPlaylists(t *testing.T) {
 		{"bad window end", path(1), `{"hidden": true, "schedule": {"window_end": "9am"}}`, 400, "HH:MM"},
 		{"backwards range", path(1), `{"hidden": true, "schedule": {"starts_at": 20, "ends_at": 10}}`, 400, "starts_at must be before"},
 		{"negative start", path(1), `{"hidden": true, "schedule": {"starts_at": -1}}`, 400, "cannot be negative"},
-		{"position past the end", path(1), `{"hidden": true, "duration_seconds": 1800, "position": 3}`, 400, "position 3"},
-		{"negative position", path(1), `{"hidden": true, "position": -1}`, 400, "position -1"},
+		{"position past the end", path(1), `{"hidden": true, "duration_seconds": 1800, "position": 3}`, 400, "3 is not a place in the playlist, which runs from 0 to 2"},
+		{"negative position", path(1), `{"hidden": true, "position": -1}`, 400, "-1 is not a place in the playlist"},
 		{"too short", path(1), `{"hidden": true, "position": 0, "duration_seconds": 10}`, 400, "under"},
 		{"negative duration", path(1), `{"hidden": true, "duration_seconds": -5}`, 400, "seconds"},
 		{"unknown field", path(1), `{"hidden": true, "visible": true}`, 400, "unknown field"},

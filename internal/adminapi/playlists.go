@@ -301,24 +301,47 @@ func (s *Server) patchPlaylist(w http.ResponseWriter, r *http.Request) (playlist
 	return s.playlistByID(r.Context(), id)
 }
 
-// linkDeviceRequest is the body of a request to link a device to a playlist.
-type linkDeviceRequest struct {
-	// Priority is the playlist's index in the device's order. Left out, a
-	// new link goes last and an existing one stays where it is.
+// moveLinkRequest is the body of a request to move a device's link.
+type moveLinkRequest struct {
+	// Priority is the playlist's index in the device's order, from 0, which
+	// is tried first.
 	Priority *int64 `json:"priority"`
 }
 
+// linkPlaylistDevice links a device last, or leaves an existing link alone.
+// It takes no body, so a stale request that means to move a link cannot make
+// one.
 func (s *Server) linkPlaylistDevice(w http.ResponseWriter, r *http.Request) (playlistJSON, error) {
 	id, err := pathID(r, playlist.ErrNoPlaylist)
 	if err != nil {
 		return playlistJSON{}, err
 	}
-	var req linkDeviceRequest
-	if err := decode(w, r, &req, true); err != nil {
+	var none struct{}
+	if err := decode(w, r, &none, true); err != nil {
 		return playlistJSON{}, err
 	}
 	ctx := r.Context()
-	if err := playlist.LinkDevice(ctx, s.db, playlist.ByID(id), r.PathValue("device"), req.Priority); err != nil {
+	if err := playlist.LinkDevice(ctx, s.db, playlist.ByID(id), r.PathValue("device")); err != nil {
+		return playlistJSON{}, err
+	}
+	return s.playlistByID(ctx, id)
+}
+
+// movePlaylistDevice moves an existing link to a place in the device's order.
+func (s *Server) movePlaylistDevice(w http.ResponseWriter, r *http.Request) (playlistJSON, error) {
+	id, err := pathID(r, playlist.ErrNoPlaylist)
+	if err != nil {
+		return playlistJSON{}, err
+	}
+	var req moveLinkRequest
+	if err := decode(w, r, &req, false); err != nil {
+		return playlistJSON{}, err
+	}
+	if req.Priority == nil {
+		return playlistJSON{}, fmt.Errorf("%w: give a priority", errBadBody)
+	}
+	ctx := r.Context()
+	if err := playlist.MoveLink(ctx, s.db, playlist.ByID(id), r.PathValue("device"), *req.Priority); err != nil {
 		return playlistJSON{}, err
 	}
 	return s.playlistByID(ctx, id)

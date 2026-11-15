@@ -272,7 +272,8 @@ func TestPlaylistManage(t *testing.T) {
 	run("create", "Mornings")
 	run("rename", "Mornings", "Evenings")
 	run("link", "Evenings", "ABC001")
-	run("link", "p", "d8:3b:da:12:34:01", "-priority", "0")
+	run("link", "p", "d8:3b:da:12:34:01")
+	run("order", "p", "ABC001", "0")
 	run("link", "Evenings", "ABC002")
 	devices := func(friendly string) []string {
 		t.Helper()
@@ -291,6 +292,16 @@ func TestPlaylistManage(t *testing.T) {
 	}
 	if got := devices("ABC001"); !slices.Equal(got, []string{"Evenings@1", "p@0"}) {
 		t.Errorf("ABC001 links = %v", got)
+	}
+	// A negative index reaches the command and is refused as out of range, not
+	// read as a flag, and nothing moves.
+	for _, index := range []string{"-1", "2"} {
+		if _, err := runPlaylist(t, dir, "order", "p", "ABC001", index); !errors.Is(err, errkind.ErrInvalid) || !strings.Contains(err.Error(), index+" is not a place in the device's playlist order") {
+			t.Errorf("order %s: %v", index, err)
+		}
+	}
+	if got := devices("ABC001"); !slices.Equal(got, []string{"Evenings@1", "p@0"}) {
+		t.Errorf("ABC001 links after refused moves = %v", got)
 	}
 	run("unlink", "p", "ABC001")
 	if got := devices("ABC001"); !slices.Equal(got, []string{"Evenings@0"}) {
@@ -317,7 +328,10 @@ func TestPlaylistManage(t *testing.T) {
 		{"delete missing", []string{"delete", "nope"}, playlist.ErrNoPlaylist},
 		{"link missing playlist", []string{"link", "nope", "ABC001"}, playlist.ErrNoPlaylist},
 		{"link missing device", []string{"link", "p", "ZZZ999"}, device.ErrNoDevice},
-		{"link bad priority", []string{"link", "p", "ABC001", "-priority", "3"}, errkind.ErrInvalid},
+		{"order not linked", []string{"order", "p", "ABC002", "0"}, playlist.ErrNotLinked},
+		{"order missing device", []string{"order", "p", "ZZZ999", "0"}, device.ErrNoDevice},
+		{"order missing playlist", []string{"order", "nope", "ABC001", "0"}, playlist.ErrNoPlaylist},
+		{"move negative", []string{"move", "1", "-1"}, errkind.ErrInvalid},
 		{"unlink missing device", []string{"unlink", "p", "ZZZ999"}, device.ErrNoDevice},
 		{"unlink missing playlist", []string{"unlink", "nope", "ABC001"}, playlist.ErrNoPlaylist},
 		{"schedule missing playlist", []string{"schedule", "nope", "-days", "mon"}, playlist.ErrNoPlaylist},
