@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -19,6 +21,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
+	"github.com/die-net/trmnl-byos-go/internal/render"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
@@ -134,24 +137,96 @@ func (c *clearFlag) Set(v string) error {
 
 func instances(ctx context.Context, args []string, out io.Writer) error {
 	return subcommand(ctx, "instance", args, out, map[string]func(context.Context, []string, io.Writer) error{
-		"add":    instanceAdd,
-		"list":   instanceList,
-		"set":    instanceSet,
+		"add": func(ctx context.Context, args []string, out io.Writer) error {
+			return instanceAdd(ctx, args, os.Stdin, out)
+		},
+		"list": instanceList,
+		"set": func(ctx context.Context, args []string, out io.Writer) error {
+			return instanceSet(ctx, args, os.Stdin, out)
+		},
 		"remove": instanceRemove,
 	})
 }
 
-func instanceAdd(ctx context.Context, args []string, out io.Writer) error {
+// fileFlag collects repeated name=path flags, each naming a file that holds
+// a field's value.
+type fileFlag []string
+
+func (fileFlag) String() string { return "" }
+
+func (f *fileFlag) Set(v string) error {
+	if name, path, ok := strings.Cut(v, "="); !ok || name == "" || path == "" {
+		return fmt.Errorf("%q is not name=path", v)
+	}
+	*f = append(*f, v)
+	return nil
+}
+
+// addFiles reads each file of the flag into fields, as -field would give it
+// the contents: from stdin for the path "-", which only one may be, and with
+// one trailing newline dropped, since an editor or echo adds one. A value
+// cannot be bigger than a render job takes, so a file is read to that and no
+// further.
+func (f fileFlag) addFiles(fields fieldFlag, stdin io.Reader) error {
+	usedStdin := false
+	for _, v := range f {
+		name, path, _ := strings.Cut(v, "=")
+		if path == "-" {
+			if usedStdin {
+				return errors.New("only one -field-file can read stdin")
+			}
+			usedStdin = true
+		}
+		b, err := readValue(path, stdin)
+		if err != nil {
+			return fmt.Errorf("field %q: %w", name, err)
+		}
+		b = bytes.TrimSuffix(b, []byte("\n"))
+		if err := fields.Set(name + "=" + string(b)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readValue reads a field's value from the file at path, or from stdin for
+// "-". A value cannot be bigger than a render job takes, so it reads no
+// further than that.
+func readValue(path string, stdin io.Reader) ([]byte, error) {
+	r := stdin
+	if path != "-" {
+		file, err := os.Open(path) //nolint:gosec // G304: the path is the command-line argument of the admin running this command, who may give any file they can read, as firmware add's FILE is.
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		r = file
+	}
+	b, err := io.ReadAll(io.LimitReader(r, render.MaxEnvBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(b) > render.MaxEnvBytes {
+		return nil, fmt.Errorf("%s is over the %d KB a value may come to", path, render.MaxEnvBytes/1024)
+	}
+	return b, nil
+}
+
+func instanceAdd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	fs := flag.NewFlagSet("instance add", flag.ExitOnError)
 	data := dataFlag(fs)
 	recipeID := fs.Int64("recipe", 0, "ID of the recipe, from recipe list")
 	name := fs.String("name", "", "name of the instance (default: the recipe's)")
 	palette := fs.String("palette", "", "palette to render with when the device takes it, such as bw (default: the device's)")
-	fields := fieldFlag{}
-	fs.Var(fields, "field", "custom field value as keyname=value; repeat for each field, and for each choice of a multi-select. A password field is stored encrypted with "+secrets.EnvVar)
+	fields, files := fieldFlag{}, fileFlag{}
+	fs.Var(fields, "field", "custom field value as keyname=value; repeat for each field, and for each choice of a multi-select. The value is in the command line, which ps and the shell history show, so give a password with -field-file. A password field is stored encrypted with "+secrets.EnvVar)
+	fs.Var(&files, "field-file", "custom field value read from a file as keyname=path, or from stdin for -, which only one may be; one trailing newline is dropped. Repeat as for -field")
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
 	if *recipeID == 0 || fs.NArg() != 0 {
-		return errors.New("usage: trmnl-byos instance add [-data dir] -recipe ID [-name name] [-palette id] [-field k=v ...]")
+		return errors.New("usage: trmnl-byos instance add [-data dir] -recipe ID [-name name] [-palette id] [-field k=v ...] [-field-file k=path ...]")
+	}
+	if err := files.addFiles(fields, stdin); err != nil {
+		return err
 	}
 	key, err := secrets.FromEnv()
 	if err != nil {
@@ -206,16 +281,18 @@ func instanceList(ctx context.Context, args []string, out io.Writer) error {
 	return tw.Flush()
 }
 
-func instanceSet(ctx context.Context, args []string, out io.Writer) error {
+func instanceSet(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	fs := flag.NewFlagSet("instance set", flag.ExitOnError)
 	data := dataFlag(fs)
 	name := fs.String("name", "", "new name of the instance; empty for the recipe's")
 	palette := fs.String("palette", "", "new palette to render with, such as bw; empty for the device's")
 	fields, cleared := fieldFlag{}, clearFlag{}
-	fs.Var(fields, "field", "custom field value to set as keyname=value; repeat for each field, and for each choice of a multi-select. A password field is stored encrypted with "+secrets.EnvVar)
-	fs.Var(&cleared, "clear", "name of a custom field to clear; repeat for each. A field left out is kept")
+	files := fileFlag{}
+	fs.Var(fields, "field", "custom field value as keyname=value; repeat for each field, and for each choice of a multi-select. The value is in the command line, which ps and the shell history show, so give a password with -field-file. A password field is stored encrypted with "+secrets.EnvVar)
+	fs.Var(&files, "field-file", "custom field value read from a file as keyname=path, or from stdin for -, which only one may be; one trailing newline is dropped. Repeat as for -field")
+	fs.Var(&cleared, "clear", "name of a custom field to clear, a password field included; repeat for each. A field left out is kept, and so is a password given an empty value")
 	rest := parseInterspersed(fs, args)
-	usage := errors.New("usage: trmnl-byos instance set [-data dir] <instance ID> [-name name] [-palette id] [-field k=v ...] [-clear k ...]")
+	usage := errors.New("usage: trmnl-byos instance set [-data dir] <instance ID> [-name name] [-palette id] [-field k=v ...] [-field-file k=path ...] [-clear k ...]")
 	if len(rest) != 1 {
 		return usage
 	}
@@ -232,16 +309,13 @@ func instanceSet(ctx context.Context, args []string, out io.Writer) error {
 			u.Palette = palette
 		}
 	})
-	for _, k := range cleared {
-		if _, ok := fields[k]; ok {
-			return fmt.Errorf("field %q is both set and cleared", k)
-		}
-		fields[k] = recipe.Value{}
+	if err := files.addFiles(fields, stdin); err != nil {
+		return err
 	}
-	if u.Name == nil && u.Palette == nil && len(fields) == 0 {
+	if u.Name == nil && u.Palette == nil && len(fields) == 0 && len(cleared) == 0 {
 		return usage
 	}
-	u.Values = fields
+	u.Values, u.Clear = fields, cleared
 	key, err := secrets.FromEnv()
 	if err != nil {
 		return err

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
@@ -59,23 +60,36 @@ func instanceDir(t *testing.T) string {
 	return dir
 }
 
-// storedFields returns the plain field values of instance 1.
-func storedFields(t *testing.T, dir string) (name, palette string, fields map[string]recipe.Value, settingsAt int64) {
+// storedInstance returns instance 1 and its plain field values.
+func storedInstance(t *testing.T, dir string) (inst db.PluginInstance, fields map[string]recipe.Value) {
 	t.Helper()
 	client, err := openDB(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	inst, err := client.Read.GetInstance(t.Context(), 1)
-	if err != nil {
+	if inst, err = client.Read.GetInstance(t.Context(), 1); err != nil {
 		t.Fatal(err)
 	}
-	fields, _, err = recipe.PublicFields(&inst, nil)
-	if err != nil {
+	if fields, _, err = recipe.PublicFields(&inst, nil); err != nil {
 		t.Fatal(err)
 	}
+	return inst, fields
+}
+
+// storedFields returns the name, palette, plain field values and settings_at
+// of instance 1.
+func storedFields(t *testing.T, dir string) (name, palette string, fields map[string]recipe.Value, settingsAt int64) {
+	t.Helper()
+	inst, fields := storedInstance(t, dir)
 	return inst.Name, inst.Palette, fields, inst.SettingsAt
+}
+
+// storedValues returns the plain field values of instance 1.
+func storedValues(t *testing.T, dir string) map[string]recipe.Value {
+	t.Helper()
+	_, fields := storedInstance(t, dir)
+	return fields
 }
 
 func TestInstanceAddAndSet(t *testing.T) {
@@ -108,7 +122,8 @@ func TestInstanceAddAndSet(t *testing.T) {
 		{"an empty palette is the device's", []string{"1", "-palette", ""}, "Away", "", map[string]recipe.Value{"city": {One: "Bern"}, "days": {One: "3"}}, false},
 		{"an empty name is the recipe's", []string{"1", "-name", ""}, "Weather", "", map[string]recipe.Value{"city": {One: "Bern"}, "days": {One: "3"}}, false},
 	} {
-		_, _, _, before := storedFields(t, dir)
+		current, _ := storedInstance(t, dir)
+		before := current.SettingsAt
 		out, err := runInstance(t, dir, append([]string{"set"}, tc.args...)...)
 		if err != nil || !strings.Contains(out, "Updated instance 1") {
 			t.Errorf("%s: %q, %v", tc.name, out, err)
@@ -185,7 +200,11 @@ func TestInstanceSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(secrets.EnvVar, "")
-	if _, err := runInstance(t, dir, "set", "1", "-field", "city=Bern"); err != nil {
+	if _, err := runInstance(t, dir, "set", "1", "-name", "Home"); err != nil {
+		t.Errorf("a rename with no key: %v", err)
+	}
+	// The sealed secrets are opened to change any field.
+	if _, err := runInstance(t, dir, "set", "1", "-field", "city=Bern"); !errors.Is(err, secrets.ErrNoKey) {
 		t.Errorf("a plain change with no key: %v", err)
 	}
 	if _, err := runInstance(t, dir, "set", "1", "-clear", "token"); !errors.Is(err, secrets.ErrNoKey) {
@@ -198,5 +217,98 @@ func TestInstanceSecret(t *testing.T) {
 	out, err := runInstance(t, dir, "list")
 	if err != nil || strings.Contains(out, "hunter2") {
 		t.Errorf("list: %q, %v", out, err)
+	}
+}
+
+// TestInstanceFieldFile checks that -field-file reads a value from a file or
+// from stdin, drops one trailing newline and no more, repeats into a list,
+// and refuses a missing file, a second stdin, and a file that is too big.
+func TestInstanceFieldFile(t *testing.T) {
+	t.Parallel()
+	dir := instanceDir(t)
+	files := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		path := filepath.Join(files, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	city := write("city", "Zurich\n\n")
+	tag := write("tag", "b")
+	var out bytes.Buffer
+	err := instanceAdd(t.Context(), []string{"-data", dir, "-recipe", "1", "-field-file", "city=" + city, "-field", "tags=a", "-field-file", "tags=" + tag}, strings.NewReader(""), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := storedValues(t, dir)
+	want := map[string]recipe.Value{"city": {One: "Zurich\n"}, "tags": {Many: []string{"a", "b"}}}
+	if !valuesEqual(fields, want) {
+		t.Errorf("after a file: %v, want %v", fields, want)
+	}
+
+	// From stdin, with a CRLF-free line, on set.
+	err = instanceSet(t.Context(), []string{"-data", dir, "1", "-field-file", "city=-"}, strings.NewReader("Bern\n"), &out)
+	if fields = storedValues(t, dir); err != nil || fields["city"].One != "Bern" {
+		t.Errorf("from stdin: %v, %v", fields, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		stdin string
+		want  string
+	}{
+		{"missing file", []string{"1", "-field-file", "city=" + filepath.Join(files, "nope")}, "", "no such file"},
+		{"stdin twice", []string{"1", "-field-file", "city=-", "-field-file", "tags=-"}, "x", "only one -field-file can read stdin"},
+		{"too big", []string{"1", "-field-file", "city=" + write("big", strings.Repeat("x", 70000))}, "", "over the 63 KB"},
+	} {
+		err := instanceSet(t.Context(), append([]string{"-data", dir}, tc.args...), strings.NewReader(tc.stdin), &out)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want one with %q", tc.name, err, tc.want)
+		}
+	}
+	if fields = storedValues(t, dir); fields["city"].One != "Bern" {
+		t.Errorf("a refused set changed the instance: %v", fields)
+	}
+}
+
+// TestInstanceClearSecret checks that -clear removes a secret and that an
+// empty -field for a password keeps it.
+func TestInstanceClearSecret(t *testing.T) {
+	dir := instanceDir(t)
+	t.Setenv(secrets.EnvVar, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	if _, err := runInstance(t, dir, "add", "-recipe", "1", "-field", "city=Zurich", "-field", "token=hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	names := func() []string {
+		t.Helper()
+		client, err := openDB(t.Context(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		inst, err := client.Read.GetInstance(t.Context(), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := secrets.FromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, names, err := recipe.PublicFields(&inst, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return names
+	}
+	if _, err := runInstance(t, dir, "set", "1", "-field", "token="); err != nil || len(names()) != 1 {
+		t.Errorf("an empty password: %v, %v", err, names())
+	}
+	if _, err := runInstance(t, dir, "set", "1", "-field", "token=x", "-clear", "token"); err == nil || !strings.Contains(err.Error(), "token: is both set and cleared") {
+		t.Errorf("set and cleared: %v", err)
+	}
+	if _, err := runInstance(t, dir, "set", "1", "-clear", "token"); err != nil || len(names()) != 0 {
+		t.Errorf("clear: %v, %v", err, names())
 	}
 }

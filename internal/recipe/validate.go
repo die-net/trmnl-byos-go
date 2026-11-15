@@ -82,6 +82,8 @@ func fieldsByName(fields []Field) map[string]*Field {
 
 // check returns the value, a single string for a multi-select as a list,
 // and why it is not acceptable for the field, "" if it is. v is not empty.
+// A message never repeats the value, which may be a secret put in the wrong
+// field.
 func (f *Field) check(v Value) (Value, string) {
 	input := f.Input()
 	if input == "none" {
@@ -94,14 +96,18 @@ func (f *Field) check(v Value) (Value, string) {
 	if multi && !v.IsList() {
 		v = Value{Many: []string{v.One}}
 	}
+	// A NUL byte cannot pass through the environment a build gets values in.
+	if slices.ContainsFunc(v.items(), func(s string) bool { return strings.ContainsRune(s, 0) }) {
+		return v, "contains a NUL byte"
+	}
 	switch input {
 	case "select":
 		for i, s := range v.items() {
 			if slices.Contains(v.items()[:i], s) {
-				return v, fmt.Sprintf("%q is chosen twice", s)
+				return v, "chooses an option twice"
 			}
 			if !slices.ContainsFunc(f.Options, func(o Option) bool { return o.Value == s }) {
-				return v, fmt.Sprintf("%q is not one of the options", s)
+				return v, "is not one of the options"
 			}
 		}
 	case "number":

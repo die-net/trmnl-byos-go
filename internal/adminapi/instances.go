@@ -119,8 +119,12 @@ type patchInstanceRequest struct {
 	// Palette is the new palette, "" for the device's.
 	Palette *string `json:"palette"`
 	// Fields are the custom field values to change by keyname. A key whose
-	// value is "" or [] clears the field, and a key left out is kept.
+	// value is "" or [] clears a plain field, and a password field's is
+	// ignored, so the secret is kept. A key left out is kept.
 	Fields map[string]recipe.Value `json:"fields"`
+	// Clear is the keynames of the fields to clear, which is how a secret
+	// is cleared.
+	Clear []string `json:"clear"`
 }
 
 func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instanceJSON, error) {
@@ -137,6 +141,7 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instance
 		Name:    req.Name,
 		Palette: req.Palette,
 		Values:  req.Fields,
+		Clear:   req.Clear,
 	}, s.now())
 	if err != nil {
 		return instanceJSON{}, err

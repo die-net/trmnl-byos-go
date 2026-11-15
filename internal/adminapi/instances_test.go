@@ -16,7 +16,7 @@ func TestInstanceFieldErrors(t *testing.T) {
 	ta.addRecipe(t)
 	var body errorBody
 	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": 1, "fields": {"days": "0", "tags": ["z"], "nope": "x", "k": "`+testSecret+`"}}`, 400, &body)
-	want := map[string]string{"days": "must be at least 1", "tags": `"z" is not one of the options`, "nope": "no such field"}
+	want := map[string]string{"days": "must be at least 1", "tags": "is not one of the options", "nope": "no such field"}
 	if len(body.Fields) != len(want) {
 		t.Errorf("fields = %v, want %v", body.Fields, want)
 	}
@@ -64,8 +64,15 @@ func TestPatchInstance(t *testing.T) {
 	got = instanceJSON{}
 	w = ta.call(t, "PATCH", path, `{"fields": {"city": "", "tags": [], "apikey": ""}}`, 200, &got)
 	bodies = append(bodies, w.Body.String())
-	if got.Name != "Away" || len(got.Fields) != 0 || strings.Join(got.SecretFields, ",") != "zkey" {
+	// An empty password is kept, and Clear is how a secret goes.
+	if got.Name != "Away" || len(got.Fields) != 0 || strings.Join(got.SecretFields, ",") != "apikey,zkey" {
 		t.Errorf("after clearing: %+v", got)
+	}
+	got = instanceJSON{}
+	w = ta.call(t, "PATCH", path, `{"clear": ["apikey", "tags"]}`, 200, &got)
+	bodies = append(bodies, w.Body.String())
+	if strings.Join(got.SecretFields, ",") != "zkey" {
+		t.Errorf("after Clear: %+v", got)
 	}
 	again := instanceJSON{}
 	bodies = append(bodies, ta.call(t, "GET", path, "", 200, &again).Body.String())
@@ -87,6 +94,8 @@ func TestPatchInstance(t *testing.T) {
 		contains   string
 	}{
 		{"bad value", `{"name": "x", "fields": {"days": "zero"}}`, 400, "days: must be a number"},
+		{"set and cleared", `{"fields": {"city": "x"}, "clear": ["city"]}`, 400, "city: is both set and cleared"},
+		{"clear an unknown field", `{"clear": ["nope"]}`, 400, "nope: no such field"},
 		{"unknown palette", `{"name": "x", "palette": "neon"}`, 400, "unknown palette"},
 		{"secrets is not a field", `{"secrets": {"k": "` + testSecret + `"}}`, 400, "unknown field"},
 		{"a number for a value", `{"fields": {"city": 7}}`, 400, "string or an array of strings"},
