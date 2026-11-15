@@ -69,19 +69,31 @@ func (s *Server) getInstance(_ http.ResponseWriter, r *http.Request) (instanceJS
 		return instanceJSON{}, err
 	}
 	ctx := r.Context()
-	inst, err := s.db.Read.GetInstance(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return instanceJSON{}, fmt.Errorf("%w: %d", recipe.ErrNoInstance, id)
-	}
-	if err != nil {
-		return instanceJSON{}, fmt.Errorf("get instance: %w", err)
-	}
-	return s.instanceWithRecipe(ctx, &inst)
+	// The instance and its recipe's name are read in one snapshot.
+	var out instanceJSON
+	err = s.db.ReadTx(ctx, func(q *db.Queries) error {
+		inst, err := q.GetInstance(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %d", recipe.ErrNoInstance, id)
+		}
+		if err != nil {
+			return fmt.Errorf("get instance: %w", err)
+		}
+		out, err = s.instanceWithRecipe(ctx, q, &inst)
+		return err
+	})
+	return out, err
 }
 
-// instanceWithRecipe returns an instance with its recipe's name.
-func (s *Server) instanceWithRecipe(ctx context.Context, inst *db.PluginInstance) (instanceJSON, error) {
-	rec, err := s.db.Read.GetRecipe(ctx, inst.RecipeID)
+// instanceWithRecipe returns an instance with its recipe's name, read
+// through q. A recipe that is gone took the instance with it, as after a
+// delete that came in just after a write the caller made, so that wraps
+// recipe.ErrNoInstance.
+func (s *Server) instanceWithRecipe(ctx context.Context, q *db.Queries, inst *db.PluginInstance) (instanceJSON, error) {
+	rec, err := q.GetRecipe(ctx, inst.RecipeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return instanceJSON{}, fmt.Errorf("%w: %d", recipe.ErrNoInstance, inst.ID)
+	}
 	if err != nil {
 		return instanceJSON{}, fmt.Errorf("get recipe: %w", err)
 	}
@@ -121,7 +133,7 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) (instanc
 	if err != nil {
 		return instanceJSON{}, err
 	}
-	return s.instanceWithRecipe(ctx, &inst)
+	return s.instanceWithRecipe(ctx, s.db.Read, &inst)
 }
 
 // patchInstanceRequest is the body of an instance update request. A field
@@ -165,7 +177,7 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instance
 	if err != nil {
 		return instanceJSON{}, err
 	}
-	return s.instanceWithRecipe(ctx, &inst)
+	return s.instanceWithRecipe(ctx, s.db.Read, &inst)
 }
 
 func (s *Server) deleteInstance(r *http.Request) error {

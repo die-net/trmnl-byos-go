@@ -2,6 +2,8 @@ package adminapi
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -51,18 +53,30 @@ func (s *Server) listDevices(_ http.ResponseWriter, r *http.Request) ([]deviceJS
 	return out, nil
 }
 
+// getDevice finds the device and reads its status in one snapshot, so a
+// device deleted between the two reads is not found rather than an error.
 func (s *Server) getDevice(_ http.ResponseWriter, r *http.Request) (deviceJSON, error) {
 	ctx := r.Context()
-	dev, err := device.FindDevice(ctx, s.db.Read, r.PathValue("id"))
-	if err != nil {
-		return deviceJSON{}, err
-	}
-	return s.deviceStatus(ctx, dev.ID)
+	var out deviceJSON
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		dev, err := device.FindDevice(ctx, q, r.PathValue("id"))
+		if err != nil {
+			return err
+		}
+		out, err = deviceStatus(ctx, q, dev.ID)
+		return err
+	})
+	return out, err
 }
 
-// deviceStatus returns a device and what it last reported.
-func (s *Server) deviceStatus(ctx context.Context, id int64) (deviceJSON, error) {
-	x, err := s.db.Read.GetDeviceStatus(ctx, id)
+// deviceStatus returns a device and what it last reported, read through q.
+// A device that is gone, as after a delete that came in just after a write
+// the caller made, wraps device.ErrNoDevice.
+func deviceStatus(ctx context.Context, q *db.Queries, id int64) (deviceJSON, error) {
+	x, err := q.GetDeviceStatus(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return deviceJSON{}, fmt.Errorf("%w: %d", device.ErrNoDevice, id)
+	}
 	if err != nil {
 		return deviceJSON{}, fmt.Errorf("get device status: %w", err)
 	}

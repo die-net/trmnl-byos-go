@@ -768,8 +768,9 @@ type DeviceOffer struct {
 // offered is not offered on such a wake. The listing never changes what is
 // offered. It takes one query for the build, one for the devices, one for
 // the active builds with their offer counts, and one stat of each build's
-// file, however many devices there are. It wraps ErrNoFirmware for an
-// unknown build.
+// file, however many devices there are. Its queries agree only if q reads
+// one snapshot, such as the Queries of a db.Client.ReadTx. It wraps
+// ErrNoFirmware for an unknown build.
 func DeviceOffers(ctx context.Context, q *db.Queries, dir string, firmwareID int64) ([]DeviceOffer, error) {
 	row, err := q.GetFirmwareEntry(ctx, firmwareID)
 	if errors.Is(err, sql.ErrNoRows) {
