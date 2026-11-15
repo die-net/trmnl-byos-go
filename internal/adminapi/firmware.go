@@ -67,14 +67,15 @@ func (s *Server) listFirmware(_ http.ResponseWriter, r *http.Request) ([]firmwar
 }
 
 // addFirmware adds the firmware file in the request body, for the model in
-// the query and, if it is given, the version.
+// the query and, if it is given, the version. A body that is cut off is the
+// client's error, not the server's.
 func (s *Server) addFirmware(w http.ResponseWriter, r *http.Request) (firmwareJSON, error) {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/octet-stream" {
 		return firmwareJSON{}, &statusError{status: http.StatusUnsupportedMediaType, msg: "send the firmware as a raw file with Content-Type application/octet-stream"}
 	}
 	upload.AllowSlow(w)
 	q := r.URL.Query()
-	body := http.MaxBytesReader(w, r.Body, firmware.MaxUploadBytes())
+	body := upload.Reader(http.MaxBytesReader(w, r.Body, firmware.MaxUploadBytes()))
 	fw, err := firmware.Add(r.Context(), s.db, s.cfg.FirmwareDir, q.Get("model"), q.Get("version"), body, s.now())
 	if err != nil {
 		return firmwareJSON{}, err

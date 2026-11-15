@@ -192,6 +192,9 @@ type pageData struct {
 	// says an upload may be, such as "8 MB".
 	Recipes     []recipeView
 	UploadLimit string
+	// UploadError is why an upload was refused, shown in the upload panel,
+	// or "".
+	UploadError string
 	// RecipeEdit is the recipe its page shows.
 	RecipeEdit *recipeEdit
 	// InstanceDelete is the instance removal the confirm page asks about.

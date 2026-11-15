@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/apitoken"
@@ -423,14 +424,16 @@ func TestRecipes(t *testing.T) {
 		name, contentType string
 		body              []byte
 		status            int
+		// contains is what the error says, when it says more than the status.
+		contains string
 	}{
-		{"not a zip", "application/zip", []byte("plain text"), 400},
-		{"escaping path", "application/zip", zipBytes(t, map[string]string{"settings.yml": settingsYML, "full.liquid": "x", "../escape": "x"}), 400},
-		{"no full.liquid", "application/zip", zipBytes(t, map[string]string{"settings.yml": settingsYML}), 400},
-		{"over the limit", "application/zip", bytes.Repeat([]byte{'x'}, recipe.MaxRecipeBytes+1), 413},
-		{"wrong content type", "application/json", good, 415},
-		{"no content type", "", good, 415},
-		{"zip with parameters", "application/zip; charset=binary", good, 201},
+		{"not a zip", "application/zip", []byte("plain text"), 400, "the file is not a zip archive"},
+		{"escaping path", "application/zip", zipBytes(t, map[string]string{"settings.yml": settingsYML, "full.liquid": "x", "../escape": "x"}), 400, "the zip has a file name that leaves its directory"},
+		{"no full.liquid", "application/zip", zipBytes(t, map[string]string{"settings.yml": settingsYML}), 400, "the recipe has no full.liquid"},
+		{"over the limit", "application/zip", bytes.Repeat([]byte{'x'}, recipe.MaxRecipeBytes+1), 413, ""},
+		{"wrong content type", "application/json", good, 415, ""},
+		{"no content type", "", good, 415, ""},
+		{"zip with parameters", "application/zip; charset=binary", good, 201, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -443,6 +446,9 @@ func TestRecipes(t *testing.T) {
 			w := ta.do(t, "POST", "/api/v1/recipes", bytes.NewReader(tc.body), "Content-Type", tc.contentType)
 			if w.Code != tc.status {
 				t.Fatalf("status %d, want %d: %s", w.Code, tc.status, w.Body)
+			}
+			if !strings.Contains(w.Body.String(), tc.contains) {
+				t.Errorf("body %s, want it to contain %q", w.Body, tc.contains)
 			}
 			after, err := ta.db.Read.ListRecipes(t.Context())
 			if err != nil {
@@ -467,6 +473,26 @@ func TestRecipes(t *testing.T) {
 				t.Error("the zip escaped the recipes directory")
 			}
 		})
+	}
+}
+
+// TestRecipeUploadCutOff checks that a client that drops the connection
+// part way through a recipe upload gets a client error, not a server one,
+// and that no row or file is left.
+func TestRecipeUploadCutOff(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, false)
+	z := zipBytes(t, map[string]string{"settings.yml": settingsYML, "full.liquid": "hi"})
+	body := io.MultiReader(bytes.NewReader(z[:len(z)/2]), iotest.ErrReader(io.ErrUnexpectedEOF))
+	w := ta.do(t, "POST", "/api/v1/recipes", body, "Content-Type", "application/zip")
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "the upload was cut off") {
+		t.Fatalf("status %d: %s; want 400 saying the upload was cut off", w.Code, w.Body)
+	}
+	if rows, err := ta.db.Read.ListRecipes(t.Context()); err != nil || len(rows) != 0 {
+		t.Errorf("recipes = %v, %v; want none", rows, err)
+	}
+	if entries, err := os.ReadDir(ta.recipes); err != nil || len(entries) != 0 {
+		t.Errorf("recipes dir = %v, %v; want it empty", entries, err)
 	}
 }
 

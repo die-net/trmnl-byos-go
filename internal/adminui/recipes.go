@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,9 @@ import (
 
 // uploadField is the name of the form field that holds the recipe zip.
 const uploadField = "recipe"
+
+// chooseFile is what an upload with no file is told.
+const chooseFile = "Choose a recipe zip file to upload."
 
 // devicePalette is what an instance that asks for no palette shows.
 const devicePalette = "Device's palette"
@@ -50,9 +54,12 @@ type recipeInstanceView struct {
 
 // recipeView is a recipe as the list shows it.
 type recipeView struct {
-	ID     int64
-	Name   string
-	Source string
+	ID   int64
+	Name string
+	// Source is where the recipe came from, in a few words: "Uploaded", or
+	// the last element of the path it was installed from. SourceTitle is
+	// the full path for a tooltip, or "" for an upload, which has none.
+	Source, SourceTitle string
 	// Refresh is how often the recipe is rendered, in words.
 	Refresh string
 	// Installed is the day the recipe was installed, in the server's zone.
@@ -62,14 +69,14 @@ type recipeView struct {
 	Instances []recipeInstanceView
 }
 
-// paletteNames maps each palette ID of the registry to its name.
-func paletteNames() map[string]string {
-	pals := profile.Palettes()
-	names := make(map[string]string, len(pals))
-	for _, p := range pals {
-		names[p.ID] = p.Name
+// sourceText returns how the recipe list shows a recipe's stored source,
+// and the text for a tooltip. A recorded path can be long, so the list
+// shows its last element, and the tooltip the whole path.
+func sourceText(source string) (shown, title string) {
+	if source == recipe.UploadSource {
+		return "Uploaded", ""
 	}
-	return names
+	return filepath.Base(source), source
 }
 
 // recipeViews describes every recipe with its instances and the playlists
@@ -91,8 +98,9 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 	byID := make(map[int64]*recipeView, len(recipes))
 	for i := range recipes {
 		r := &recipes[i]
+		shown, title := sourceText(r.Source)
 		out[i] = recipeView{
-			ID: r.ID, Name: r.Name, Source: r.Source, Refresh: "Every " + spanText(r.RefreshInterval),
+			ID: r.ID, Name: r.Name, Source: shown, SourceTitle: title, Refresh: "Every " + spanText(r.RefreshInterval),
 			Installed: time.Unix(r.InstalledAt, 0).In(s.zone).Format(dayLayout),
 			Href:      "/recipes/" + strconv.FormatInt(r.ID, 10),
 		}
@@ -104,7 +112,6 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 	for _, p := range inPlaylists {
 		shown[p.InstanceID] = append(shown[p.InstanceID], playlistLink(p.PlaylistID, p.PlaylistName))
 	}
-	names := paletteNames()
 	for i := range insts {
 		inst := &insts[i].PluginInstance
 		rv := byID[inst.RecipeID]
@@ -114,7 +121,8 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 		v := recipeInstanceView{ID: inst.ID, Name: inst.Name, Palette: devicePalette, Playlists: shown[inst.ID], DeleteHref: instanceHref(inst.ID) + "/delete"}
 		if inst.Palette != "" {
 			// A palette the registry no longer has shows as its ID.
-			v.Palette = cmp.Or(names[inst.Palette], inst.Palette)
+			p, _ := profile.PaletteByID(inst.Palette)
+			v.Palette = cmp.Or(p.Name, inst.Palette)
 		}
 		rv.Instances = append(rv.Instances, v)
 	}
@@ -135,8 +143,8 @@ func (s *Server) recipes(w http.ResponseWriter, r *http.Request) {
 	s.renderRecipes(w, r, http.StatusOK, "")
 }
 
-// renderRecipes sends the recipes page, with an error message above the
-// list if msg is not "".
+// renderRecipes sends the recipes page, with msg in the upload panel if it
+// is not "".
 func (s *Server) renderRecipes(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	views, err := s.recipeViews(r.Context())
 	if err != nil {
@@ -144,7 +152,7 @@ func (s *Server) renderRecipes(w http.ResponseWriter, r *http.Request, status in
 		return
 	}
 	s.render(w, r, status, "recipes", pageData{
-		Nav: "recipes", Heading: "Recipes", Error: msg, Recipes: views,
+		Nav: "recipes", Heading: "Recipes", UploadError: msg, Recipes: views,
 		UploadLimit: strconv.FormatInt(recipe.MaxRecipeBytes>>20, 10) + " MB",
 	})
 }
@@ -152,23 +160,21 @@ func (s *Server) renderRecipes(w http.ResponseWriter, r *http.Request, status in
 // errNoFile means an upload had no recipe file in it.
 var errNoFile = errors.New("no recipe file")
 
-// errUnreadable means an upload was not a form that could be read.
-var errUnreadable = errors.New("unreadable upload")
-
 // recipePart returns the part of the multipart body that holds the recipe
-// file, or an error wrapping errNoFile or errUnreadable. Any other part is
-// skipped without being read.
+// file, or errNoFile, or an error from reading the body: a
+// *http.MaxBytesError for a body over its limit, or one wrapping
+// upload.ErrCutOff for a body that ended early or is not a form. Any other
+// part is skipped without being read.
 func recipePart(mr *multipart.Reader) (*multipart.Part, error) {
 	for {
 		part, err := mr.NextPart()
-		var tooBig *http.MaxBytesError
 		switch {
-		case errors.Is(err, io.EOF):
+		case errors.Is(err, io.EOF) && errors.Unwrap(err) == nil:
+			// The closing boundary. An EOF the reader wraps ("NextPart:
+			// EOF") is a body that ended without one.
 			return nil, errNoFile
-		case errors.As(err, &tooBig):
-			return nil, err
 		case err != nil:
-			return nil, fmt.Errorf("%w: %w", errUnreadable, err)
+			return nil, upload.CutOff(err)
 		}
 		if part.FormName() != uploadField {
 			continue
@@ -184,7 +190,10 @@ func recipePart(mr *multipart.Reader) (*multipart.Part, error) {
 
 // uploadRecipe installs the zip file the upload form posts. The body is
 // streamed, so the zip is never held in memory: the file part goes straight
-// to recipe.InstallZip, which copies it to a temporary file.
+// to recipe.InstallZip, which copies it to a temporary file. A body that
+// ends early is the client's, not a server failure, so the part is read
+// through upload.Reader, and an error from walking the parts goes through
+// upload.CutOff.
 func (s *Server) uploadRecipe(w http.ResponseWriter, r *http.Request) {
 	upload.AllowSlow(w)
 	// Room for the recipe and the multipart framing around it, which is a
@@ -192,26 +201,31 @@ func (s *Server) uploadRecipe(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, recipe.MaxRecipeBytes+maxFormBody)
 	mr, err := r.MultipartReader()
 	if err != nil {
-		s.renderRecipes(w, r, http.StatusBadRequest, "Choose a recipe zip file to upload.")
+		s.renderRecipes(w, r, http.StatusBadRequest, chooseFile)
 		return
 	}
+	// Until the file part is found, a body over its limit is the body's:
+	// the other parts never end, or are many.
+	tooBig := "The upload is too large."
 	var rec db.Recipe
 	part, err := recipePart(mr)
 	if err == nil {
-		// The zip itself has the limit the API gives it. The limit on the
-		// body above only stops a request whose other parts never end.
-		rec, err = recipe.InstallZip(r.Context(), s.db, s.recipesDir, http.MaxBytesReader(w, part, recipe.MaxRecipeBytes), s.now())
+		// Once the file is being read, its own limit is the one that can
+		// trip. It is the one the API gives the zip.
+		tooBig = fmt.Sprintf("The file is over %d MB.", recipe.MaxRecipeBytes>>20)
+		file := upload.Reader(http.MaxBytesReader(w, part, recipe.MaxRecipeBytes))
+		rec, err = recipe.InstallZip(r.Context(), s.db, s.recipesDir, file, part.FileName(), s.now())
 	}
-	var tooBig *http.MaxBytesError
+	var limit *http.MaxBytesError
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
-	case errors.As(err, &tooBig):
-		s.renderRecipes(w, r, http.StatusRequestEntityTooLarge, fmt.Sprintf("The file is over %d MB.", recipe.MaxRecipeBytes>>20))
+	case errors.As(err, &limit):
+		s.renderRecipes(w, r, http.StatusRequestEntityTooLarge, tooBig)
 	case errors.Is(err, errNoFile):
-		s.renderRecipes(w, r, http.StatusBadRequest, "Choose a recipe zip file to upload.")
-	case errors.Is(err, errUnreadable):
-		s.renderRecipes(w, r, http.StatusBadRequest, "The upload could not be read.")
+		s.renderRecipes(w, r, http.StatusBadRequest, chooseFile)
+	case errors.Is(err, upload.ErrCutOff):
+		s.renderRecipes(w, r, http.StatusBadRequest, "The upload was cut off or could not be read.")
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderRecipes(w, r, http.StatusBadRequest, invalidText(err))
 	default:

@@ -52,14 +52,17 @@ func (s *Server) getRecipe(_ http.ResponseWriter, r *http.Request) (recipeJSON, 
 	return newRecipe(&rec), nil
 }
 
-// installRecipe installs the zip file in the request body.
+// installRecipe installs the zip file in the request body. A body that is
+// cut off is the client's error, not the server's.
 func (s *Server) installRecipe(w http.ResponseWriter, r *http.Request) (recipeJSON, error) {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/zip" {
 		return recipeJSON{}, &statusError{status: http.StatusUnsupportedMediaType, msg: "send the recipe as a zip file with Content-Type application/zip"}
 	}
 	upload.AllowSlow(w)
-	body := http.MaxBytesReader(w, r.Body, recipe.MaxRecipeBytes)
-	rec, err := recipe.InstallZip(r.Context(), s.db, s.cfg.RecipesDir, body, s.now())
+	body := upload.Reader(http.MaxBytesReader(w, r.Body, recipe.MaxRecipeBytes))
+	// The route has no file name, so a recipe with no name is called
+	// "upload".
+	rec, err := recipe.InstallZip(r.Context(), s.db, s.cfg.RecipesDir, body, "", s.now())
 	if err != nil {
 		return recipeJSON{}, err
 	}

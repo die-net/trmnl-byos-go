@@ -216,9 +216,16 @@ func (p Profile) RenderPalette(want string) string {
 	return p.DefaultPalette
 }
 
+// PaletteByID returns the palette in TRMNL's registry with the ID, and
+// false if there is none.
+func PaletteByID(id string) (Palette, bool) {
+	p, ok := loadRegistry().palettes[id]
+	return p, ok
+}
+
 // KnownPalette reports whether id is a palette in TRMNL's registry.
 func KnownPalette(id string) bool {
-	_, ok := loadRegistry().palettes[id]
+	_, ok := PaletteByID(id)
 	return ok
 }
 

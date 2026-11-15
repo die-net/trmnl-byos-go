@@ -104,3 +104,20 @@ func TestPalettes(t *testing.T) {
 		}
 	}
 }
+
+func TestPaletteByID(t *testing.T) {
+	t.Parallel()
+	for _, p := range Palettes() {
+		if got, ok := PaletteByID(p.ID); !ok || got != p {
+			t.Errorf("PaletteByID(%q) = %+v, %v; want %+v", p.ID, got, ok, p)
+		}
+	}
+	for _, id := range []string{"", "nope", "BW"} {
+		if got, ok := PaletteByID(id); ok || got != (Palette{}) {
+			t.Errorf("PaletteByID(%q) = %+v, %v; want none", id, got, ok)
+		}
+		if KnownPalette(id) {
+			t.Errorf("KnownPalette(%q) = true", id)
+		}
+	}
+}

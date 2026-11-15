@@ -20,3 +20,18 @@ func TestNew(t *testing.T) {
 		t.Errorf("message = %q", sentinel.Error())
 	}
 }
+
+func TestWrap(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("zip: checksum error")
+	err := fmt.Errorf("save: %w", Wrap(ErrInvalid, "the file is damaged", cause))
+	if !errors.Is(err, ErrInvalid) || !errors.Is(err, cause) {
+		t.Errorf("%v does not keep both the kind and the cause", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("%v is NotFound", err)
+	}
+	if got := errors.Unwrap(err).Error(); got != "the file is damaged" {
+		t.Errorf("message = %q, want the plain message without the cause", got)
+	}
+}

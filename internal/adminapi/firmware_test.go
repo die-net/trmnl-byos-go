@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
@@ -154,6 +155,28 @@ func TestFirmwareUpload(t *testing.T) {
 	ta.call(t, "GET", "/api/v1/firmware", "", 200, &list)
 	if len(list) != 1 {
 		t.Errorf("refused uploads left rows: %+v", list)
+	}
+}
+
+// TestFirmwareUploadCutOff checks that a client that drops the connection
+// part way through a firmware upload gets a client error, not a server one,
+// and that no row or file is left.
+func TestFirmwareUploadCutOff(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, false)
+	image := testImage(chipS3, "1a2b3c4")
+	body := io.MultiReader(bytes.NewReader(image[:len(image)/2]), iotest.ErrReader(io.ErrUnexpectedEOF))
+	res := ta.upload(t, "xiao_epaper_display", "1.8.19", body, "application/octet-stream")
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "the upload was cut off") {
+		t.Fatalf("status %d: %s; want 400 saying the upload was cut off", res.Code, res.Body)
+	}
+	if names := ta.firmwareFiles(t); len(names) != 0 {
+		t.Errorf("a cut-off upload left files: %v", names)
+	}
+	var list []firmwareJSON
+	ta.call(t, "GET", "/api/v1/firmware", "", 200, &list)
+	if len(list) != 0 {
+		t.Errorf("a cut-off upload left rows: %+v", list)
 	}
 }
 

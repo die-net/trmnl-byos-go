@@ -4,13 +4,17 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"html"
+	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/adminauth"
@@ -27,12 +31,13 @@ func newRecipesUI(t *testing.T) (*testUI, string) {
 	return newTestUI(t, Config{RecipesDir: dir}, true), dir
 }
 
-// addRecipe records a recipe, which has refreshed every 15 minutes since
-// 3 Jan 2026 04:30 in testZone, and returns it.
+// addRecipe records a recipe installed from the directory /src/name (a slash
+// in the name becomes an underscore), which has refreshed every 15 minutes
+// since 3 Jan 2026 04:30 in testZone, and returns it.
 func addRecipe(t *testing.T, tu *testUI, name string) db.Recipe {
 	t.Helper()
 	r, err := tu.db.Write.CreateRecipe(t.Context(), db.CreateRecipeParams{
-		Name: name, Source: "/src/" + name, RefreshInterval: 900, InstalledAt: time.Date(2026, 1, 2, 23, 0, 0, 0, time.UTC).Unix(),
+		Name: name, Source: "/src/" + strings.ReplaceAll(name, "/", "_"), RefreshInterval: 900, InstalledAt: time.Date(2026, 1, 2, 23, 0, 0, 0, time.UTC).Unix(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,15 +75,23 @@ func listRecipes(t *testing.T, tu *testUI) []db.Recipe {
 	return rows
 }
 
-// testZip returns a recipe zip file whose settings.yml has the name.
+// testZip returns a recipe zip file whose settings.yml has the name, or
+// none if name is "".
 func testZip(t *testing.T, name string) []byte {
+	t.Helper()
+	settings := "refresh_interval: 20\n"
+	if name != "" {
+		settings = "name: " + name + "\n" + settings
+	}
+	return zipFiles(t, map[string]string{"settings.yml": settings, "full.liquid": "<div>hello</div>\n"})
+}
+
+// zipFiles returns a zip file of the files.
+func zipFiles(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	for file, content := range map[string]string{
-		"settings.yml": "name: " + name + "\nrefresh_interval: 20\n",
-		"full.liquid":  "<div>hello</div>\n",
-	} {
+	for file, content := range files {
 		w, err := zw.Create(file)
 		if err != nil {
 			t.Fatal(err)
@@ -145,7 +158,7 @@ func TestRecipesEmpty(t *testing.T) {
 	body := tu.get(t, tu.signIn(t), "/recipes").Body.String()
 	for _, want := range []string{
 		"<h1>Recipes</h1>", "<h2>No recipes yet</h2>", "Upload a recipe zip file below",
-		`<form method="post" action="/recipes" enctype="multipart/form-data">`,
+		`<form method="post" action="/recipes#upload" enctype="multipart/form-data">`,
 		`<input id="recipe" name="recipe" type="file" accept=".zip,application/zip" required>`,
 		"up to 8 MB.", `<button class="btn btn-primary" type="submit">Upload</button>`,
 	} {
@@ -156,6 +169,9 @@ func TestRecipesEmpty(t *testing.T) {
 	if strings.Contains(body, `class="stack"`) {
 		t.Error("empty page has a recipe list")
 	}
+	if strings.Contains(body, `role="alert"`) {
+		t.Error("empty page has an error")
+	}
 }
 
 func TestRecipesList(t *testing.T) {
@@ -164,8 +180,11 @@ func TestRecipesList(t *testing.T) {
 	ctx := t.Context()
 	weather := addRecipe(t, tu, "<b>x</b>")
 	empty := addRecipe(t, tu, "Quotes")
+	if _, err := tu.db.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "Sent", Source: recipe.UploadSource, RefreshInterval: 900, InstalledAt: 1}); err != nil {
+		t.Fatal(err)
+	}
 	bw := newInstance(t, tu, weather.ID, "Home <i>", "bw")
-	newInstance(t, tu, weather.ID, "Plain", "")
+	plain := newInstance(t, tu, weather.ID, "Plain", "")
 	// A palette the registry does not have shows as its ID.
 	if _, err := tu.db.Write.CreateInstance(ctx, db.CreateInstanceParams{RecipeID: weather.ID, Name: "Odd", FieldValues: "{}", Palette: "gone", CreatedAt: 1}); err != nil {
 		t.Fatal(err)
@@ -182,16 +201,23 @@ func TestRecipesList(t *testing.T) {
 	for _, want := range []string{
 		`<li class="panel" id="recipe-` + id(weather.ID) + `">`, `<h2>&lt;b&gt;x&lt;/b&gt;</h2>`,
 		`href="/recipes/` + id(weather.ID) + `" aria-label="Add instance of &lt;b&gt;x&lt;/b&gt;">Add instance</a>`,
-		"<dd>/src/&lt;b&gt;x&lt;/b&gt;</dd>", "<dd>Every 15 min</dd>", "<dd>3 Jan 2026</dd>",
+		`<dd title="/src/&lt;b&gt;x&lt;_b&gt;">&lt;b&gt;x&lt;_b&gt;</dd>`, "<dd>Uploaded</dd>", "<dd>Every 15 min</dd>", "<dd>3 Jan 2026</dd>",
 		`<span class="item-name">Home &lt;i&gt;</span>`, `<span class="rel">Black &amp; White (1-bit)</span>`,
 		`<span class="rel">Device&#39;s palette</span>`, `<span class="rel">gone</span>`,
 		`In <a href="/playlists#playlist-` + id(evening) + `">Evening</a>, <a href="/playlists#playlist-` + id(morning) + `">Morning</a>`,
-		`href="/recipes/instances/` + id(bw.ID) + `/delete" aria-label="Remove Home &lt;i&gt;">Remove</a>`,
+		`href="/recipes/instances/` + id(plain.ID) + `/delete" aria-label="Remove Plain">Remove</a>`,
 		`id="recipe-` + id(empty.ID) + `"`, `<p class="rel">This recipe has no instances.</p>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("list lacks %q:\n%s", want, body)
 		}
+	}
+	// An instance that a playlist shows has no way to remove it.
+	if strings.Contains(body, `/recipes/instances/`+id(bw.ID)+`/delete`) || strings.Contains(body, `aria-label="Remove Home`) {
+		t.Error("an instance in a playlist has a Remove link")
+	}
+	if strings.Contains(body, "title=\"upload\"") || strings.Contains(body, "<dd>upload</dd>") {
+		t.Error("an upload shows its stored source, not Uploaded")
 	}
 	if strings.Contains(body, "<b>x") || strings.Contains(body, "<i>") {
 		t.Error("list has unescaped names")
@@ -230,9 +256,27 @@ func TestRecipeUpload(t *testing.T) {
 	}
 }
 
+// TestRecipeUploadName checks that a recipe with no name in its settings.yml
+// is called by the name of the file that was uploaded, and shows as
+// uploaded in the list.
+func TestRecipeUploadName(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	status, _, body := tu.upload(t, tu.signIn(t), []formPart{{field: "recipe", filename: `C:\dl\Weather Report.zip`, content: string(testZip(t, ""))}})
+	recipes := listRecipes(t, tu)
+	if status != http.StatusSeeOther || len(recipes) != 1 || recipes[0].Name != "Weather Report" || recipes[0].Source != recipe.UploadSource {
+		t.Fatalf("status %d with recipes %+v: %s", status, recipes, body)
+	}
+	if page := tu.get(t, tu.signIn(t), "/recipes").Body.String(); !strings.Contains(page, "<h2>Weather Report</h2>") || !strings.Contains(page, "<dd>Uploaded</dd>") {
+		t.Errorf("the list does not show the recipe by its file name as uploaded:\n%s", page)
+	}
+}
+
 func TestRecipeUploadRefused(t *testing.T) {
 	t.Parallel()
 	const choose = "Choose a recipe zip file to upload."
+	const bigFile = "The file is over 8 MB."
+	const bigBody = "The upload is too large."
 	zipFile := string(testZip(t, "x"))
 	noSettings := func() string {
 		var buf bytes.Buffer
@@ -256,18 +300,26 @@ func TestRecipeUploadRefused(t *testing.T) {
 		{"empty file name", []formPart{{field: "recipe", empty: true}}, http.StatusBadRequest, choose},
 		{"recipe field that is not a file", []formPart{{field: "recipe", content: zipFile}}, http.StatusBadRequest, choose},
 		{"file in another field", []formPart{{field: "other", filename: "a.zip", content: zipFile}}, http.StatusBadRequest, choose},
-		{"not a zip", []formPart{{field: "recipe", filename: "a.zip", content: "this is not a zip file"}}, http.StatusBadRequest, "Open recipe zip"},
-		{"empty file", []formPart{{field: "recipe", filename: "a.zip"}}, http.StatusBadRequest, "Open recipe zip"},
-		{"zip without settings.yml", []formPart{{field: "recipe", filename: "a.zip", content: noSettings}}, http.StatusBadRequest, "no settings.yml"},
-		{"file one byte over the limit", []formPart{{field: "recipe", filename: "a.zip", content: strings.Repeat("a", recipe.MaxRecipeBytes+1)}}, http.StatusRequestEntityTooLarge, "The file is over 8 MB."},
-		{"body over the limit", []formPart{{field: "recipe", filename: "a.zip", content: strings.Repeat("a", recipe.MaxRecipeBytes+maxFormBody)}}, http.StatusRequestEntityTooLarge, "The file is over 8 MB."},
+		{"not a zip", []formPart{{field: "recipe", filename: "a.zip", content: "this is not a zip file"}}, http.StatusBadRequest, "The file is not a zip archive."},
+		{"empty file", []formPart{{field: "recipe", filename: "a.zip"}}, http.StatusBadRequest, "The file is empty."},
+		{"zip without settings.yml", []formPart{{field: "recipe", filename: "a.zip", content: noSettings}}, http.StatusBadRequest, "The zip has no settings.yml at its top, in src/, or in one top-level folder."},
+		{"zip without full.liquid", []formPart{{field: "recipe", filename: "a.zip", content: string(zipFiles(t, map[string]string{"settings.yml": "name: x\n"}))}}, http.StatusBadRequest, "The recipe has no full.liquid."},
+		{"name that leaves the directory", []formPart{{field: "recipe", filename: "a.zip", content: string(zipFiles(t, map[string]string{"settings.yml": "name: x\n", "full.liquid": "x", "../escape": "x"}))}}, http.StatusBadRequest, `The zip has a file name that leaves its directory: "../escape".`},
+		{"unreadable settings.yml", []formPart{{field: "recipe", filename: "a.zip", content: string(zipFiles(t, map[string]string{"settings.yml": "name: [", "full.liquid": "x"}))}}, http.StatusBadRequest, "The recipe's settings.yml is not valid YAML."},
+		{"file one byte over the limit", []formPart{{field: "recipe", filename: "a.zip", content: strings.Repeat("a", recipe.MaxRecipeBytes+1)}}, http.StatusRequestEntityTooLarge, bigFile},
+		{"file at the limit is not too big", []formPart{{field: "recipe", filename: "a.zip", content: strings.Repeat("a", recipe.MaxRecipeBytes)}}, http.StatusBadRequest, "The file is not a zip archive."},
+		{"large field before the file", []formPart{{field: "note", content: strings.Repeat("a", recipe.MaxRecipeBytes+maxFormBody+1)}, {field: "recipe", filename: "a.zip", content: zipFile}}, http.StatusRequestEntityTooLarge, bigBody},
+		{"large field after the file", []formPart{{field: "recipe", filename: "a.zip", content: noSettings}, {field: "note", content: strings.Repeat("a", recipe.MaxRecipeBytes+maxFormBody+1)}}, http.StatusBadRequest, "The zip has no settings.yml at its top, in src/, or in one top-level folder."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tu, dir := newRecipesUI(t)
 			status, _, body := tu.upload(t, tu.signIn(t), tc.parts)
-			if status != tc.status || !strings.Contains(body, tc.want) || !strings.Contains(body, `<p class="error" role="alert">`) || !strings.Contains(body, "<h1>Recipes</h1>") {
-				t.Errorf("status %d, body %s; want %d with %q above the list", status, body, tc.status, tc.want)
+			// The message is in the upload panel, just above the file field.
+			wantHTML := `<form method="post" action="/recipes#upload" enctype="multipart/form-data">` + "\n" +
+				`<p class="error" role="alert">` + html.EscapeString(tc.want) + "</p>\n" + `<div class="field">`
+			if status != tc.status || !strings.Contains(body, wantHTML) || !strings.Contains(body, "<h1>Recipes</h1>") || strings.Count(body, `role="alert"`) != 1 {
+				t.Errorf("status %d, body %s; want %d with %q above the file field", status, body, tc.status, tc.want)
 			}
 			if got := len(listRecipes(t, tu)); got != 0 {
 				t.Errorf("%d recipes after a refused upload", got)
@@ -280,6 +332,54 @@ func TestRecipeUploadRefused(t *testing.T) {
 				t.Errorf("a refused upload left %d files in the recipes directory", len(left))
 			}
 		})
+	}
+}
+
+// TestRecipeUploadCutOff checks that a client that drops the connection part
+// way through an upload gets a client error and leaves no row or file,
+// whether it is cut off in a field before the file or in the file, and
+// whether the body ends cleanly (as a test's reader does) or with a read
+// error (as a server's does when the client hangs up).
+func TestRecipeUploadCutOff(t *testing.T) {
+	t.Parallel()
+	body, ct := multipartBody(t,
+		formPart{field: "note", content: "some words in a field"},
+		formPart{field: "recipe", filename: "a.zip", content: string(testZip(t, "x"))})
+	for _, tc := range []struct {
+		name string
+		cut  int
+	}{
+		{"in a field", strings.Index(body, "some words") + 5},
+		{"in the file", strings.Index(body, "PK") + 40},
+	} {
+		for _, ending := range []struct {
+			name string
+			err  error
+		}{{"EOF", nil}, {"unexpected EOF", io.ErrUnexpectedEOF}} {
+			t.Run(tc.name+" then "+ending.name, func(t *testing.T) {
+				t.Parallel()
+				tu, dir := newRecipesUI(t)
+				c := tu.signIn(t)
+				var tail io.Reader = strings.NewReader("")
+				if ending.err != nil {
+					tail = iotest.ErrReader(ending.err)
+				}
+				req := httptest.NewRequestWithContext(t.Context(), "POST", "/recipes", io.MultiReader(strings.NewReader(body[:tc.cut]), tail))
+				req.Header.Set("Content-Type", ct)
+				req.Header.Set("Cookie", cookieHeader(c))
+				w := tu.serve(req)
+				const want = `<p class="error" role="alert">The upload was cut off or could not be read.</p>`
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), want) {
+					t.Errorf("status %d, body %s; want 400 with %q", w.Code, w.Body, want)
+				}
+				if got := len(listRecipes(t, tu)); got != 0 {
+					t.Errorf("%d recipes after a cut-off upload", got)
+				}
+				if left, err := os.ReadDir(dir); err != nil || len(left) != 0 {
+					t.Errorf("a cut-off upload left %v in the recipes directory (%v)", left, err)
+				}
+			})
+		}
 	}
 }
 
