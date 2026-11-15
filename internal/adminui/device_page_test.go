@@ -3,6 +3,7 @@ package adminui
 import (
 	"crypto/sha256"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -209,6 +210,7 @@ func TestDeviceNeedsSession(t *testing.T) {
 		{"GET", "/devices/ABC123", ""},
 		{"POST", "/devices/ABC123", "name=Hacked"},
 		{"POST", "/join", "action=open"},
+		{"POST", "/devices/ABC123/playlists", "playlist=1&index=0"},
 	} {
 		w := tu.do(t, tc.method, tc.path, tc.body)
 		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
@@ -221,6 +223,18 @@ func TestDeviceNeedsSession(t *testing.T) {
 	}
 	if until, _ := device.JoinUntil(t.Context(), tu.db.Read); !until.IsZero() {
 		t.Error("a signed-out post opened the join window")
+	}
+}
+
+// TestDevicePlaylistMoveTooBig checks that the move form's body is bounded
+// like every other form's.
+func TestDevicePlaylistMoveTooBig(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+	big := url.Values{"playlist": {strings.Repeat("1", maxFormBody)}}
+	if w := tu.post(t, tu.signIn(t), "/devices/ABC123/playlists", big); w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status %d, want 413", w.Code)
 	}
 }
 
@@ -323,8 +337,8 @@ func TestDeviceSettingsCrossOrigin(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 	c := tu.signIn(t)
-	for _, path := range []string{"/devices/ABC123", "/join"} {
-		w := tu.post(t, c, path, url.Values{"name": {"Hacked"}, "action": {"open"}}, "Sec-Fetch-Site", "cross-site")
+	for _, path := range []string{"/devices/ABC123", "/join", "/devices/ABC123/playlists"} {
+		w := tu.post(t, c, path, url.Values{"name": {"Hacked"}, "action": {"open"}, "playlist": {"1"}, "index": {"0"}}, "Sec-Fetch-Site", "cross-site")
 		if w.Code != http.StatusForbidden {
 			t.Errorf("cross-origin post to %s: status %d, want 403", path, w.Code)
 		}
@@ -569,5 +583,224 @@ func TestUntilText(t *testing.T) {
 		if got := s.untilText(tc.until, now.UTC()); got != tc.want {
 			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// playlistMove is the fields of a form that moves a playlist on a device
+// page: the playlist, the place the page shows it at, and the place it moves
+// to.
+func playlistMove(pid, from, to int64) string {
+	return `<input type="hidden" name="playlist" value="` + id(pid) + `"><input type="hidden" name="from" value="` + id(from) + `"><input type="hidden" name="to" value="` + id(to) + `">`
+}
+
+func TestDevicePlaylistsPanel(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+	b, a, c := newPlaylist(t, tu, "Weekdays <b>"), newPlaylist(t, tu, "Always"), newPlaylist(t, tu, "Late")
+	linkTo(t, tu, "ABC123", b, a, c)
+	days, err := playlist.DaysFromNames([]string{"mon", "tue", "wed", "thu", "fri"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := playlist.Schedule{Days: days, WindowStart: 6 * 60, WindowEnd: 9 * 60}.Full()
+	if err := playlist.UpdatePlaylist(t.Context(), tu.db, playlist.ByID(b), playlist.Update{Schedule: &sched}); err != nil {
+		t.Fatal(err)
+	}
+	body := tu.get(t, tu.signIn(t), "/devices/ABC123").Body.String()
+	form := func(pid, from, to int64, label string, disabled bool) string {
+		d := ""
+		if disabled {
+			d = " disabled"
+		}
+		return `<form method="post" action="/devices/ABC123/playlists">` + playlistMove(pid, from, to) +
+			`<button class="btn btn-secondary btn-icon" type="submit" aria-label="Move ` + label + `"` + d + `>`
+	}
+	wantInOrder(t, body, `<section class="panel" id="playlists"`, `<h2 id="playlists-heading">Playlists</h2>`,
+		"The device shows the first of these that is scheduled now.", `<ol class="items">`,
+		`<a class="item-name" href="/playlists#playlist-`+id(b)+`">Weekdays &lt;b&gt;</a>`, `Weekdays, 06:00 to 09:00`,
+		form(b, 0, -1, "Weekdays &lt;b&gt; earlier", true), form(b, 0, 1, "Weekdays &lt;b&gt; later", false),
+		`<a class="item-name" href="/playlists#playlist-`+id(a)+`">Always</a>`, `Every day, all day`,
+		form(a, 1, 0, "Always earlier", false), form(a, 1, 2, "Always later", false),
+		`<a class="item-name" href="/playlists#playlist-`+id(c)+`">Late</a>`,
+		form(c, 2, 1, "Late earlier", false), form(c, 2, 3, "Late later", true))
+	if strings.Contains(body, "<b>") {
+		t.Error("page has an unescaped playlist name")
+	}
+	if n := strings.Count(body, " disabled>"); n != 2 {
+		t.Errorf("%d disabled buttons, want the first one's up and the last one's down", n)
+	}
+}
+
+func TestDevicePlaylistsPanelFew(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		lists []string
+		want  []string
+		moves bool
+	}{
+		{"none", nil, []string{"This device is linked to no playlist. Link one from a playlist's page.", `<a href="/playlists">All playlists</a>`}, false},
+		{"one", []string{"Solo"}, []string{`<a class="item-name" href="/playlists#playlist-1">Solo</a>`, "The device shows the first of these that is scheduled now."}, false},
+		{"two", []string{"One", "Two"}, []string{"Move One later", "Move Two earlier"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+			for _, name := range tc.lists {
+				linkTo(t, tu, "ABC123", newPlaylist(t, tu, name))
+			}
+			body := tu.get(t, tu.signIn(t), "/devices/ABC123").Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("page lacks %q:\n%s", want, body)
+				}
+			}
+			if got := strings.Contains(body, `action="/devices/ABC123/playlists"`); got != tc.moves {
+				t.Errorf("move forms shown = %v, want %v", got, tc.moves)
+			}
+			if len(tc.lists) == 0 && strings.Contains(body, "The device shows the first") {
+				t.Error("the page explains the order of no playlists")
+			}
+		})
+	}
+}
+
+func TestDeviceMovePlaylist(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		move     string // the playlist to move.
+		from, to string
+		want     string // the order after.
+	}{
+		{"up", "c", "2", "1", "a,c,b"},
+		{"to the front", "c", "2", "0", "c,a,b"},
+		{"down", "a", "0", "1", "b,a,c"},
+		{"to the end", "a", "0", "2", "b,c,a"},
+		{"stays", "b", "1", "1", "a,b,c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			addDevice(t, tu, testMAC, "ABC123", "", 0)
+			ids := map[string]int64{}
+			order := make([]int64, 0, 3)
+			for _, n := range []string{"a", "b", "c"} {
+				ids[n] = newPlaylist(t, tu, n)
+				order = append(order, ids[n])
+			}
+			linkTo(t, tu, "ABC123", order...)
+			w := tu.post(t, tu.signIn(t), "/devices/ABC123/playlists", url.Values{"playlist": {id(ids[tc.move])}, "from": {tc.from}, "to": {tc.to}})
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/devices/ABC123#playlists" {
+				t.Fatalf("status %d to %q: %s", w.Code, w.Header().Get("Location"), w.Body)
+			}
+			var got []string
+			for _, pid := range linkedIDs(t, tu, "ABC123") {
+				for n, v := range ids {
+					if v == pid {
+						got = append(got, n)
+					}
+				}
+			}
+			if strings.Join(got, ",") != tc.want {
+				t.Errorf("order %v, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDeviceMovePlaylistRefused(t *testing.T) {
+	t.Parallel()
+	move := func(list, from, to string) url.Values {
+		return url.Values{"playlist": {list}, "from": {from}, "to": {to}}
+	}
+	const path = "/devices/ABC123/playlists"
+	for _, tc := range []struct {
+		name   string
+		path   string
+		form   func(a, b, stranger int64) url.Values
+		status int
+		want   string
+	}{
+		// b was moved or a playlist unlinked after the page was shown, so
+		// the place the form saw is not where the playlist is.
+		{"stale place", path, func(a, _, _ int64) url.Values { return move(id(a), "1", "0") }, http.StatusConflict, orderChanged},
+		{"stale place, same target", path, func(_, b, _ int64) url.Values { return move(id(b), "0", "0") }, http.StatusConflict, orderChanged},
+		{"place past the end", path, func(a, _, _ int64) url.Values { return move(id(a), "0", "5") }, http.StatusBadRequest, orderChanged},
+		{"negative place", path, func(a, _, _ int64) url.Values { return move(id(a), "0", "-1") }, http.StatusBadRequest, orderChanged},
+		{"no playlist", path, func(_, _, _ int64) url.Values { return url.Values{"from": {"0"}, "to": {"0"}} }, http.StatusBadRequest, "Choose a playlist to move."},
+		{"playlist not a number", path, func(_, _, _ int64) url.Values { return move("x", "0", "0") }, http.StatusBadRequest, "Choose a playlist to move."},
+		{"no from", path, func(a, _, _ int64) url.Values { return url.Values{"playlist": {id(a)}, "to": {"1"}} }, http.StatusBadRequest, "Choose a playlist to move."},
+		{"no to", path, func(a, _, _ int64) url.Values { return url.Values{"playlist": {id(a)}, "from": {"0"}} }, http.StatusBadRequest, "Choose a playlist to move."},
+		{"to not a number", path, func(a, _, _ int64) url.Values { return move(id(a), "0", "first") }, http.StatusBadRequest, "Choose a playlist to move."},
+		{"not linked", path, func(_, _, s int64) url.Values { return move(id(s), "0", "0") }, http.StatusConflict, "That playlist is no longer linked to this device."},
+		{"unknown playlist", path, func(_, _, _ int64) url.Values { return move("999", "0", "0") }, http.StatusConflict, "That playlist no longer exists."},
+		{"unknown device", "/devices/ZZZ999/playlists", func(a, _, _ int64) url.Values { return move(id(a), "0", "0") }, http.StatusNotFound, "No such device"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+			a, b, stranger := newPlaylist(t, tu, "a"), newPlaylist(t, tu, "b"), newPlaylist(t, tu, "stranger")
+			linkTo(t, tu, "ABC123", a, b)
+			w := tu.post(t, tu.signIn(t), tc.path, tc.form(a, b, stranger))
+			body := w.Body.String()
+			want := template.HTMLEscapeString(tc.want)
+			if w.Code != tc.status || !strings.Contains(body, want) {
+				t.Fatalf("status %d, body %s; want %d with %q", w.Code, body, tc.status, want)
+			}
+			if tc.status != http.StatusNotFound {
+				// The device page, with the reason in the playlists panel
+				// above the order as it is now.
+				wantInOrder(t, body, "<h1>Kitchen</h1>", `id="playlists"`, `<p class="error" role="alert">`+want+`</p>`, `<ol class="items">`)
+			}
+			// Nothing moved, and a playlist that was not linked was not linked by the move.
+			if got := linkedIDs(t, tu, "ABC123"); len(got) != 2 || got[0] != a || got[1] != b {
+				t.Errorf("links %v after a refused move, want %d and %d", got, a, b)
+			}
+		})
+	}
+}
+
+// TestDeviceMoveStalePage checks the case the form's from field is for: two
+// moves posted from one copy of the page. The second is refused, since doing
+// it would move the playlist the wrong way.
+func TestDeviceMoveStalePage(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	addDevice(t, tu, testMAC, "ABC123", "", 0)
+	a, b, c := newPlaylist(t, tu, "a"), newPlaylist(t, tu, "b"), newPlaylist(t, tu, "c")
+	linkTo(t, tu, "ABC123", a, b, c)
+	session := tu.signIn(t)
+	later := url.Values{"playlist": {id(a)}, "from": {"0"}, "to": {"1"}}
+	if w := tu.post(t, session, "/devices/ABC123/playlists", later); w.Code != http.StatusSeeOther {
+		t.Fatalf("first move: status %d: %s", w.Code, w.Body)
+	}
+	w := tu.post(t, session, "/devices/ABC123/playlists", later)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), template.HTMLEscapeString(orderChanged)) {
+		t.Fatalf("second move: status %d, body %s; want 409 saying the order changed", w.Code, w.Body)
+	}
+	if got := linkedIDs(t, tu, "ABC123"); len(got) != 3 || got[0] != b || got[1] != a || got[2] != c {
+		t.Errorf("links %v, want %d, %d, %d", got, b, a, c)
+	}
+}
+
+// TestDeviceMoveDoesNotLink checks that a move for a playlist that exists
+// but is not linked does not link it, even to the end.
+func TestDeviceMoveDoesNotLink(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	addDevice(t, tu, testMAC, "ABC123", "", 0)
+	stranger := newPlaylist(t, tu, "stranger")
+	for _, to := range []string{"0", "1", "5"} {
+		w := tu.post(t, tu.signIn(t), "/devices/ABC123/playlists", url.Values{"playlist": {id(stranger)}, "from": {"0"}, "to": {to}})
+		if w.Code != http.StatusConflict {
+			t.Errorf("to %s: status %d, want 409", to, w.Code)
+		}
+	}
+	if got := linkedIDs(t, tu, "ABC123"); len(got) != 0 {
+		t.Errorf("links %v, want none", got)
 	}
 }

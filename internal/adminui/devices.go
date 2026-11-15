@@ -81,6 +81,24 @@ type playlistRow struct {
 	Duration string
 }
 
+// deviceListRow is a playlist a device is linked to, as the device page
+// lists it.
+type deviceListRow struct {
+	// ID is the playlist's ID, which the move forms post.
+	ID int64
+	// Name is the playlist's name, and Href the path of its card on the
+	// playlists page.
+	Name, Href string
+	// Schedule is the playlist's schedule in words.
+	Schedule string
+	// Index is the playlist's place in the device's order, which a move
+	// sends back so a stale page is refused. Up and Down are the place the
+	// playlist moves to, and CanUp and CanDown whether it has one.
+	Index          int64
+	Up, Down       int64
+	CanUp, CanDown bool
+}
+
 // pinOption is a choice in the firmware pin list.
 type pinOption struct {
 	Value    string
@@ -115,6 +133,12 @@ type deviceDetail struct {
 	PanelSize  string
 	Form       deviceForm
 	Playlist   []playlistRow
+	// Linked are the playlists the device is linked to, in the order they
+	// are tried, MoveAction is the path the forms that move one post to, and
+	// LinkedError is why a move was refused, or "".
+	Linked      []deviceListRow
+	MoveAction  string
+	LinkedError string
 }
 
 // joinView is the state of the join window.
@@ -156,7 +180,7 @@ func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, status in
 		join.Until = s.timeAt(until.Unix(), now, false)
 		join.Until.Text = s.untilText(until, now)
 	}
-	s.render(w, r, status, "devices", pageData{Nav: "devices", Heading: "Devices", Error: msg, Devices: views, Join: join})
+	s.render(w, r, status, "devices", &pageData{Nav: "devices", Heading: "Devices", Error: msg, Devices: views, Join: join})
 }
 
 // joinWindowForm opens or closes the join window, as the action field of
@@ -310,6 +334,9 @@ func wakeDuration(ms int64) string {
 	return strconv.FormatFloat(float64(ms)/1000, 'f', 1, 64) + " s"
 }
 
+// noDevice is the not-found page for a device.
+var noDevice = notFoundView{Nav: "devices", What: "No such device", BackHref: "/devices", BackName: "Devices"}
+
 // deviceFromPath returns the device the path names. A device that does not
 // exist gets the not-found page, and any other failure a plain error, and
 // both return false.
@@ -319,7 +346,7 @@ func (s *Server) deviceFromPath(w http.ResponseWriter, r *http.Request) (db.Devi
 	case err == nil:
 		return dev, true
 	case errors.Is(err, device.ErrNoDevice):
-		s.renderNotFound(w, r, notFoundView{Nav: "devices", What: "No such device", BackHref: "/devices", BackName: "Devices"})
+		s.renderNotFound(w, r, noDevice)
 	default:
 		slog.Error("admin ui: find device", "err", err)
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
@@ -332,7 +359,7 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.renderDevice(w, r, http.StatusOK, &dev, nil, "")
+	s.renderDevice(w, r, http.StatusOK, &dev, nil, "", "")
 }
 
 // updateDevice saves the settings form. It checks the name and the pin
@@ -343,7 +370,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !parseForm(w, r, func(status int, msg string) { s.renderDevice(w, r, status, &dev, nil, msg) }) {
+	if !parseForm(w, r, func(status int, msg string) { s.renderDevice(w, r, status, &dev, nil, msg, "") }) {
 		return
 	}
 	form := deviceForm{
@@ -357,7 +384,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/devices/"+dev.FriendlyID, http.StatusSeeOther)
 	case errors.Is(err, errkind.ErrInvalid):
 		msg := strings.TrimPrefix(err.Error(), errkind.ErrInvalid.Error()+": ")
-		s.renderDevice(w, r, http.StatusBadRequest, &dev, &form, capitalize(msg)+".")
+		s.renderDevice(w, r, http.StatusBadRequest, &dev, &form, capitalize(msg)+".", "")
 	default:
 		slog.Error("admin ui: save device", "device", dev.FriendlyID, "err", err)
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
@@ -388,40 +415,58 @@ func capitalize(msg string) string {
 
 // renderDevice sends the page of dev. A nil form shows the device's stored
 // settings, and a form is what was submitted. msg is an error to show above
-// the form, or "".
-func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int, dev *db.Device, form *deviceForm, msg string) {
+// the settings form, and listMsg one to show in the playlists panel, or "".
+// The page's reads are one snapshot, so the playlist it would show and the
+// playlists it lists agree.
+func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int, dev *db.Device, form *deviceForm, msg, listMsg string) {
 	ctx := r.Context()
-	row, err := s.db.Read.GetDeviceStatus(ctx, dev.ID)
+	var row db.GetDeviceStatusRow
+	var items []db.ListDeviceItemsRow
+	var linked []db.Playlist
+	var catalog []firmware.Entry
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if row, err = q.GetDeviceStatus(ctx, dev.ID); err != nil {
+			return fmt.Errorf("get device status: %w", err)
+		}
+		if items, err = playlist.ListDeviceItems(ctx, q, dev.ID); err != nil {
+			return err
+		}
+		if linked, err = q.ListDevicePlaylists(ctx, dev.ID); err != nil {
+			return fmt.Errorf("list device playlists: %w", err)
+		}
+		if catalog, err = firmware.List(ctx, q); err != nil {
+			return fmt.Errorf("list firmware: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		slog.Error("admin ui: get device status", "device", dev.FriendlyID, "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
-		return
-	}
-	items, err := playlist.ListDeviceItems(ctx, s.db.Read, dev.ID)
-	if err != nil {
-		slog.Error("admin ui: list playlist", "device", dev.FriendlyID, "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
-		return
-	}
-	catalog, err := firmware.List(ctx, s.db.Read)
-	if err != nil {
-		slog.Error("admin ui: list firmware", "device", dev.FriendlyID, "err", err)
+		slog.Error("admin ui: read device page", "device", dev.FriendlyID, "err", err)
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
 		return
 	}
 	now := s.now().In(s.zone)
 	d := &deviceDetail{
-		View:       s.newDeviceView((*db.ListDeviceStatusRow)(&row), now),
-		ID:         dev.FriendlyID,
-		MAC:        dev.Mac,
-		Model:      orMissing(dev.FwModel),
-		LastSeen:   timeView{Text: missing},
-		NextWake:   timeView{Text: missing},
-		Registered: s.timeAt(dev.CreatedAt, now, false),
-		WakeTime:   missing,
-		WakeCause:  missing,
-		PanelSize:  missing,
-		Playlist:   []playlistRow{},
+		View:        s.newDeviceView((*db.ListDeviceStatusRow)(&row), now),
+		ID:          dev.FriendlyID,
+		MAC:         dev.Mac,
+		Model:       orMissing(dev.FwModel),
+		LastSeen:    timeView{Text: missing},
+		NextWake:    timeView{Text: missing},
+		Registered:  s.timeAt(dev.CreatedAt, now, false),
+		WakeTime:    missing,
+		WakeCause:   missing,
+		PanelSize:   missing,
+		Playlist:    []playlistRow{},
+		MoveAction:  "/devices/" + dev.FriendlyID + "/playlists",
+		LinkedError: listMsg,
+	}
+	for i := range linked {
+		pl := &linked[i]
+		d.Linked = append(d.Linked, deviceListRow{
+			ID: pl.ID, Name: pl.Name, Href: "/playlists#playlist-" + strconv.FormatInt(pl.ID, 10), Schedule: s.describeSchedule(scheduleOf(pl)),
+			Index: int64(i), Up: int64(i) - 1, Down: int64(i) + 1, CanUp: i > 0, CanDown: i < len(linked)-1,
+		})
 	}
 	d.View.Firmware = orMissing(dev.FwVersion)
 	if row.LastSeen != nil {
@@ -455,7 +500,52 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	}
 	form.Pins = pinOptions(catalog, dev.FwModel, form.Pin)
 	d.Form = *form
-	s.render(w, r, status, "device", pageData{Nav: "devices", Heading: d.View.Name, Error: msg, Detail: d})
+	s.render(w, r, status, "device", &pageData{Nav: "devices", Heading: d.View.Name, Error: msg, Detail: d})
+}
+
+// orderChanged is what a refused move says. The page it is shown on has the
+// order as it is now.
+const orderChanged = "This device's playlists changed after the page loaded, so nothing was moved. The order below is current."
+
+// moveDevicePlaylist moves one of a device's playlists from the place the
+// page showed it at to another, in the order the device tries them. The
+// form sends both places, so a move from a page that is out of date is
+// refused instead of moving the wrong way. It never makes a link.
+func (s *Server) moveDevicePlaylist(w http.ResponseWriter, r *http.Request) {
+	dev, ok := s.deviceFromPath(w, r)
+	if !ok {
+		return
+	}
+	refuse := func(status int, msg string) { s.renderDevice(w, r, status, &dev, nil, "", msg) }
+	if !parseForm(w, r, refuse) {
+		return
+	}
+	id, idErr := strconv.ParseInt(r.PostForm.Get("playlist"), 10, 64)
+	from, fromErr := strconv.ParseInt(r.PostForm.Get("from"), 10, 64)
+	to, toErr := strconv.ParseInt(r.PostForm.Get("to"), 10, 64)
+	if idErr != nil || fromErr != nil || toErr != nil {
+		refuse(http.StatusBadRequest, "Choose a playlist to move.")
+		return
+	}
+	err := playlist.MoveLink(r.Context(), s.db, playlist.ByID(id), dev.FriendlyID, from, to)
+	switch {
+	case err == nil:
+		http.Redirect(w, r, "/devices/"+dev.FriendlyID+"#playlists", http.StatusSeeOther)
+	case errors.Is(err, device.ErrNoDevice):
+		s.renderNotFound(w, r, noDevice)
+	case errors.Is(err, playlist.ErrNoPlaylist):
+		refuse(http.StatusConflict, "That playlist no longer exists.")
+	case errors.Is(err, playlist.ErrNotLinked):
+		refuse(http.StatusConflict, "That playlist is no longer linked to this device.")
+	case errors.Is(err, playlist.ErrOrderChanged):
+		refuse(http.StatusConflict, orderChanged)
+	case errors.Is(err, errkind.ErrInvalid):
+		// A place past the end comes from a page that showed more
+		// playlists than the device has now.
+		refuse(http.StatusBadRequest, orderChanged)
+	default:
+		serverError(w, r, "move device playlist", err)
+	}
 }
 
 // orMissing returns s, or the placeholder if it is empty.

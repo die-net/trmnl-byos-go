@@ -57,6 +57,10 @@ SELECT * FROM playlist_item WHERE id = ?;
 -- A playlist's item IDs in position order.
 SELECT id FROM playlist_item WHERE playlist_id = ? ORDER BY position;
 
+-- name: CountPlaylistItems :one
+-- How many items a playlist has.
+SELECT COUNT(*) FROM playlist_item WHERE playlist_id = ?;
+
 -- name: NegatePlaylistPositions :exec
 -- Moves a playlist's positions out of the range of indexes, so each item can
 -- then be given its index without two items sharing a position at any step.
@@ -151,3 +155,10 @@ SELECT DISTINCT item_id FROM playlist_slot WHERE instance_id = ? ORDER BY item_i
 
 -- name: ListPlaylists :many
 SELECT * FROM playlist ORDER BY name;
+
+-- name: ListDevicePlaylists :many
+-- The playlists a device is linked to, in the order they are tried.
+SELECT playlist.* FROM playlist_device
+JOIN playlist ON playlist.id = playlist_device.playlist_id
+WHERE playlist_device.device_id = ?
+ORDER BY playlist_device.priority;

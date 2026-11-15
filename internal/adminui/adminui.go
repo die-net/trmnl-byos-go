@@ -83,7 +83,7 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_delete", "recipes", "recipe", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "notfound"} {
+	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "notfound"} {
 		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/"+name+".html"))
 	}
 	return s
@@ -99,6 +99,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /devices", page(s.requireSession(s.devices)))
 	mux.Handle("GET /devices/{id}", page(s.requireSession(s.deviceDetail)))
 	mux.Handle("POST /devices/{id}", page(s.requireSession(s.updateDevice)))
+	mux.Handle("POST /devices/{id}/playlists", page(s.requireSession(s.moveDevicePlaylist)))
 	mux.Handle("POST /join", page(s.requireSession(s.joinWindowForm)))
 	mux.Handle("GET /recipes", page(s.requireSession(s.recipes)))
 	mux.Handle("POST /recipes", page(s.requireSession(s.uploadRecipe)))
@@ -107,12 +108,17 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /recipes/instances/{id}/delete", page(s.requireSession(s.confirmRemoveInstance)))
 	mux.Handle("POST /recipes/instances/{id}/delete", page(s.requireSession(s.removeInstance)))
 	mux.Handle("GET /playlists", page(s.requireSession(s.playlists)))
+	mux.Handle("POST /playlists", page(s.requireSession(s.createPlaylist)))
 	mux.Handle("GET /playlists/{id}", page(s.requireSession(s.playlistPage)))
 	mux.Handle("POST /playlists/{id}", page(s.requireSession(s.savePlaylist)))
+	mux.Handle("GET /playlists/delete/{id}", page(s.requireSession(s.confirmDeletePlaylist)))
+	mux.Handle("POST /playlists/delete/{id}", page(s.requireSession(s.deletePlaylist)))
+	mux.Handle("POST /playlists/link/{id}", page(s.requireSession(s.linkDevice)))
+	mux.Handle("POST /playlists/unlink/{id}", page(s.requireSession(s.unlinkDevice)))
 	mux.Handle("POST /playlists/add-item/{id}", page(s.requireSession(s.addPlaylistItem)))
 	mux.Handle("GET /playlists/items/{id}", page(s.requireSession(s.itemPage)))
 	mux.Handle("POST /playlists/items/{id}", page(s.requireSession(s.saveItem)))
-	mux.Handle("GET /playlists/items/{id}/delete", page(s.requireSession(s.confirmDelete)))
+	mux.Handle("GET /playlists/items/{id}/delete", page(s.requireSession(s.confirmDeleteItem)))
 	mux.Handle("POST /playlists/items/{id}/move", page(s.requireSession(s.itemAction(s.moveItem))))
 	mux.Handle("POST /playlists/items/{id}/hidden", page(s.requireSession(s.itemAction(s.hideItem))))
 	mux.Handle("POST /playlists/items/{id}/delete", page(s.requireSession(s.itemAction(s.deleteItem))))
@@ -169,7 +175,7 @@ func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
 		signed, err := adminauth.SignedIn(r.Context(), s.db, r, s.now())
 		if err != nil {
 			slog.Error("admin ui: check session", "err", err)
-			s.render(w, r, http.StatusInternalServerError, "login", pageData{Error: "Something went wrong. Try again."})
+			s.render(w, r, http.StatusInternalServerError, "login", &pageData{Error: "Something went wrong. Try again."})
 			return
 		}
 		if !signed {
@@ -199,8 +205,12 @@ type pageData struct {
 	Playlists    []playlistView
 	PlaylistEdit *playlistEdit
 	ItemEdit     *itemEdit
-	// Delete is the removal the confirm page asks about.
-	Delete *deleteView
+	// ItemDelete is the item removal its confirm page asks about, and
+	// PlaylistDelete the playlist deletion its confirm page asks about.
+	ItemDelete     *itemDeleteView
+	PlaylistDelete *playlistDeleteView
+	// NewPlaylist is the new playlist form on the playlists page.
+	NewPlaylist newPlaylistForm
 	// Recipes is what the recipes page lists, and UploadLimit the size it
 	// says an upload may be, such as "8 MB". The firmware page uses
 	// UploadLimit too.
@@ -227,7 +237,7 @@ type pageData struct {
 }
 
 // render sends the page called name with the status.
-func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, data pageData) {
+func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, data *pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := s.pages[name].ExecuteTemplate(w, "base", data); err != nil {
@@ -245,7 +255,7 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, http.StatusOK, "login", pageData{})
+	s.render(w, r, http.StatusOK, "login", &pageData{})
 }
 
 // parseForm reads a posted form of at most maxFormBody bytes. If it cannot,
@@ -266,7 +276,7 @@ func parseForm(w http.ResponseWriter, r *http.Request, fail func(status int, msg
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if !parseForm(w, r, func(status int, msg string) { s.render(w, r, status, "login", pageData{Error: msg}) }) {
+	if !parseForm(w, r, func(status int, msg string) { s.render(w, r, status, "login", &pageData{Error: msg}) }) {
 		return
 	}
 	token, err := adminauth.Login(r.Context(), s.db, r.PostForm.Get("password"), s.now())
@@ -275,19 +285,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, adminauth.NewCookie(token, s.secure(r)))
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	case errors.Is(err, adminauth.ErrNoPassword):
-		s.render(w, r, http.StatusUnauthorized, "login", pageData{Error: "No admin password is set. Run trmnl-byos password on the server."})
+		s.render(w, r, http.StatusUnauthorized, "login", &pageData{Error: "No admin password is set. Run trmnl-byos password on the server."})
 	case errors.Is(err, adminauth.ErrWrongPassword):
-		s.render(w, r, http.StatusUnauthorized, "login", pageData{Error: "Wrong password."})
+		s.render(w, r, http.StatusUnauthorized, "login", &pageData{Error: "Wrong password."})
 	default:
 		slog.Error("admin ui: sign in", "err", err)
-		s.render(w, r, http.StatusInternalServerError, "login", pageData{Error: "Something went wrong. Try again."})
+		s.render(w, r, http.StatusInternalServerError, "login", &pageData{Error: "Something went wrong. Try again."})
 	}
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if err := adminauth.Logout(r.Context(), s.db, adminauth.Token(r)); err != nil {
 		slog.Error("admin ui: sign out", "err", err)
-		s.render(w, r, http.StatusInternalServerError, "login", pageData{Error: "Something went wrong. Try again."})
+		s.render(w, r, http.StatusInternalServerError, "login", &pageData{Error: "Something went wrong. Try again."})
 		return
 	}
 	http.SetCookie(w, adminauth.ClearCookie(s.secure(r)))

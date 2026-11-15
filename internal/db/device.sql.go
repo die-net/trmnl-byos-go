@@ -227,6 +227,40 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 	return i, err
 }
 
+const listDeviceNames = `-- name: ListDeviceNames :many
+SELECT id, friendly_id, name FROM device ORDER BY COALESCE(NULLIF(name, ''), friendly_id), id
+`
+
+type ListDeviceNamesRow struct {
+	ID         int64  `json:"id"`
+	FriendlyID string `json:"friendly_id"`
+	Name       string `json:"name"`
+}
+
+// Every device's ID, friendly ID and name, for a list to choose one from.
+func (q *Queries) ListDeviceNames(ctx context.Context) ([]ListDeviceNamesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDeviceNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceNamesRow{}
+	for rows.Next() {
+		var i ListDeviceNamesRow
+		if err := rows.Scan(&i.ID, &i.FriendlyID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeviceStatus = `-- name: ListDeviceStatus :many
 SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height
 FROM device

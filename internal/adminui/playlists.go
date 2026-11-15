@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 )
@@ -208,16 +209,51 @@ type addForm struct {
 	Duration string
 }
 
+// playlistForm is the values of the name and schedule form.
+type playlistForm struct {
+	Name     string
+	Schedule scheduleForm
+}
+
+// linkedDevice is a device linked to the playlist a page shows.
+type linkedDevice struct {
+	// Name is the device's name, or its friendly ID.
+	Name string
+	// ID is the friendly ID, which the unlink form posts, and Href the path
+	// of the device's page.
+	ID, Href string
+	// Note says where the playlist is in the device's order, or "" when it
+	// is the device's only playlist.
+	Note string
+}
+
+// deviceOption is a choice in the list of devices to link.
+type deviceOption struct {
+	// ID is the friendly ID the link form posts, and Label the device's
+	// name, or its friendly ID.
+	ID, Label string
+}
+
 // playlistEdit is a playlist as its page shows it.
 type playlistEdit struct {
-	Name string
-	// Action and AddAction are the paths the schedule and add item forms
-	// post to.
-	Action, AddAction string
-	Schedule          scheduleForm
-	Instances         []instanceOption
-	Add               addForm
-	MinSeconds        int64
+	// Action, AddAction, LinkAction and UnlinkAction are the paths the
+	// forms post to, and DeleteHref the page that confirms a delete.
+	Action, AddAction, LinkAction, UnlinkAction, DeleteHref string
+	Form                                                    playlistForm
+	// Devices are the devices linked to the playlist, and Unlinked those
+	// that are not. NoDevices is whether no device is registered at all.
+	Devices    []linkedDevice
+	Unlinked   []deviceOption
+	NoDevices  bool
+	Instances  []instanceOption
+	Add        addForm
+	MinSeconds int64
+}
+
+// newPlaylistForm is the form that makes a playlist, on the playlists page.
+type newPlaylistForm struct {
+	// Name is what was typed, and Error why it was refused, or "".
+	Name, Error string
 }
 
 // notFoundView says what the not-found page could not find.
@@ -232,7 +268,7 @@ type notFoundView struct {
 
 // renderNotFound sends the not-found page with a 404.
 func (s *Server) renderNotFound(w http.ResponseWriter, r *http.Request, nf notFoundView) {
-	s.render(w, r, http.StatusNotFound, "notfound", pageData{Nav: nf.Nav, Heading: "Not found", NotFound: nf})
+	s.render(w, r, http.StatusNotFound, "notfound", &pageData{Nav: nf.Nav, Heading: "Not found", NotFound: nf})
 }
 
 var (
@@ -327,18 +363,18 @@ func (s *Server) buildPlaylistViews(lists []db.Playlist, devs []db.ListPlaylistD
 }
 
 func (s *Server) playlists(w http.ResponseWriter, r *http.Request) {
-	s.renderPlaylists(w, r, http.StatusOK, "")
+	s.renderPlaylists(w, r, http.StatusOK, "", newPlaylistForm{})
 }
 
 // renderPlaylists sends the playlists page, with an error message above the
-// list if msg is not "".
-func (s *Server) renderPlaylists(w http.ResponseWriter, r *http.Request, status int, msg string) {
+// list if msg is not "", and the new playlist form as given.
+func (s *Server) renderPlaylists(w http.ResponseWriter, r *http.Request, status int, msg string, create newPlaylistForm) {
 	views, err := s.playlistViews(r.Context())
 	if err != nil {
 		serverError(w, r, "list playlists", err)
 		return
 	}
-	s.render(w, r, status, "playlists", pageData{Nav: "playlists", Heading: "Playlists", Error: msg, Playlists: views})
+	s.render(w, r, status, "playlists", &pageData{Nav: "playlists", Heading: "Playlists", Error: msg, Playlists: views, NewPlaylist: create})
 }
 
 // itemAction returns the handler of a small form that changes one item and
@@ -360,7 +396,7 @@ func (s *Server) itemAction(do func(ctx context.Context, post map[string][]strin
 			serverError(w, r, "get playlist item", err)
 			return
 		}
-		if !parseForm(w, r, func(status int, msg string) { s.renderPlaylists(w, r, status, msg) }) {
+		if !parseForm(w, r, func(status int, msg string) { s.renderPlaylists(w, r, status, msg, newPlaylistForm{}) }) {
 			return
 		}
 		err = do(r.Context(), r.PostForm, id)
@@ -370,7 +406,7 @@ func (s *Server) itemAction(do func(ctx context.Context, post map[string][]strin
 		case errors.Is(err, playlist.ErrNoItem):
 			s.renderNotFound(w, r, noItem)
 		case errors.Is(err, errkind.ErrInvalid):
-			s.renderPlaylists(w, r, http.StatusBadRequest, kindText(err))
+			s.renderPlaylists(w, r, http.StatusBadRequest, kindText(err), newPlaylistForm{})
 		default:
 			serverError(w, r, "change playlist item", err)
 		}
@@ -456,7 +492,7 @@ func (s *Server) renderItem(w http.ResponseWriter, r *http.Request, status int, 
 		MinSeconds: int64(playlist.MinDuration / time.Second),
 		Form:       *form,
 	}
-	s.render(w, r, status, "playlist_item", pageData{Nav: "playlists", Heading: row.InstanceName, Error: msg, ItemEdit: e})
+	s.render(w, r, status, "playlist_item", &pageData{Nav: "playlists", Heading: row.InstanceName, Error: msg, ItemEdit: e})
 }
 
 // saveItem applies the item form in one update, so a bad field changes
@@ -498,19 +534,13 @@ func (s *Server) saveItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// playlistFromPath returns the playlist the path names.
-func (s *Server) playlistFromPath(w http.ResponseWriter, r *http.Request) (db.Playlist, bool) {
-	return fromPath(s, w, r, "get playlist", noPlaylist, s.db.Read.GetPlaylist)
-}
-
 func (s *Server) playlistPage(w http.ResponseWriter, r *http.Request) {
-	pl, ok := s.playlistFromPath(w, r)
+	id, ok := idFromPath(r)
 	if !ok {
+		s.renderNotFound(w, r, noPlaylist)
 		return
 	}
-	sc := scheduleOf(&pl)
-	f := s.newScheduleForm(sc)
-	s.renderPlaylist(w, r, http.StatusOK, &pl, &f, &addForm{Duration: strconv.FormatInt(int64(playlist.DefaultDuration/time.Second), 10)}, "")
+	s.renderPlaylist(w, r, http.StatusOK, id, nil, nil, "")
 }
 
 // scheduleOf returns a playlist's schedule.
@@ -518,63 +548,261 @@ func scheduleOf(pl *db.Playlist) playlist.Schedule {
 	return playlist.Schedule{Days: pl.Days, WindowStart: pl.WindowStart, WindowEnd: pl.WindowEnd, StartsAt: pl.StartsAt, EndsAt: pl.EndsAt}
 }
 
-// renderPlaylist sends the page of a playlist with the values of its two
-// forms, and an error message above them if msg is not "".
-func (s *Server) renderPlaylist(w http.ResponseWriter, r *http.Request, status int, pl *db.Playlist, sched *scheduleForm, add *addForm, msg string) {
-	insts, err := s.db.Read.ListInstances(r.Context())
-	if err != nil {
-		serverError(w, r, "list instances", err)
+// renderPlaylist sends the page of the playlist with the ID, which gets the
+// not-found page if it does not exist. form and add are the values of the
+// name and schedule form and of the add item form, and nil shows the stored
+// name and schedule, and the default duration. msg is an error message
+// shown above the forms, or "". The heading is always the stored name. Its
+// reads are one snapshot, with a fixed number of queries.
+func (s *Server) renderPlaylist(w http.ResponseWriter, r *http.Request, status int, id int64, form *playlistForm, add *addForm, msg string) {
+	ctx := r.Context()
+	var pl db.Playlist
+	var links []db.ListPlaylistDevicesRow
+	var devs []db.ListDeviceNamesRow
+	var insts []db.ListInstancesRow
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if pl, err = q.GetPlaylist(ctx, id); err != nil {
+			return fmt.Errorf("get playlist: %w", err)
+		}
+		if links, err = q.ListPlaylistDevices(ctx); err != nil {
+			return fmt.Errorf("list playlist devices: %w", err)
+		}
+		if devs, err = q.ListDeviceNames(ctx); err != nil {
+			return fmt.Errorf("list devices: %w", err)
+		}
+		if insts, err = q.ListInstances(ctx); err != nil {
+			return fmt.Errorf("list instances: %w", err)
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		s.renderNotFound(w, r, noPlaylist)
+		return
+	case err != nil:
+		serverError(w, r, "read playlist page", err)
 		return
 	}
-	base := "/playlists/" + strconv.FormatInt(pl.ID, 10)
-	e := &playlistEdit{
-		Name: pl.Name, Action: base, AddAction: "/playlists/add-item/" + strconv.FormatInt(pl.ID, 10),
-		Schedule: *sched, Add: *add, MinSeconds: int64(playlist.MinDuration / time.Second),
+	if form == nil {
+		form = &playlistForm{Name: pl.Name, Schedule: s.newScheduleForm(scheduleOf(&pl))}
 	}
+	if add == nil {
+		add = &addForm{Duration: strconv.FormatInt(int64(playlist.DefaultDuration/time.Second), 10)}
+	}
+	base := strconv.FormatInt(pl.ID, 10)
+	e := &playlistEdit{
+		Action: "/playlists/" + base, AddAction: "/playlists/add-item/" + base,
+		LinkAction: "/playlists/link/" + base, UnlinkAction: "/playlists/unlink/" + base, DeleteHref: "/playlists/delete/" + base,
+		Form: *form, Add: *add, MinSeconds: int64(playlist.MinDuration / time.Second),
+		NoDevices: len(devs) == 0,
+	}
+	e.Devices, e.Unlinked = linkedDevices(pl.ID, links, devs)
 	for i := range insts {
 		inst := &insts[i].PluginInstance
 		e.Instances = append(e.Instances, instanceOption{ID: inst.ID, Label: inst.Name + " (" + insts[i].RecipeName + ")", Selected: inst.ID == add.Instance})
 	}
-	s.render(w, r, status, "playlist", pageData{Nav: "playlists", Heading: pl.Name, Error: msg, PlaylistEdit: e})
+	s.render(w, r, status, "playlist", &pageData{Nav: "playlists", Heading: pl.Name, Error: msg, PlaylistEdit: e})
 }
 
-// savePlaylist applies the schedule form to a playlist.
+// deviceLabel returns a device's name, or its friendly ID if it has none.
+func deviceLabel(name, friendlyID string) string {
+	if name == "" {
+		return friendlyID
+	}
+	return name
+}
+
+// linkedDevices splits the devices into those linked to the playlist, each
+// with where the playlist is in its order, and those that are not. links is
+// every link, which gives how many playlists each device has, and devs
+// every device.
+func linkedDevices(playlistID int64, links []db.ListPlaylistDevicesRow, devs []db.ListDeviceNamesRow) ([]linkedDevice, []deviceOption) {
+	total := map[int64]int64{}
+	for i := range links {
+		total[links[i].DeviceID]++
+	}
+	var linked []linkedDevice
+	isLinked := map[int64]bool{}
+	for i := range links {
+		l := &links[i]
+		if l.PlaylistID != playlistID {
+			continue
+		}
+		isLinked[l.DeviceID] = true
+		linked = append(linked, linkedDevice{
+			Name: deviceLabel(l.DeviceName, l.FriendlyID), ID: l.FriendlyID, Href: "/devices/" + l.FriendlyID,
+			Note: orderNote(l.Priority, total[l.DeviceID]),
+		})
+	}
+	var unlinked []deviceOption
+	for i := range devs {
+		if !isLinked[devs[i].ID] {
+			unlinked = append(unlinked, deviceOption{ID: devs[i].FriendlyID, Label: deviceLabel(devs[i].Name, devs[i].FriendlyID)})
+		}
+	}
+	return linked, unlinked
+}
+
+// orderNote says where a playlist, at index in a device's order of total
+// playlists, is tried, such as "Tried 2nd of 3 playlists". It is "" for a
+// device with only that playlist.
+func orderNote(index, total int64) string {
+	switch {
+	case total < 2:
+		return ""
+	case index == 0:
+		return fmt.Sprintf("Tried first of %d playlists", total)
+	default:
+		return fmt.Sprintf("Tried %s of %d playlists", ordinal(index+1), total)
+	}
+}
+
+// ordinal returns n with its suffix, such as "2nd" or "12th".
+func ordinal(n int64) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return strconv.FormatInt(n, 10) + suffix
+}
+
+// savePlaylist applies the name and schedule form to a playlist in one
+// update, so a refused form changes nothing.
 func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
-	pl, ok := s.playlistFromPath(w, r)
+	id, ok := idFromPath(r)
 	if !ok {
+		s.renderNotFound(w, r, noPlaylist)
 		return
 	}
-	sched := s.newScheduleForm(scheduleOf(&pl))
-	add := &addForm{Duration: strconv.FormatInt(int64(playlist.DefaultDuration/time.Second), 10)}
-	if !parseForm(w, r, func(status int, msg string) { s.renderPlaylist(w, r, status, &pl, &sched, add, msg) }) {
+	if !parseForm(w, r, func(status int, msg string) { s.renderPlaylist(w, r, status, id, nil, nil, msg) }) {
 		return
 	}
-	sched, edit, err := s.scheduleFromPost(r)
+	name := r.PostForm.Get("name")
+	form := playlistForm{Name: name}
+	var edit *playlist.ScheduleEdit
+	var err error
+	form.Schedule, edit, err = s.scheduleFromPost(r)
 	if err == nil {
-		err = playlist.UpdatePlaylist(r.Context(), s.db, playlist.ByID(pl.ID), playlist.Update{Schedule: edit})
+		err = playlist.UpdatePlaylist(r.Context(), s.db, playlist.ByID(id), playlist.Update{Name: &name, Schedule: edit})
 	}
 	switch {
 	case err == nil:
-		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(pl.ID, 10), http.StatusSeeOther)
+		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 	case errors.Is(err, playlist.ErrNoPlaylist):
 		s.renderNotFound(w, r, noPlaylist)
+	case errors.Is(err, playlist.ErrNameTaken):
+		s.renderPlaylist(w, r, http.StatusConflict, id, &form, nil, nameTakenText())
 	case errors.Is(err, errkind.ErrInvalid):
-		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, kindText(err))
+		s.renderPlaylist(w, r, http.StatusBadRequest, id, &form, nil, kindText(err))
 	default:
 		serverError(w, r, "save playlist", err)
 	}
 }
 
-// addPlaylistItem appends an item for the instance and duration the add form
-// names.
-func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) {
-	pl, ok := s.playlistFromPath(w, r)
-	if !ok {
+// nameTakenText is the message for a playlist name that another playlist has.
+func nameTakenText() string {
+	return capitalize(playlist.ErrNameTaken.Error()) + "."
+}
+
+// createPlaylist makes an empty playlist with the name the form gives, and
+// goes to its page, where items and devices are added.
+func (s *Server) createPlaylist(w http.ResponseWriter, r *http.Request) {
+	var form newPlaylistForm
+	if !parseForm(w, r, func(status int, msg string) { s.renderPlaylists(w, r, status, "", newPlaylistForm{Error: msg}) }) {
 		return
 	}
-	sched := s.newScheduleForm(scheduleOf(&pl))
+	form.Name = r.PostForm.Get("name")
+	pl, err := playlist.CreatePlaylist(r.Context(), s.db, form.Name)
+	switch {
+	case err == nil:
+		http.Redirect(w, r, "/playlists/"+strconv.FormatInt(pl.ID, 10), http.StatusSeeOther)
+	case errors.Is(err, playlist.ErrNameTaken):
+		form.Error = nameTakenText()
+		s.renderPlaylists(w, r, http.StatusConflict, "", form)
+	case errors.Is(err, errkind.ErrInvalid):
+		form.Error = kindText(err)
+		s.renderPlaylists(w, r, http.StatusBadRequest, "", form)
+	default:
+		serverError(w, r, "create playlist", err)
+	}
+}
+
+// linkDevice links the device the form names to a playlist, last in the
+// device's order.
+func (s *Server) linkDevice(w http.ResponseWriter, r *http.Request) {
+	s.linkAction(func(ctx context.Context, id int64, dev string) error {
+		return playlist.LinkDevice(ctx, s.db, playlist.ByID(id), dev)
+	})(w, r)
+}
+
+// unlinkDevice unlinks the device the form names from a playlist.
+func (s *Server) unlinkDevice(w http.ResponseWriter, r *http.Request) {
+	s.linkAction(func(ctx context.Context, id int64, dev string) error {
+		err := playlist.UnlinkDevice(ctx, s.db, playlist.ByID(id), dev)
+		// A link that is gone already, such as from a page that was out of
+		// date, is what the admin asked for, so it is not a failure.
+		if errors.Is(err, playlist.ErrNotLinked) {
+			return nil
+		}
+		return err
+	})(w, r)
+}
+
+// linkAction returns the handler of a form that changes whether the device
+// it names, by friendly ID in the device field, is linked to the playlist
+// of the path, and then goes back to the devices panel of its page. A
+// playlist that does not exist gets the not-found page, and a refused change
+// the page with the reason.
+func (s *Server) linkAction(do func(ctx context.Context, id int64, dev string) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := idFromPath(r)
+		if !ok {
+			s.renderNotFound(w, r, noPlaylist)
+			return
+		}
+		if !parseForm(w, r, func(status int, msg string) { s.renderPlaylist(w, r, status, id, nil, nil, msg) }) {
+			return
+		}
+		dev := strings.TrimSpace(r.PostForm.Get("device"))
+		if dev == "" {
+			s.renderPlaylist(w, r, http.StatusBadRequest, id, nil, nil, "Choose a device.")
+			return
+		}
+		err := do(r.Context(), id, dev)
+		switch {
+		case err == nil:
+			http.Redirect(w, r, "/playlists/"+strconv.FormatInt(id, 10)+"#devices", http.StatusSeeOther)
+		case errors.Is(err, playlist.ErrNoPlaylist):
+			s.renderNotFound(w, r, noPlaylist)
+		case errors.Is(err, device.ErrNoDevice):
+			s.renderPlaylist(w, r, http.StatusBadRequest, id, nil, nil, "That device no longer exists.")
+		case errors.Is(err, errkind.ErrInvalid):
+			s.renderPlaylist(w, r, http.StatusBadRequest, id, nil, nil, kindText(err))
+		default:
+			serverError(w, r, "change playlist link", err)
+		}
+	}
+}
+
+// addPlaylistItem appends an item for the instance and duration the add form
+// names. playlist.AddItem is what says the playlist is missing, so one that
+// was deleted after the page was shown is never made again.
+func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) {
+	id, ok := idFromPath(r)
+	if !ok {
+		s.renderNotFound(w, r, noPlaylist)
+		return
+	}
 	add := &addForm{}
-	if !parseForm(w, r, func(status int, msg string) { s.renderPlaylist(w, r, status, &pl, &sched, add, msg) }) {
+	if !parseForm(w, r, func(status int, msg string) { s.renderPlaylist(w, r, status, id, nil, add, msg) }) {
 		return
 	}
 	add.Duration = strings.TrimSpace(r.PostForm.Get("duration"))
@@ -587,16 +815,18 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) {
 		dur, err = parseSeconds(add.Duration)
 	}
 	if err == nil {
-		_, err = playlist.AddItem(r.Context(), s.db, playlist.ByID(pl.ID), "", instance, dur)
+		_, err = playlist.AddItem(r.Context(), s.db, playlist.ByID(id), "", instance, dur)
 	}
 	switch {
 	case err == nil:
-		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(pl.ID, 10), http.StatusSeeOther)
+		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	case errors.Is(err, playlist.ErrNoPlaylist):
+		s.renderNotFound(w, r, noPlaylist)
 	case errors.Is(err, errkind.ErrInvalid):
-		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, kindText(err))
+		s.renderPlaylist(w, r, http.StatusBadRequest, id, nil, add, kindText(err))
 	case errors.Is(err, errkind.ErrNotFound):
 		// The instance was removed after the page was shown.
-		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, "That instance no longer exists.")
+		s.renderPlaylist(w, r, http.StatusBadRequest, id, nil, add, "That instance no longer exists.")
 	default:
 		serverError(w, r, "add playlist item", err)
 	}
@@ -664,25 +894,125 @@ func describeDays(days int64) string {
 	return strings.Join(list, ", ")
 }
 
-// deleteView is the page that asks to confirm removing an item.
-type deleteView struct {
+// itemDeleteView is the page that asks to confirm removing an item.
+type itemDeleteView struct {
 	// Action is the path the Remove button posts to, and Cancel the page the
 	// link goes back to.
 	Action, Cancel     string
 	Instance, Playlist string
 }
 
-// confirmDelete asks whether to remove an item. It changes nothing.
-func (s *Server) confirmDelete(w http.ResponseWriter, r *http.Request) {
+// confirmDeleteItem asks whether to remove an item. It changes nothing.
+func (s *Server) confirmDeleteItem(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.itemFromPath(w, r)
 	if !ok {
 		return
 	}
 	item := strconv.FormatInt(row.PlaylistItem.ID, 10)
-	d := &deleteView{
+	d := &itemDeleteView{
 		Action:   "/playlists/items/" + item + "/delete",
 		Cancel:   "/playlists#playlist-" + strconv.FormatInt(row.PlaylistItem.PlaylistID, 10),
 		Instance: row.InstanceName, Playlist: row.PlaylistName,
 	}
-	s.render(w, r, http.StatusOK, "playlist_delete", pageData{Nav: "playlists", Heading: "Remove item", Delete: d})
+	s.render(w, r, http.StatusOK, "playlist_item_delete", &pageData{Nav: "playlists", Heading: "Remove item", ItemDelete: d})
+}
+
+// playlistDeleteView is the page that asks to confirm deleting a playlist.
+type playlistDeleteView struct {
+	// Action is the path the Delete button posts to, and Cancel the page the
+	// link goes back to.
+	Action, Cancel string
+	Name           string
+	// Summary says what the delete takes with it, from the real counts.
+	Summary string
+}
+
+// confirmDeletePlaylist asks whether to delete a playlist. It changes
+// nothing.
+func (s *Server) confirmDeletePlaylist(w http.ResponseWriter, r *http.Request) {
+	id, ok := idFromPath(r)
+	if !ok {
+		s.renderNotFound(w, r, noPlaylist)
+		return
+	}
+	ctx := r.Context()
+	var pl db.Playlist
+	var items int64
+	var devs []db.ListPlaylistDevicesOfRow
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if pl, err = q.GetPlaylist(ctx, id); err != nil {
+			return fmt.Errorf("get playlist: %w", err)
+		}
+		if items, err = q.CountPlaylistItems(ctx, id); err != nil {
+			return fmt.Errorf("count playlist items: %w", err)
+		}
+		if devs, err = q.ListPlaylistDevicesOf(ctx, id); err != nil {
+			return fmt.Errorf("list playlist devices: %w", err)
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		s.renderNotFound(w, r, noPlaylist)
+		return
+	case err != nil:
+		serverError(w, r, "read playlist", err)
+		return
+	}
+	names := make([]string, len(devs))
+	for i := range devs {
+		names[i] = deviceLabel(devs[i].DeviceName, devs[i].FriendlyID)
+	}
+	base := strconv.FormatInt(pl.ID, 10)
+	v := &playlistDeleteView{
+		Action: "/playlists/delete/" + base, Cancel: "/playlists/" + base, Name: pl.Name,
+		Summary: deleteSummary(items, names),
+	}
+	s.render(w, r, http.StatusOK, "playlist_delete", &pageData{Nav: "playlists", Heading: "Delete playlist", PlaylistDelete: v})
+}
+
+// deleteSummary says what deleting a playlist with items items and the
+// devices called names takes with it. It names up to two devices, and counts
+// more.
+func deleteSummary(items int64, names []string) string {
+	var parts []string
+	switch items {
+	case 0:
+		parts = append(parts, "It has no items.")
+	case 1:
+		parts = append(parts, "Its 1 item goes with it.")
+	default:
+		parts = append(parts, fmt.Sprintf("Its %d items go with it.", items))
+	}
+	switch len(names) {
+	case 0:
+		parts = append(parts, "No device shows it.")
+	case 1:
+		parts = append(parts, names[0]+" stops showing it.")
+	case 2:
+		parts = append(parts, names[0]+" and "+names[1]+" stop showing it.")
+	default:
+		parts = append(parts, fmt.Sprintf("%d devices stop showing it.", len(names)))
+	}
+	parts = append(parts, "The instances stay.")
+	return strings.Join(parts, " ")
+}
+
+// deletePlaylist deletes a playlist with its items, and goes to the list.
+func (s *Server) deletePlaylist(w http.ResponseWriter, r *http.Request) {
+	id, ok := idFromPath(r)
+	if !ok {
+		s.renderNotFound(w, r, noPlaylist)
+		return
+	}
+	err := playlist.DeletePlaylist(r.Context(), s.db, playlist.ByID(id))
+	switch {
+	case err == nil:
+		http.Redirect(w, r, "/playlists", http.StatusSeeOther)
+	case errors.Is(err, playlist.ErrNoPlaylist):
+		s.renderNotFound(w, r, noPlaylist)
+	default:
+		serverError(w, r, "delete playlist", err)
+	}
 }

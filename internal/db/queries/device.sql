@@ -70,3 +70,7 @@ SELECT sqlc.embed(device), s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.u
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 WHERE device.id = ?;
+
+-- name: ListDeviceNames :many
+-- Every device's ID, friendly ID and name, for a list to choose one from.
+SELECT id, friendly_id, name FROM device ORDER BY COALESCE(NULLIF(name, ''), friendly_id), id;

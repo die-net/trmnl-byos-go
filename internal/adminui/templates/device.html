@@ -49,11 +49,29 @@
 </form>
 </section>
 <section class="panel" aria-labelledby="playlist-title">
-<h2 id="playlist-title">Playlist</h2>
+<h2 id="playlist-title">Showing now</h2>
 {{if .Playlist}}<ol class="playlist">
 {{range .Playlist}}<li><span class="playlist-name">{{.Name}}</span><span class="rel">{{.Duration}}</span></li>
 {{end}}</ol>{{else}}<p class="rel">This device has no playlist items.</p>{{end}}
 <p class="more"><a href="/playlists">All playlists</a></p>
+</section>
+<section class="panel" id="playlists" aria-labelledby="playlists-heading">
+<h2 id="playlists-heading">Playlists</h2>
+{{if .LinkedError}}<p class="error" role="alert">{{.LinkedError}}</p>{{end}}
+{{if .Linked}}{{$many := gt (len .Linked) 1}}<p class="rel">The device shows the first of these that is scheduled now.</p>
+<ol class="items">
+{{range .Linked}}<li class="item">
+<div class="item-main">
+<a class="item-name" href="{{.Href}}">{{.Name}}</a>
+<span class="rel">{{.Schedule}}</span>
+</div>
+{{if $many}}<div class="item-actions">
+<form method="post" action="{{$.Detail.MoveAction}}"><input type="hidden" name="playlist" value="{{.ID}}"><input type="hidden" name="from" value="{{.Index}}"><input type="hidden" name="to" value="{{.Up}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Name}} earlier"{{if not .CanUp}} disabled{{end}}>{{template "icon-up"}}</button></form>
+<form method="post" action="{{$.Detail.MoveAction}}"><input type="hidden" name="playlist" value="{{.ID}}"><input type="hidden" name="from" value="{{.Index}}"><input type="hidden" name="to" value="{{.Down}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Name}} later"{{if not .CanDown}} disabled{{end}}>{{template "icon-down"}}</button></form>
+</div>{{end}}
+</li>
+{{end}}</ol>{{else}}<p class="rel">This device is linked to no playlist. Link one from a playlist's page.</p>
+<p class="more"><a href="/playlists">All playlists</a></p>{{end}}
 </section>
 </div>
 </div>{{end}}{{end}}
