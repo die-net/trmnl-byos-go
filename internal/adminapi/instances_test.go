@@ -140,8 +140,9 @@ func TestPatchInstanceNeedsKey(t *testing.T) {
 }
 
 // TestMarkSecret checks that mark_secret hides a field's value and lists it
-// in secret_keys and secret_fields, that unmarking shows it again, and that
-// a refused mark answers 400 with the field error.
+// in secret_keys and secret_fields, that an unmark that would show the
+// sealed value is refused, that an unmark with a new value shows only that,
+// and that a refused mark answers 400 with the field error.
 func TestMarkSecret(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)
@@ -178,11 +179,21 @@ func TestMarkSecret(t *testing.T) {
 		t.Errorf("a refused mark on create: %v", e.Fields)
 	}
 
-	// Unmarking shows the value again.
+	// An unmark alone, or with a blank value, would show the sealed value,
+	// so it is refused.
+	for _, body := range []string{`{"mark_secret": {"city": false}}`, `{"mark_secret": {"city": false}, "fields": {"city": ""}}`} {
+		var e errorBody
+		bodies = append(bodies, ta.call(t, "PATCH", path, body, 400, &e).Body.String())
+		if e.Fields["city"] != "is secret; give it a new value or clear it to make it plain" {
+			t.Errorf("%s: fields = %v", body, e.Fields)
+		}
+	}
+	// An unmark with a new value shows only the new value.
 	var got instanceJSON
-	w = ta.call(t, "PATCH", path, `{"mark_secret": {"city": false}}`, 200, &got)
-	if got.Fields["city"].One != testSecret || len(got.SecretKeys) != 0 || len(got.SecretFields) != 0 {
-		t.Errorf("after unmarking: %+v", got)
+	w = ta.call(t, "PATCH", path, `{"mark_secret": {"city": false}, "fields": {"city": "Geneva"}}`, 200, &got)
+	bodies = append(bodies, w.Body.String())
+	if got.Fields["city"].One != "Geneva" || len(got.SecretKeys) != 0 || len(got.SecretFields) != 0 {
+		t.Errorf("after unmarking with a new value: %+v", got)
 	}
 	if !strings.Contains(w.Body.String(), `"secret_keys":[]`) {
 		t.Errorf("unmarked body: %s", w.Body)

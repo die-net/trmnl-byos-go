@@ -321,7 +321,7 @@ func instanceSet(ctx context.Context, args []string, stdin io.Reader, out io.Wri
 	fs.Var(&files, "field-file", "custom field value read from a file as keyname=path, or from stdin for -, which only one may be; one trailing newline is dropped. Repeat as for -field")
 	fs.Var(&cleared, "clear", "name of a custom field to clear, a password field included; repeat for each. A field left out is kept, and so is a secret given an empty value")
 	fs.Var(&secret, "secret", "name of a text field to mark secret, which moves its value into the encrypted fields; repeat for each. A value shorter than 6 characters cannot be secret")
-	fs.Var(&plain, "plain", "name of a field marked secret to unmark, which moves its value out of the encrypted fields and shows it; repeat for each. A password field is always secret")
+	fs.Var(&plain, "plain", "name of a field marked secret to unmark; repeat for each. A secret is never shown back, so a field with a value needs a new one with -field or -field-file, or -clear. A password field is always secret")
 	rest := parseInterspersed(fs, args)
 	usage := errors.New("usage: trmnl-byos instance set [-data dir] <instance ID> [-name name] [-palette id] [-field k=v ...] [-field-file k=path ...] [-clear k ...] [-secret k ...] [-plain k ...]")
 	if len(rest) != 1 {
