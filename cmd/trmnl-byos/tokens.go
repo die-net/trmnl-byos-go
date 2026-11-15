@@ -72,20 +72,5 @@ func tokenList(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func tokenRemove(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("token remove", flag.ExitOnError)
-	data := dataFlag(fs)
-	_ = fs.Parse(args) // ExitOnError exits on a parse error.
-	if fs.NArg() != 1 {
-		return errors.New("usage: trmnl-byos token remove [-data dir] <name>")
-	}
-	client, err := openDB(ctx, *data)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	if err := apitoken.Delete(ctx, client, fs.Arg(0)); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Removed token %q.\n", fs.Arg(0))
-	return err
+	return oneArgCommand(ctx, args, out, "token remove", "name", apitoken.Delete, "Removed token %q.\n")
 }

@@ -122,7 +122,22 @@ The web UI signs in with one admin password. Set it, or change it, on the server
 trmnl-byos password
 ```
 
-It asks twice without echo. From a script, pipe the password in as one line: `printf '%s\n' "$PW" | trmnl-byos password`. It must be 12 to 1024 bytes. Setting it signs out every browser. A signed-in session also works for `/api/v1`.
+It asks twice without echo. From a script, pipe the password in as one line: `printf '%s\n' "$PW" | trmnl-byos password`. It must be `min_password_length` to 1024 bytes, and that setting is 12 unless you change it (see Settings). The minimum applies only when a password is set, so a shorter one set earlier still works. If the server can be reached from the internet, use a long one, such as four or more random words: nothing but its length slows someone guessing it. Setting it signs out every browser. A signed-in session also works for `/api/v1`.
+
+### Settings
+
+A few values can change while the server runs, with no restart:
+
+- `refresh_seconds`: how long devices sleep between wakes. Default 900, from 1 to 31536000. A device picks up a change at its next wake.
+- `min_password_length`: the shortest new admin password. Default 12, from 1 to 1024.
+
+```
+trmnl-byos setting list
+trmnl-byos setting set refresh_seconds 600
+trmnl-byos setting reset refresh_seconds
+```
+
+`list` shows each value, its default, and whether it is the default. `reset` goes back to the default. The API has `GET` and `PATCH /api/v1/settings`: `curl -H "Authorization: Bearer $TOKEN" -X PATCH -d '{"refresh_seconds": 600}' http://localhost:8080/api/v1/settings`. A field left out of a `PATCH` is kept, and a bad one changes nothing.
 
 ### Pushing data to a recipe
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 // Errors from the password.
@@ -27,18 +28,14 @@ var (
 	ErrNoPassword = errors.New("no admin password is set")
 	// ErrWrongPassword means the password is not the admin password.
 	ErrWrongPassword = errors.New("wrong password")
-	// ErrPasswordLength means a new password is too short or too long.
-	ErrPasswordLength = errkind.New(errkind.ErrInvalid, fmt.Sprintf("password must be %d to %d bytes", MinPasswordLen, MaxPasswordLen))
+	// ErrPasswordLength means a new password is too short or too long. The
+	// error that wraps it states the bounds.
+	ErrPasswordLength = errkind.New(errkind.ErrInvalid, "password length is out of bounds")
 	// ErrBadHash means the stored hash is not one this package can check.
 	ErrBadHash = errors.New("stored password hash is not usable")
 )
 
 const (
-	// MinPasswordLen bounds a new password from below, in bytes.
-	MinPasswordLen = 12
-	// MaxPasswordLen bounds a new password from above, in bytes.
-	MaxPasswordLen = 1024
-
 	// settingPasswordHash is the setting that holds the PHC string.
 	settingPasswordHash = "admin_password_hash"
 
@@ -155,10 +152,16 @@ func verifyHash(ctx context.Context, phc, password string) (bool, error) {
 
 // SetPassword makes password the admin password and signs out every
 // session, in one transaction. A password outside the length bounds is
-// refused.
+// refused: the minimum is the min_password_length setting, read now, and it
+// applies only here, so a shorter password set earlier still logs in.
 func SetPassword(ctx context.Context, client *db.Client, password string, now time.Time) error {
-	if n := len(password); n < MinPasswordLen || n > MaxPasswordLen {
-		return ErrPasswordLength
+	// Checked before hashing, which is slow and holds the hash slot.
+	minLen, err := settings.MinPasswordLength(ctx, client.Read)
+	if err != nil {
+		return err
+	}
+	if n := len(password); n < minLen || n > settings.MaxPasswordLen {
+		return fmt.Errorf("%w: must be %d to %d bytes", ErrPasswordLength, minLen, settings.MaxPasswordLen)
 	}
 	phc, err := hashPassword(ctx, password)
 	if err != nil {
@@ -188,7 +191,7 @@ func CheckPassword(ctx context.Context, client *db.Client, password string) erro
 		return fmt.Errorf("read password hash: %w", err)
 	}
 	// No password this long can have been set, so skip the work.
-	if len(password) > MaxPasswordLen {
+	if len(password) > settings.MaxPasswordLen {
 		return ErrWrongPassword
 	}
 	ok, err := verifyHash(ctx, phc, password)

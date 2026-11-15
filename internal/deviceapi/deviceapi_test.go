@@ -24,6 +24,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 const testMAC = "D8:3B:DA:12:34:56"
@@ -93,7 +94,7 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatal(err)
 	}
 	ts := &testServer{db: client, now: time.Unix(1_800_000_000, 0), fwDir: filepath.Join(dir, "firmware"), imagesDir: filepath.Join(dir, "images")}
-	ts.srv = New(client, images, Config{RefreshRate: 15 * time.Minute, FirmwareDir: ts.fwDir})
+	ts.srv = New(client, images, Config{FirmwareDir: ts.fwDir})
 	ts.srv.now = func() time.Time { return ts.now }
 	mux := http.NewServeMux()
 	ts.srv.Register(mux)
@@ -271,6 +272,44 @@ func TestSetupBadID(t *testing.T) {
 		if code, _ := ts.do(t, http.MethodGet, "/api/setup", setupHeaders(id), nil); code != http.StatusBadRequest {
 			t.Errorf("ID %q: HTTP %d, want 400", id, code)
 		}
+	}
+}
+
+// TestDisplayRefreshFollowsSetting checks that refresh_rate comes from the
+// refresh_seconds setting, read at each wake so a change needs no restart,
+// and that an unusable stored value gives the default, not a failure.
+func TestDisplayRefreshFollowsSetting(t *testing.T) {
+	ts := newTestServer(t)
+	key := ts.register(t)
+	for _, tc := range []struct {
+		name string
+		// stored is written raw to the setting, or "" to delete the row.
+		stored string
+		want   float64
+	}{
+		{"unset", "", 900},
+		{"set to 10 minutes", "600", 600},
+		{"set to a minute", "60", 60},
+		{"set to a day", "86400", 86400},
+		{"not a number", "soon", 900},
+		{"out of range", "0", 900},
+		{"reset", "", 900},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var err error
+			if tc.stored == "" {
+				err = ts.db.Write.DeleteSetting(t.Context(), settings.KeyRefreshSeconds)
+			} else {
+				err = ts.db.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyRefreshSeconds, Value: tc.stored, UpdatedAt: 1})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+			if m["status"] != float64(statusOK) || m["refresh_rate"] != tc.want {
+				t.Fatalf("response %v, want status 0 and refresh_rate %v", m, tc.want)
+			}
+		})
 	}
 }
 

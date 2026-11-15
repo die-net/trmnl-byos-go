@@ -10,6 +10,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/adminauth"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 // stdin returns a file, which is not a terminal, holding s.
@@ -43,7 +44,7 @@ func TestPasswordFromStdin(t *testing.T) {
 		{"only the first line", pw + "\nsecond\n", pw, false},
 		{"spaces are kept", " " + pw + " \n", " " + pw + " ", false},
 		{"too short", "short\n", "", true},
-		{"too long", strings.Repeat("a", adminauth.MaxPasswordLen+1) + "\n", "", true},
+		{"too long", strings.Repeat("a", settings.MaxPasswordLen+1) + "\n", "", true},
 		{"empty", "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

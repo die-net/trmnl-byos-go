@@ -41,8 +41,6 @@ type Config struct {
 	// http://192.168.1.10:8080. Empty uses the scheme and Host of each
 	// request.
 	PublicURL string
-	// RefreshRate is how long a device sleeps between wakes.
-	RefreshRate time.Duration
 	// FirmwareDir is where firmware files are stored. Empty offers and
 	// serves no firmware.
 	FirmwareDir string

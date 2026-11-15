@@ -78,6 +78,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"POST /api/v1/devices/{id}/calibrate", handle(http.StatusOK, s.calibrate)},
 		{"GET /api/v1/join", handle(http.StatusOK, s.getJoin)},
 		{"PUT /api/v1/join", handle(http.StatusOK, s.putJoin)},
+		{"GET /api/v1/settings", handle(http.StatusOK, s.getSettings)},
+		{"PATCH /api/v1/settings", handle(http.StatusOK, s.patchSettings)},
 		{"GET /api/v1/firmware", handle(http.StatusOK, s.listFirmware)},
 		{"POST /api/v1/firmware", handle(http.StatusCreated, s.addFirmware)},
 		{"POST /api/v1/firmware/{id}/rollout", handle(http.StatusOK, s.startRollout)},
