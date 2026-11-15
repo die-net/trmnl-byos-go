@@ -701,8 +701,9 @@ func TestUpdateOneStorePerKey(t *testing.T) {
 }
 
 // TestSecretsDoNotOpenUnderAReusedID checks that the sealed secrets of a
-// deleted instance do not open under a new one that is given its ID, which
-// SQLite does for the highest ID.
+// deleted instance do not open under a new one that is given its ID. The
+// database does not reuse an ID (AUTOINCREMENT), but a database edit or a
+// restored backup can, so the test makes it by lowering the sequence.
 func TestSecretsDoNotOpenUnderAReusedID(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -714,6 +715,10 @@ func TestSecretsDoNotOpenUnderAReusedID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := DeleteInstance(ctx, f.client, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.client.Writer.ExecContext(ctx, `UPDATE sqlite_sequence SET seq = ? WHERE name = 'plugin_instance'`, first.ID-1)
+	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Bern"}}}, time.Unix(2000, 0))

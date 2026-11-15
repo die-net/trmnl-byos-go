@@ -1,6 +1,10 @@
 -- Runtime schema for trmnl-byos-go. sqlc generates queries against this
 -- file, and Open applies it to a new
 -- database, and migrate.go upgrades an old one. Times are Unix seconds.
+--
+-- Every surrogate id is AUTOINCREMENT, so an ID is never handed out twice.
+-- Without it SQLite reuses the highest deleted ID, and a stale page, API
+-- client or script holding that ID would act on the next row to take it.
 
 -- A device is one display that has called /api/setup. mac is the ID header
 -- it sent. api_key_hash is the SHA-256 of the key it got back, which it
@@ -8,7 +12,7 @@
 -- stored. fw_model is the Model header, the firmware's own name for its
 -- board, which decides what firmware it may be offered.
 CREATE TABLE IF NOT EXISTS device (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   mac TEXT NOT NULL UNIQUE,
   api_key_hash BLOB NOT NULL UNIQUE,
   friendly_id TEXT NOT NULL UNIQUE,
@@ -69,7 +73,7 @@ CREATE TABLE IF NOT EXISTS device_cursor (
 -- device's own clock, which is 0 before it has synced time. detail is the
 -- entry as the device sent it.
 CREATE TABLE IF NOT EXISTS device_log (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   device_id INTEGER NOT NULL REFERENCES device (id) ON DELETE CASCADE,
   received_at INTEGER NOT NULL,
   device_at INTEGER NOT NULL,
@@ -90,7 +94,7 @@ CREATE TABLE IF NOT EXISTS setting (
 -- recipe is an installed TRMNL recipe. Its files are in recipes/<id>/ under
 -- the data directory. name and refresh_interval come from its settings.yml.
 CREATE TABLE IF NOT EXISTS recipe (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   -- source is the directory or zip file it was installed from.
   source TEXT NOT NULL,
@@ -103,7 +107,7 @@ CREATE TABLE IF NOT EXISTS recipe (
 -- plugin_instance is a recipe with its settings filled in: what a playlist
 -- shows.
 CREATE TABLE IF NOT EXISTS plugin_instance (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   recipe_id INTEGER NOT NULL REFERENCES recipe (id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   -- field_values is a JSON object of the custom field values that are not
@@ -141,7 +145,7 @@ CREATE TABLE IF NOT EXISTS plugin_instance (
 -- unbounded, and the schedule is active in [starts_at, ends_at). The default
 -- is always active.
 CREATE TABLE IF NOT EXISTS playlist (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   days INTEGER NOT NULL DEFAULT 127,
   window_start INTEGER NOT NULL DEFAULT 0,
@@ -169,7 +173,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS playlist_device_priority ON playlist_device (d
 -- and position is the item's index in its playlist, 0 to n-1 with no gaps.
 -- A hidden item is never shown, and its renders are not kept.
 CREATE TABLE IF NOT EXISTS playlist_item (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   playlist_id INTEGER NOT NULL REFERENCES playlist (id) ON DELETE CASCADE,
   position INTEGER NOT NULL,
   -- layout is full for one instance on the whole screen, the only layout
@@ -219,7 +223,7 @@ CREATE TABLE IF NOT EXISTS instance_data (
 -- succeeded. attempted_at, error and log are from the latest build, so an
 -- error is kept next to the last good images.
 CREATE TABLE IF NOT EXISTS render (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   instance_id INTEGER NOT NULL REFERENCES plugin_instance (id) ON DELETE CASCADE,
   device_id INTEGER NOT NULL DEFAULT 0,
   width INTEGER NOT NULL,
@@ -269,7 +273,7 @@ CREATE TABLE IF NOT EXISTS render_image (
 -- token itself is shown once, when it is created, and never stored.
 -- last_used_at is 0 until the token is first used.
 CREATE TABLE IF NOT EXISTS api_token (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   token_hash BLOB NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
@@ -282,7 +286,7 @@ CREATE TABLE IF NOT EXISTS api_token (
 -- slide forward as the session is used. Setting the admin password deletes
 -- every session.
 CREATE TABLE IF NOT EXISTS admin_session (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash BLOB NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
@@ -295,7 +299,7 @@ CREATE TABLE IF NOT EXISTS admin_session (
 -- read from the file's headers when it is added. source says where it came
 -- from, such as upload. A model has one build per version.
 CREATE TABLE IF NOT EXISTS firmware (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   fw_model TEXT NOT NULL,
   version TEXT NOT NULL,
   sha256 TEXT NOT NULL UNIQUE,
