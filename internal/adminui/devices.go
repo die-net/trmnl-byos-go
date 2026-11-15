@@ -91,10 +91,8 @@ type deviceListRow struct {
 	Name, Href string
 	// Schedule is the playlist's schedule in words.
 	Schedule string
-	// Index is the playlist's place in the device's order, which a move
-	// sends back so a stale page is refused. Up and Down are the place the
-	// playlist moves to, and CanUp and CanDown whether it has one.
-	Index          int64
+	// Up and Down are the place the playlist moves to, and CanUp and
+	// CanDown whether it has one.
 	Up, Down       int64
 	CanUp, CanDown bool
 }
@@ -134,9 +132,12 @@ type deviceDetail struct {
 	Form       deviceForm
 	Playlist   []playlistRow
 	// Linked are the playlists the device is linked to, in the order they
-	// are tried, MoveAction is the path the forms that move one post to, and
+	// are tried. Order is their IDs in that order, comma-separated, which
+	// each move form sends back so a move from a stale page is refused.
+	// MoveAction is the path the forms that move one post to, and
 	// LinkedError is why a move was refused, or "".
 	Linked      []deviceListRow
+	Order       string
 	MoveAction  string
 	LinkedError string
 }
@@ -458,14 +459,19 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		WakeCause:   missing,
 		PanelSize:   missing,
 		Playlist:    []playlistRow{},
-		MoveAction:  "/devices/" + dev.FriendlyID + "/playlists",
+		MoveAction:  "/devices/" + dev.FriendlyID + "/playlists#playlists",
 		LinkedError: listMsg,
 	}
+	order := make([]int64, len(linked))
+	for i := range linked {
+		order[i] = linked[i].ID
+	}
+	d.Order = joinIDs(order)
 	for i := range linked {
 		pl := &linked[i]
 		d.Linked = append(d.Linked, deviceListRow{
 			ID: pl.ID, Name: pl.Name, Href: "/playlists#playlist-" + strconv.FormatInt(pl.ID, 10), Schedule: s.describeSchedule(scheduleOf(pl)),
-			Index: int64(i), Up: int64(i) - 1, Down: int64(i) + 1, CanUp: i > 0, CanDown: i < len(linked)-1,
+			Up: int64(i) - 1, Down: int64(i) + 1, CanUp: i > 0, CanDown: i < len(linked)-1,
 		})
 	}
 	d.View.Firmware = orMissing(dev.FwVersion)
@@ -507,10 +513,10 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 // order as it is now.
 const orderChanged = "This device's playlists changed after the page loaded, so nothing was moved. The order below is current."
 
-// moveDevicePlaylist moves one of a device's playlists from the place the
-// page showed it at to another, in the order the device tries them. The
-// form sends both places, so a move from a page that is out of date is
-// refused instead of moving the wrong way. It never makes a link.
+// moveDevicePlaylist moves one of a device's playlists to another place in
+// the order the device tries them. The form sends the order the page showed,
+// so a move from a page that is out of date is refused instead of moving the
+// wrong way. It never makes a link.
 func (s *Server) moveDevicePlaylist(w http.ResponseWriter, r *http.Request) {
 	dev, ok := s.deviceFromPath(w, r)
 	if !ok {
@@ -521,13 +527,13 @@ func (s *Server) moveDevicePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, idErr := strconv.ParseInt(r.PostForm.Get("playlist"), 10, 64)
-	from, fromErr := strconv.ParseInt(r.PostForm.Get("from"), 10, 64)
+	order, orderOK := idList(r.PostForm, "order")
 	to, toErr := strconv.ParseInt(r.PostForm.Get("to"), 10, 64)
-	if idErr != nil || fromErr != nil || toErr != nil {
+	if idErr != nil || !orderOK || toErr != nil {
 		refuse(http.StatusBadRequest, "Choose a playlist to move.")
 		return
 	}
-	err := playlist.MoveLink(r.Context(), s.db, playlist.ByID(id), dev.FriendlyID, from, to)
+	err := playlist.MoveLink(r.Context(), s.db, playlist.ByID(id), dev.FriendlyID, order, to)
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/devices/"+dev.FriendlyID+"#playlists", http.StatusSeeOther)

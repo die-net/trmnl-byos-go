@@ -276,7 +276,7 @@ func TestDeviceLists(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := MoveLink(ctx, client, ByID(q.ID), dev.FriendlyID, 1, 0); err != nil {
+	if err := MoveLink(ctx, client, ByID(q.ID), dev.FriendlyID, []int64{p.ID, q.ID}, 0); err != nil {
 		t.Fatal(err)
 	}
 	yes := true

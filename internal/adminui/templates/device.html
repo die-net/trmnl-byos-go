@@ -66,8 +66,8 @@
 <span class="rel">{{.Schedule}}</span>
 </div>
 {{if $many}}<div class="item-actions">
-<form method="post" action="{{$.Detail.MoveAction}}"><input type="hidden" name="playlist" value="{{.ID}}"><input type="hidden" name="from" value="{{.Index}}"><input type="hidden" name="to" value="{{.Up}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Name}} earlier"{{if not .CanUp}} disabled{{end}}>{{template "icon-up"}}</button></form>
-<form method="post" action="{{$.Detail.MoveAction}}"><input type="hidden" name="playlist" value="{{.ID}}"><input type="hidden" name="from" value="{{.Index}}"><input type="hidden" name="to" value="{{.Down}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Name}} later"{{if not .CanDown}} disabled{{end}}>{{template "icon-down"}}</button></form>
+<form method="post" action="{{$.Detail.MoveAction}}"><input type="hidden" name="playlist" value="{{.ID}}"><input type="hidden" name="order" value="{{$.Detail.Order}}"><input type="hidden" name="to" value="{{.Up}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Name}} earlier"{{if not .CanUp}} disabled{{end}}>{{template "icon-up"}}</button></form>
+<form method="post" action="{{$.Detail.MoveAction}}"><input type="hidden" name="playlist" value="{{.ID}}"><input type="hidden" name="order" value="{{$.Detail.Order}}"><input type="hidden" name="to" value="{{.Down}}"><button class="btn btn-secondary btn-icon" type="submit" aria-label="Move {{.Name}} later"{{if not .CanDown}} disabled{{end}}>{{template "icon-down"}}</button></form>
 </div>{{end}}
 </li>
 {{end}}</ol>{{else}}<p class="rel">This device is linked to no playlist. Link one from a playlist's page.</p>

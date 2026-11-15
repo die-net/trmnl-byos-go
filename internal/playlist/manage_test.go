@@ -193,6 +193,120 @@ func TestUpdatePlaylistAtomic(t *testing.T) {
 	}
 }
 
+// seenOf returns the name and schedule the playlist has now, as a caller
+// that read it would hold them.
+func seenOf(t *testing.T, client *db.Client, id int64) Seen {
+	t.Helper()
+	pl, err := client.Read.GetPlaylist(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Seen{Name: pl.Name, Schedule: Schedule{Days: pl.Days, WindowStart: pl.WindowStart, WindowEnd: pl.WindowEnd, StartsAt: pl.StartsAt, EndsAt: pl.EndsAt}}
+}
+
+// TestUpdatePlaylistSeen saves from a view that another change has made out
+// of date, in both directions, and checks that nothing is written.
+func TestUpdatePlaylistSeen(t *testing.T) {
+	t.Parallel()
+	client, _, _ := newPlaylist(t, 1)
+	ctx := t.Context()
+	p, _ := client.Read.GetPlaylistByName(ctx, "p")
+	saw := seenOf(t, client, p.ID)
+	weekdays := Schedule{Days: 0b0111110, WindowStart: 540, WindowEnd: 1020, StartsAt: 86400, EndsAt: 172800}
+	edit := weekdays.Full()
+	mornings, breakfast := "Mornings", "Breakfast"
+	// Another change renames the playlist, and then a save of days from the
+	// older view is refused.
+	if err := UpdatePlaylist(ctx, client, ByID(p.ID), Update{Name: &mornings}); err != nil {
+		t.Fatal(err)
+	}
+	days := int64(0b0000110)
+	err := UpdatePlaylist(ctx, client, ByID(p.ID), Update{Name: &saw.Name, Schedule: &ScheduleEdit{Days: &days}, Seen: &saw})
+	if !errors.Is(err, ErrPlaylistChanged) || !errors.Is(err, errkind.ErrConflict) {
+		t.Fatalf("save after a rename: %v", err)
+	}
+	if got := seenOf(t, client, p.ID); got.Name != mornings || got.Schedule != saw.Schedule {
+		t.Errorf("a refused save changed the playlist: %+v", got)
+	}
+	// Another change sets the schedule, and then a rename from the older
+	// view is refused.
+	saw = seenOf(t, client, p.ID)
+	if err := UpdatePlaylist(ctx, client, ByID(p.ID), Update{Schedule: &edit}); err != nil {
+		t.Fatal(err)
+	}
+	err = UpdatePlaylist(ctx, client, ByID(p.ID), Update{Name: &breakfast, Schedule: &ScheduleEdit{Days: &days}, Seen: &saw})
+	if !errors.Is(err, ErrPlaylistChanged) {
+		t.Fatalf("save after a schedule change: %v", err)
+	}
+	if got := seenOf(t, client, p.ID); got.Name != mornings || got.Schedule != weekdays {
+		t.Errorf("a refused save changed the playlist: %+v", got)
+	}
+	// A save from a view that matches goes through, and the view it is read
+	// back as matches too, with every schedule field in the stored form.
+	saw = seenOf(t, client, p.ID)
+	if err := UpdatePlaylist(ctx, client, ByID(p.ID), Update{Name: &breakfast, Schedule: &ScheduleEdit{Days: &days}, Seen: &saw}); err != nil {
+		t.Fatal(err)
+	}
+	saw = seenOf(t, client, p.ID)
+	if err := UpdatePlaylist(ctx, client, ByID(p.ID), Update{Name: &mornings, Seen: &saw}); err != nil {
+		t.Fatalf("save from a view read back: %v", err)
+	}
+	// No view means the last write wins.
+	if err := UpdatePlaylist(ctx, client, ByID(p.ID), Update{Name: &breakfast, Schedule: &edit}); err != nil {
+		t.Fatal(err)
+	}
+	if got := seenOf(t, client, p.ID); got.Name != breakfast || got.Schedule != weekdays {
+		t.Errorf("after an unchecked save: %+v", got)
+	}
+}
+
+// TestDeletePlaylistSeen deletes with a view of what goes with the playlist
+// that is out of date by a device or an item, which refuses, and with one
+// that matches, which deletes.
+func TestDeletePlaylistSeen(t *testing.T) {
+	t.Parallel()
+	client, _, inst := newPlaylist(t, 1)
+	ctx := t.Context()
+	pl := newNamed(t, client, "empty")[0]
+	d1, d2 := newDevice(t, client, 1), newDevice(t, client, 2)
+	exists := func() bool {
+		t.Helper()
+		_, err := client.Read.GetPlaylist(ctx, pl)
+		return err == nil
+	}
+	if err := LinkDevice(ctx, client, ByID(pl), d1.FriendlyID); err != nil {
+		t.Fatal(err)
+	}
+	// The view had no devices, and one is linked now.
+	if err := DeletePlaylist(ctx, client, ByID(pl), &Contents{Items: 0}); !errors.Is(err, ErrPlaylistChanged) || !errors.Is(err, errkind.ErrConflict) {
+		t.Fatalf("delete after a link: %v", err)
+	}
+	// The view had a device the playlist has lost, and a different one.
+	if err := DeletePlaylist(ctx, client, ByID(pl), &Contents{Devices: []int64{d2.ID}}); !errors.Is(err, ErrPlaylistChanged) {
+		t.Errorf("delete with another device: %v", err)
+	}
+	if err := DeletePlaylist(ctx, client, ByID(pl), &Contents{Devices: []int64{d1.ID, d2.ID}}); !errors.Is(err, ErrPlaylistChanged) {
+		t.Errorf("delete with an extra device: %v", err)
+	}
+	// The view had no items, and one is added.
+	if _, err := AddItem(ctx, client, ByID(pl), "", inst, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeletePlaylist(ctx, client, ByID(pl), &Contents{Items: 0, Devices: []int64{d1.ID}}); !errors.Is(err, ErrPlaylistChanged) {
+		t.Errorf("delete after an item: %v", err)
+	}
+	if !exists() || !slices.Equal(links(t, client, d1.ID), []int64{pl}) {
+		t.Fatal("a refused delete changed something")
+	}
+	// A view that matches deletes, whatever the order or repeats of devices.
+	if err := DeletePlaylist(ctx, client, ByID(pl), &Contents{Items: 1, Devices: []int64{d1.ID, d1.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if exists() {
+		t.Error("the playlist is still there")
+	}
+}
+
 func TestDeletePlaylist(t *testing.T) {
 	t.Parallel()
 	client, ids, _ := newPlaylist(t, 2)
@@ -208,7 +322,7 @@ func TestDeletePlaylist(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := DeletePlaylist(ctx, client, ByID(pq[0])); err != nil {
+	if err := DeletePlaylist(ctx, client, ByID(pq[0]), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := links(t, client, d1.ID); !slices.Equal(got, []int64{pq[1], pq[2]}) {
@@ -222,7 +336,7 @@ func TestDeletePlaylist(t *testing.T) {
 	if err := LinkDevice(ctx, client, ByID(p.ID), d2.FriendlyID); err != nil {
 		t.Fatal(err)
 	}
-	if err := DeletePlaylist(ctx, client, ByID(p.ID)); err != nil {
+	if err := DeletePlaylist(ctx, client, ByID(p.ID), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := links(t, client, d2.ID); !slices.Equal(got, []int64{pq[2], pq[1]}) {
@@ -231,7 +345,7 @@ func TestDeletePlaylist(t *testing.T) {
 	if _, err := client.Read.GetPlaylistItem(ctx, ids[0]); err == nil {
 		t.Error("an item of the deleted playlist is still there")
 	}
-	if err := DeletePlaylist(ctx, client, ByID(p.ID)); !errors.Is(err, ErrNoPlaylist) {
+	if err := DeletePlaylist(ctx, client, ByID(p.ID), nil); !errors.Is(err, ErrNoPlaylist) {
 		t.Errorf("delete again: %v", err)
 	}
 }
@@ -255,7 +369,7 @@ func TestLinkDevice(t *testing.T) {
 		t.Errorf("links = %v, want %v", got, pl)
 	}
 	// Linking again leaves the link where it is.
-	if err := MoveLink(ctx, client, ByID(pl[2]), dev.FriendlyID, 2, 0); err != nil {
+	if err := MoveLink(ctx, client, ByID(pl[2]), dev.FriendlyID, pl, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := LinkDevice(ctx, client, ByID(pl[2]), dev.FriendlyID); err != nil {
@@ -295,7 +409,7 @@ func TestMoveLink(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := MoveLink(ctx, client, ByID(byName[tc.playlist]), dev.FriendlyID, int64(strings.Index("abcd", tc.playlist)), tc.index); err != nil {
+			if err := MoveLink(ctx, client, ByID(byName[tc.playlist]), dev.FriendlyID, links(t, client, dev.ID), tc.index); err != nil {
 				t.Fatal(err)
 			}
 			var got strings.Builder
@@ -324,27 +438,31 @@ func TestMoveLinkRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	a, b, c := pl[0], pl[1], pl[2]
 	for _, tc := range []struct {
-		name     string
-		ref      Ref
-		dev      string
-		from, to int64
-		kind     error
-		text     string
+		name  string
+		ref   Ref
+		dev   string
+		shown []int64
+		to    int64
+		kind  error
+		text  string
 	}{
-		{"not linked", ByID(pl[2]), dev.FriendlyID, 0, 0, ErrNotLinked, "not linked"},
-		{"other device not linked", ByID(pl[0]), other.FriendlyID, 0, 0, ErrNotLinked, ""},
-		{"unknown playlist", ByID(999), dev.FriendlyID, 0, 0, ErrNoPlaylist, ""},
-		{"unknown playlist name", ByName("nope"), dev.FriendlyID, 0, 0, ErrNoPlaylist, ""},
-		{"unknown device", ByID(pl[0]), "ZZZ999", 0, 0, device.ErrNoDevice, ""},
-		{"negative index", ByID(pl[0]), dev.FriendlyID, 0, -1, errkind.ErrInvalid, "-1 is not a place in the device's playlist order, which runs from 0 to 1"},
-		{"index n", ByID(pl[0]), dev.FriendlyID, 0, 2, errkind.ErrInvalid, "2 is not a place in the device's playlist order, which runs from 0 to 1"},
-		{"stale from", ByID(pl[1]), dev.FriendlyID, 0, 0, ErrOrderChanged, "the device's playlist order has changed: the playlist is now at 1, not 0"},
-		{"stale from, same place", ByID(pl[0]), dev.FriendlyID, 1, 1, ErrOrderChanged, "the playlist is now at 0, not 1"},
-		{"stale from, out of range", ByID(pl[0]), dev.FriendlyID, 7, 1, ErrOrderChanged, ""},
-		{"stale before range", ByID(pl[0]), dev.FriendlyID, 7, 5, ErrOrderChanged, "the playlist is now at 0, not 7"},
+		{"not linked", ByID(c), dev.FriendlyID, []int64{a, b}, 0, ErrNotLinked, "not linked"},
+		{"other device not linked", ByID(a), other.FriendlyID, nil, 0, ErrNotLinked, ""},
+		{"unknown playlist", ByID(999), dev.FriendlyID, []int64{a, b}, 0, ErrNoPlaylist, ""},
+		{"unknown playlist name", ByName("nope"), dev.FriendlyID, []int64{a, b}, 0, ErrNoPlaylist, ""},
+		{"unknown device", ByID(a), "ZZZ999", []int64{a, b}, 0, device.ErrNoDevice, ""},
+		{"negative index", ByID(a), dev.FriendlyID, []int64{a, b}, -1, errkind.ErrInvalid, "-1 is not a place in the device's playlist order, which runs from 0 to 1"},
+		{"index n", ByID(a), dev.FriendlyID, []int64{a, b}, 2, errkind.ErrInvalid, "2 is not a place in the device's playlist order, which runs from 0 to 1"},
+		{"stale order, swapped", ByID(b), dev.FriendlyID, []int64{b, a}, 0, ErrOrderChanged, "the device's playlist order has changed: the order is now"},
+		{"stale order, same place", ByID(a), dev.FriendlyID, []int64{b, a}, 1, ErrOrderChanged, ""},
+		{"stale order, out of range", ByID(a), dev.FriendlyID, []int64{b, a}, 7, ErrOrderChanged, ""},
+		{"stale order, a link since removed", ByID(a), dev.FriendlyID, []int64{a, b, c}, 1, ErrOrderChanged, ""},
+		{"stale order, a link since added", ByID(a), dev.FriendlyID, []int64{a}, 0, ErrOrderChanged, ""},
+		{"no order shown", ByID(a), dev.FriendlyID, nil, 1, ErrOrderChanged, ""},
 	} {
-		err := MoveLink(ctx, client, tc.ref, tc.dev, tc.from, tc.to)
+		err := MoveLink(ctx, client, tc.ref, tc.dev, tc.shown, tc.to)
 		if !errors.Is(err, tc.kind) {
 			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.kind)
 		} else if !strings.Contains(err.Error(), tc.text) {
@@ -360,6 +478,40 @@ func TestMoveLinkRefused(t *testing.T) {
 	}
 	if got := links(t, client, other.ID); len(got) != 0 {
 		t.Errorf("a refused move made links: %v", got)
+	}
+}
+
+// TestMoveLinkStaleOrder moves the last of three playlists up from a view
+// taken before another change swapped the first two. The move is refused, and
+// the order stays as the other change left it.
+func TestMoveLinkStaleOrder(t *testing.T) {
+	t.Parallel()
+	client, _, _ := newPlaylist(t, 1)
+	ctx := t.Context()
+	pl := newNamed(t, client, "a", "b", "c")
+	dev := newDevice(t, client, 1)
+	for _, id := range pl {
+		if err := LinkDevice(ctx, client, ByID(id), dev.FriendlyID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shown := links(t, client, dev.ID)
+	if err := MoveLink(ctx, client, ByID(pl[1]), dev.FriendlyID, shown, 0); err != nil {
+		t.Fatal(err)
+	}
+	swapped := []int64{pl[1], pl[0], pl[2]}
+	if err := MoveLink(ctx, client, ByID(pl[2]), dev.FriendlyID, shown, 1); !errors.Is(err, ErrOrderChanged) {
+		t.Fatalf("move from a stale order: %v", err)
+	}
+	if got := links(t, client, dev.ID); !slices.Equal(got, swapped) {
+		t.Errorf("links = %v, want %v", got, swapped)
+	}
+	// The same move from the current order goes through.
+	if err := MoveLink(ctx, client, ByID(pl[2]), dev.FriendlyID, swapped, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := links(t, client, dev.ID), []int64{pl[1], pl[2], pl[0]}; !slices.Equal(got, want) {
+		t.Errorf("links = %v, want %v", got, want)
 	}
 }
 
@@ -481,7 +633,7 @@ func TestDeletePlaylistManyDevices(t *testing.T) {
 			}
 		}
 	}
-	if err := DeletePlaylist(ctx, client, ByID(x)); err != nil {
+	if err := DeletePlaylist(ctx, client, ByID(x), nil); err != nil {
 		t.Fatal(err)
 	}
 	for i, order := range orders {
@@ -510,7 +662,7 @@ func TestMoveLinkLong(t *testing.T) {
 		id := want[m.from]
 		want = slices.Insert(slices.Delete(want, m.from, m.from+1), m.to, id)
 		to := int64(m.to)
-		if err := MoveLink(ctx, client, ByID(id), dev.FriendlyID, int64(m.from), to); err != nil {
+		if err := MoveLink(ctx, client, ByID(id), dev.FriendlyID, links(t, client, dev.ID), to); err != nil {
 			t.Fatal(err)
 		}
 		if got := links(t, client, dev.ID); !slices.Equal(got, want) {

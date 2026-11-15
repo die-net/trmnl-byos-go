@@ -512,7 +512,7 @@ func TestCandidatesWanted(t *testing.T) {
 			t.Fatal(err)
 		}
 		if device == second.FriendlyID {
-			err = playlist.MoveLink(t.Context(), h.db, playlist.ByID(item.PlaylistID), device, 0, 0)
+			err = playlist.MoveLink(t.Context(), h.db, playlist.ByID(item.PlaylistID), device, []int64{item.PlaylistID}, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

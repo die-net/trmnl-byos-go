@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -506,7 +507,7 @@ func playlistDelete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	if err := playlist.DeletePlaylist(ctx, client, playlist.ByName(rest[0])); err != nil {
+	if err := playlist.DeletePlaylist(ctx, client, playlist.ByName(rest[0]), nil); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(out, "Deleted playlist %q.\n", rest[0])
@@ -562,11 +563,49 @@ func playlistOrder(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	if err := playlist.MoveLink(ctx, client, playlist.ByName(rest[0]), rest[1], from, to); err != nil {
+	pl, shown, err := deviceOrder(ctx, client, rest[0], rest[1], from)
+	if err != nil {
+		return err
+	}
+	// A change to the device's order after it was read is refused by MoveLink.
+	if err := playlist.MoveLink(ctx, client, playlist.ByID(pl), rest[1], shown, to); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(out, "Moved playlist %q from index %d to %d in device %s's order.\n", rest[0], from, to, rest[1])
 	return err
+}
+
+// deviceOrder reads the IDs of the playlists the device, named by friendly ID
+// or MAC, is linked to, in the order it tries them, and the ID of the playlist
+// with the name. It returns an error wrapping playlist.ErrNotLinked if the
+// device is not linked to it, and one wrapping playlist.ErrOrderChanged if the
+// playlist is not at index from, which is where the caller saw it.
+func deviceOrder(ctx context.Context, client *db.Client, playlistName, deviceName string, from int64) (playlistID int64, order []int64, err error) {
+	err = client.ReadTx(ctx, func(q *db.Queries) error {
+		pl, err := q.GetPlaylistByName(ctx, playlistName)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %q", playlist.ErrNoPlaylist, playlistName)
+		} else if err != nil {
+			return fmt.Errorf("get playlist: %w", err)
+		}
+		dev, err := device.FindDevice(ctx, q, deviceName)
+		if err != nil {
+			return err
+		}
+		if order, err = q.ListDevicePlaylistIDs(ctx, dev.ID); err != nil {
+			return fmt.Errorf("list links: %w", err)
+		}
+		playlistID = pl.ID
+		at := slices.Index(order, pl.ID)
+		switch {
+		case at < 0:
+			return fmt.Errorf("%w: playlist %q, device %s", playlist.ErrNotLinked, playlistName, dev.FriendlyID)
+		case int64(at) != from:
+			return fmt.Errorf("%w: the playlist is now at %d, not %d", playlist.ErrOrderChanged, at, from)
+		}
+		return nil
+	})
+	return playlistID, order, err
 }
 
 func playlistUnlink(ctx context.Context, args []string, out io.Writer) error {

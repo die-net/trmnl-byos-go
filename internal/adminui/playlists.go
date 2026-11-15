@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +18,38 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 )
+
+// idList reads the comma-separated whole numbers in the post's field key,
+// such as "3,1,2". An empty value is an empty list. It returns false if the
+// field is missing or an element is not a whole number.
+func idList(post url.Values, key string) ([]int64, bool) {
+	if !post.Has(key) {
+		return nil, false
+	}
+	value := strings.TrimSpace(post.Get(key))
+	if value == "" {
+		return []int64{}, true
+	}
+	parts := strings.Split(value, ",")
+	ids := make([]int64, len(parts))
+	for i, part := range parts {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			return nil, false
+		}
+		ids[i] = id
+	}
+	return ids, true
+}
+
+// joinIDs is the field value idList reads: the IDs, comma-separated.
+func joinIDs(ids []int64) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	return strings.Join(parts, ",")
+}
 
 // dayLayout is how a date is shown, such as "2 Jan 2006".
 const dayLayout = "2 Jan 2006"
@@ -213,6 +246,14 @@ type addForm struct {
 type playlistForm struct {
 	Name     string
 	Schedule scheduleForm
+	// Seen is the name and schedule the page the form is on showed, which
+	// the form sends back as hidden fields so a save from a page that is out
+	// of date is refused. Nil means the playlist's own, as it is now.
+	Seen *playlist.Seen
+	// Changed is whether the save was refused because the playlist changed
+	// after the page loaded. The page then says what it is now and holds its
+	// current values in Seen, so saving again applies the typed ones.
+	Changed bool
 }
 
 // linkedDevice is a device linked to the playlist a page shows.
@@ -590,6 +631,15 @@ func (s *Server) renderPlaylist(w http.ResponseWriter, r *http.Request, status i
 	if add == nil {
 		add = &addForm{Duration: strconv.FormatInt(int64(playlist.DefaultDuration/time.Second), 10)}
 	}
+	if form.Seen == nil || form.Changed {
+		f := *form
+		f.Seen = &playlist.Seen{Name: pl.Name, Schedule: scheduleOf(&pl)}
+		form = &f
+	}
+	if form.Changed {
+		msg = "This playlist changed after the page loaded, so nothing was saved. It is now \"" + pl.Name + "\" (" +
+			s.describeSchedule(form.Seen.Schedule) + "). Save again to use the values below."
+	}
 	base := strconv.FormatInt(pl.ID, 10)
 	e := &playlistEdit{
 		Action: "/playlists/" + base, AddAction: "/playlists/add-item/" + base,
@@ -685,19 +735,27 @@ func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
 	if !parseForm(w, r, func(status int, msg string) { s.renderPlaylist(w, r, status, id, nil, nil, msg) }) {
 		return
 	}
+	seen, ok := seenFromPost(r.PostForm)
+	if !ok {
+		s.renderPlaylist(w, r, http.StatusBadRequest, id, nil, nil, "Reload the page and try again.")
+		return
+	}
 	name := r.PostForm.Get("name")
-	form := playlistForm{Name: name}
+	form := playlistForm{Name: name, Seen: &seen}
 	var edit *playlist.ScheduleEdit
 	var err error
 	form.Schedule, edit, err = s.scheduleFromPost(r)
 	if err == nil {
-		err = playlist.UpdatePlaylist(r.Context(), s.db, playlist.ByID(id), playlist.Update{Name: &name, Schedule: edit})
+		err = playlist.UpdatePlaylist(r.Context(), s.db, playlist.ByID(id), playlist.Update{Name: &name, Schedule: edit, Seen: &seen})
 	}
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 	case errors.Is(err, playlist.ErrNoPlaylist):
 		s.renderNotFound(w, r, noPlaylist)
+	case errors.Is(err, playlist.ErrPlaylistChanged):
+		form.Changed = true
+		s.renderPlaylist(w, r, http.StatusConflict, id, &form, nil, "")
 	case errors.Is(err, playlist.ErrNameTaken):
 		s.renderPlaylist(w, r, http.StatusConflict, id, &form, nil, nameTakenText())
 	case errors.Is(err, errkind.ErrInvalid):
@@ -705,6 +763,27 @@ func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
 	default:
 		serverError(w, r, "save playlist", err)
 	}
+}
+
+// seenFromPost reads the name and schedule the name and schedule form says
+// its page showed, from its hidden fields. It returns false if one is missing
+// or is not a whole number where it must be.
+func seenFromPost(post url.Values) (playlist.Seen, bool) {
+	if !post.Has("seen_name") {
+		return playlist.Seen{}, false
+	}
+	seen := playlist.Seen{Name: post.Get("seen_name")}
+	for key, field := range map[string]*int64{
+		"seen_days": &seen.Schedule.Days, "seen_window_start": &seen.Schedule.WindowStart, "seen_window_end": &seen.Schedule.WindowEnd,
+		"seen_starts_at": &seen.Schedule.StartsAt, "seen_ends_at": &seen.Schedule.EndsAt,
+	} {
+		n, err := strconv.ParseInt(post.Get(key), 10, 64)
+		if err != nil {
+			return playlist.Seen{}, false
+		}
+		*field = n
+	}
+	return seen, true
 }
 
 // nameTakenText is the message for a playlist name that another playlist has.
@@ -925,6 +1004,11 @@ type playlistDeleteView struct {
 	Name           string
 	// Summary says what the delete takes with it, from the real counts.
 	Summary string
+	// Items and Devices are what the summary was made from: the item count
+	// and the IDs of the linked devices, comma-separated. The form sends
+	// them back so a delete from a page that is out of date is refused.
+	Items   int64
+	Devices string
 }
 
 // confirmDeletePlaylist asks whether to delete a playlist. It changes
@@ -935,6 +1019,14 @@ func (s *Server) confirmDeletePlaylist(w http.ResponseWriter, r *http.Request) {
 		s.renderNotFound(w, r, noPlaylist)
 		return
 	}
+	s.renderDeleteConfirm(w, r, http.StatusOK, id, "")
+}
+
+// renderDeleteConfirm sends the confirm page for the playlist with the ID,
+// which gets the not-found page if it does not exist, with msg above the
+// summary, or "". The summary and the values the form sends back are one
+// snapshot of what goes with the playlist.
+func (s *Server) renderDeleteConfirm(w http.ResponseWriter, r *http.Request, status int, id int64, msg string) {
 	ctx := r.Context()
 	var pl db.Playlist
 	var items int64
@@ -961,15 +1053,17 @@ func (s *Server) confirmDeletePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	names := make([]string, len(devs))
+	ids := make([]int64, len(devs))
 	for i := range devs {
 		names[i] = deviceLabel(devs[i].DeviceName, devs[i].FriendlyID)
+		ids[i] = devs[i].DeviceID
 	}
 	base := strconv.FormatInt(pl.ID, 10)
 	v := &playlistDeleteView{
 		Action: "/playlists/delete/" + base, Cancel: "/playlists/" + base, Name: pl.Name,
-		Summary: deleteSummary(items, names),
+		Summary: deleteSummary(items, names), Items: items, Devices: joinIDs(ids),
 	}
-	s.render(w, r, http.StatusOK, "playlist_delete", &pageData{Nav: "playlists", Heading: "Delete playlist", PlaylistDelete: v})
+	s.render(w, r, status, "playlist_delete", &pageData{Nav: "playlists", Heading: "Delete playlist", Error: msg, PlaylistDelete: v})
 }
 
 // deleteSummary says what deleting a playlist with items items and the
@@ -999,19 +1093,32 @@ func deleteSummary(items int64, names []string) string {
 	return strings.Join(parts, " ")
 }
 
-// deletePlaylist deletes a playlist with its items, and goes to the list.
+// deletePlaylist deletes a playlist with its items, and goes to the list. The
+// form sends what the confirm page said goes with it, so a playlist that has
+// changed since is not deleted.
 func (s *Server) deletePlaylist(w http.ResponseWriter, r *http.Request) {
 	id, ok := idFromPath(r)
 	if !ok {
 		s.renderNotFound(w, r, noPlaylist)
 		return
 	}
-	err := playlist.DeletePlaylist(r.Context(), s.db, playlist.ByID(id))
+	if !parseForm(w, r, func(status int, msg string) { s.renderDeleteConfirm(w, r, status, id, msg) }) {
+		return
+	}
+	items, itemsErr := strconv.ParseInt(r.PostForm.Get("items"), 10, 64)
+	devices, devicesOK := idList(r.PostForm, "devices")
+	if itemsErr != nil || !devicesOK {
+		s.renderDeleteConfirm(w, r, http.StatusBadRequest, id, "Reload the page and try again.")
+		return
+	}
+	err := playlist.DeletePlaylist(r.Context(), s.db, playlist.ByID(id), &playlist.Contents{Items: items, Devices: devices})
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/playlists", http.StatusSeeOther)
 	case errors.Is(err, playlist.ErrNoPlaylist):
 		s.renderNotFound(w, r, noPlaylist)
+	case errors.Is(err, playlist.ErrPlaylistChanged):
+		s.renderDeleteConfirm(w, r, http.StatusConflict, id, "This playlist changed after the page loaded, so nothing was deleted. Check what goes with it now.")
 	default:
 		serverError(w, r, "delete playlist", err)
 	}
