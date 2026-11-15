@@ -24,9 +24,10 @@ The goal is the review a careful senior engineer on this project would give: rea
 - The pull request is checked out at its head commit in the current directory, with full history. Read any file in it. Use `git diff`, `git log`, `git show` and `git blame` for history.
 - GitHub is not reachable from this session except through the inline comment tool. Do not run `gh` or fetch URLs. Everything needed from GitHub is in the files named in "This run".
 - Never edit, commit or push files in the checkout. Throwaway files go only in the scratch directory named in "This run".
-- Allowed commands that run code: `go build`, `go vet` and `go test`, each also with a leading `CGO_ENABLED=0`. No other way to run code is available.
+- Allowed commands that run code: `go build`, `go vet` and `go test`, each also with a leading `CGO_ENABLED=0`. No other way to run code is available. Run each from the checkout as a command of its own, with literal paths: a command that sets a shell variable, uses `cd`, or chains another command that is not read-only is denied.
+- Create files in the scratch directory with the Write tool, not with shell redirection or `mkdir`. The directory already exists.
 
-Follow these steps.
+Follow these steps. Launch the agents of one step in a single message so they run in parallel, and wait for every one of them to return before starting the next step. Do not skip a step to save time.
 
 1. Read `pr.json` from "This run" for the title, description and author. Read `CLAUDE.md` at the repository root, and any `CLAUDE.md` in a directory that holds a changed file or one of its parents. Get the changed files with `git diff --stat <base>...<head>`.
 
