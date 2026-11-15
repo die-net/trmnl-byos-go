@@ -180,21 +180,29 @@ func PushData(ctx context.Context, client *db.Client, p PushParams, now time.Tim
 }
 
 // InstanceData returns the JSON an instance's pushes left, or {} if there
-// are none. It returns ErrNoInstance for an unknown instance.
+// are none. It returns ErrNoInstance for an unknown instance. The instance
+// and its data are read in one snapshot, so an instance deleted between the
+// two reads, which takes its data with it, is not found rather than {}.
 func InstanceData(ctx context.Context, client *db.Client, id int64) ([]byte, error) {
-	if _, err := client.Read.GetInstance(ctx, id); errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("%w: %d", ErrNoInstance, id)
-	} else if err != nil {
-		return nil, fmt.Errorf("get instance: %w", err)
-	}
-	row, err := client.Read.GetInstanceData(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return []byte("{}"), nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get instance data: %w", err)
-	}
-	return []byte(row.Data), nil
+	var out []byte
+	err := client.ReadTx(ctx, func(q *db.Queries) error {
+		if _, err := q.GetInstance(ctx, id); errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %d", ErrNoInstance, id)
+		} else if err != nil {
+			return fmt.Errorf("get instance: %w", err)
+		}
+		row, err := q.GetInstanceData(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			out = []byte("{}")
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("get instance data: %w", err)
+		}
+		out = []byte(row.Data)
+		return nil
+	})
+	return out, err
 }
 
 // WithData returns the project with the instance's pushed JSON as the top

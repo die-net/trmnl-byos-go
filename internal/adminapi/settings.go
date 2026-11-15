@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
@@ -35,8 +36,16 @@ type settingsPatch struct {
 	MinPasswordLength *int64 `json:"min_password_length"`
 }
 
+// getSettings answers with every setting. settings.List reads each one
+// separately, so they are read in one snapshot, and two settings changed
+// together are never shown half changed.
 func (s *Server) getSettings(_ http.ResponseWriter, r *http.Request) (settingsJSON, error) {
-	list, err := settings.List(r.Context(), s.db.Read)
+	var list []settings.Setting
+	err := s.db.ReadTx(r.Context(), func(q *db.Queries) error {
+		var err error
+		list, err = settings.List(r.Context(), q)
+		return err
+	})
 	if err != nil {
 		return settingsJSON{}, err
 	}
