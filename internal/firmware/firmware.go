@@ -296,6 +296,9 @@ const (
 	// ReasonCapReached means the device was offered the build MaxOffers
 	// times.
 	ReasonCapReached Reason = "cap_reached"
+	// ReasonNewerBuild means the device is offered another build, a newer
+	// one that qualifies, and not this one.
+	ReasonNewerBuild Reason = "newer_build"
 	// ReasonFileMissing means the build's file is not in the firmware
 	// directory at the recorded size.
 	ReasonFileMissing Reason = "file_missing"
@@ -521,19 +524,81 @@ func SetPolicy(ctx context.Context, client *db.Client, name string, p Policy) (d
 // must be eligible (see notEligible). It must also be open to the device
 // (see rollout.notOpen): the device is the rollout's canary, or the canary
 // has reported the build's version, and it was offered the build fewer than
-// MaxOffers times. Of several builds that qualify the newest is offered.
-// Offer counts nothing.
+// MaxOffers times. Of several builds that qualify and have their file the
+// newest is offered. Offer counts nothing.
 func Offer(ctx context.Context, q *db.Queries, dir string, dev *db.Device, model, version string) (*db.Firmware, error) {
 	cands, err := offerable(ctx, q, dev, model, version)
 	if err != nil {
 		return nil, err
 	}
-	for _, fw := range cands {
-		if onDisk(dir, fw) {
-			return fw, nil
+	return pick(cands, func(fw *db.Firmware) bool { return onDisk(dir, fw) }), nil
+}
+
+// activeBuild is a build with what decide needs to know of it for one
+// device: its rollout, and how many times the device was offered it.
+type activeBuild struct {
+	fw     *db.Firmware
+	ro     rollout
+	offers int64
+}
+
+// refusal is why a build is not offered to a device.
+type refusal struct {
+	reason Reason
+	why    string
+	// byDevice is whether the device half of the decision refused it, so
+	// that the device could not be the build's canary either.
+	byDevice bool
+}
+
+// decide is the one rule for which builds a device would be offered, from
+// what the database says and no file. A build is a candidate when the device
+// half (notEligible) and the rollout half (rollout.notOpen) both pass, and
+// the candidates are returned newest first. If refused is not nil it gets
+// the refusal of every other build, by ID. Offer, OfferAndRecord and
+// DeviceOffers all decide here, so that they cannot disagree, and since it
+// checks no file it can run inside a write transaction.
+func decide(dev *db.Device, model, version string, builds []activeBuild, refused map[int64]refusal) []*db.Firmware {
+	type candidate struct {
+		fw *db.Firmware
+		v  Version
+	}
+	var cands []candidate
+	for i := range builds {
+		b := &builds[i]
+		r := refusal{byDevice: true}
+		if r.reason, r.why = notEligible(dev, model, version, b.fw); r.reason == "" {
+			r.byDevice = false
+			r.reason, r.why = b.ro.notOpen(dev.ID, b.fw, b.offers)
+		}
+		if r.reason != "" {
+			if refused != nil {
+				refused[b.fw.ID] = r
+			}
+			continue
+		}
+		// notEligible has parsed the version already.
+		if v, err := ParseVersion(b.fw.Version); err == nil {
+			cands = append(cands, candidate{b.fw, v})
 		}
 	}
-	return nil, nil
+	slices.SortStableFunc(cands, func(a, b candidate) int { return b.v.Compare(a.v) })
+	out := make([]*db.Firmware, len(cands))
+	for i, c := range cands {
+		out[i] = c.fw
+	}
+	return out
+}
+
+// pick returns the first of the candidates, newest first, that ok accepts,
+// or nil. ok is the file check, which the caller chooses.
+func pick(cands []*db.Firmware, ok func(*db.Firmware) bool) *db.Firmware {
+	for _, fw := range cands {
+		if ok(fw) {
+			return fw
+		}
+	}
+	return nil
 }
 
 // offerable returns the builds that could be offered to the device by what
@@ -549,33 +614,16 @@ func offerable(ctx context.Context, q *db.Queries, dev *db.Device, model, versio
 	if err != nil {
 		return nil, fmt.Errorf("list active firmware: %w", err)
 	}
-	type candidate struct {
-		fw *db.Firmware
-		v  Version
-	}
-	var cands []candidate
+	builds := make([]activeBuild, len(rows))
 	for i := range rows {
 		r := &rows[i]
-		fw := &r.Firmware
-		if reason, _ := notEligible(dev, model, version, fw); reason != "" {
-			continue
+		builds[i] = activeBuild{
+			fw:     &r.Firmware,
+			ro:     rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers},
+			offers: r.Offers,
 		}
-		ro := rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers}
-		if reason, _ := ro.notOpen(dev.ID, fw, r.Offers); reason != "" {
-			continue
-		}
-		v, err := ParseVersion(fw.Version)
-		if err != nil {
-			continue
-		}
-		cands = append(cands, candidate{fw, v})
 	}
-	slices.SortStableFunc(cands, func(a, b candidate) int { return b.v.Compare(a.v) })
-	out := make([]*db.Firmware, len(cands))
-	for i, c := range cands {
-		out[i] = c.fw
-	}
-	return out, nil
+	return decide(dev, model, version, builds, nil), nil
 }
 
 // onDisk reports whether the build's file is in dir, at the recorded size.
@@ -614,11 +662,10 @@ func OfferAndRecord(ctx context.Context, client *db.Client, dir string, dev *db.
 		if err != nil {
 			return err
 		}
-		i := slices.IndexFunc(cands, func(fw *db.Firmware) bool { return good[fw.ID] })
-		if i < 0 {
+		fw := pick(cands, func(fw *db.Firmware) bool { return good[fw.ID] })
+		if fw == nil {
 			return nil
 		}
-		fw := cands[i]
 		if err := q.RecordFirmwareOffer(ctx, db.RecordFirmwareOfferParams{DeviceID: dev.ID, FirmwareID: fw.ID, LastOfferedAt: now.Unix()}); err != nil {
 			return fmt.Errorf("record offer: %w", err)
 		}
@@ -685,9 +732,12 @@ type DeviceOffer struct {
 	// LastOfferedAt is when the device was last offered the build, in Unix
 	// seconds, or 0 for never.
 	LastOfferedAt int64
-	// Reason is why the device would not be offered the build now, or ""
-	// when it would.
+	// Reason is why /api/display would not send the device this build now,
+	// or "" when it would.
 	Reason Reason
+	// Instead is the ID of the newer build it would send instead, when
+	// Reason is ReasonNewerBuild, and 0 otherwise.
+	Instead int64
 	// Why is the sentence for Reason, or "" when the device is offered the
 	// build.
 	Why string
@@ -697,15 +747,20 @@ type DeviceOffer struct {
 }
 
 // DeviceOffers returns, for each device whose last reported model is the
-// build's, ordered by friendly ID, whether /api/display would offer it the
-// build now, and if not why. It makes the decision Offer makes, from the
-// same two halves, on the model and version the device last reported. Offer
-// decides on the headers of the wake itself, which are the same values
-// unless a wake leaves one out: /api/display then keeps the stored value but
-// offers nothing, so a device listed as offered is not offered on such a
-// wake. The listing never changes what is offered. It takes one query for the
-// build, one for the devices and one stat of the file, however many
-// devices there are. It wraps ErrNoFirmware for an unknown build.
+// build's, ordered by friendly ID, whether /api/display would send it this
+// build now. Reason "" means it would: on a wake with the device's stored
+// model and version, Offer returns this build. ReasonNewerBuild means it
+// would send another, newer build (Instead). Any other reason is why this
+// build is refused or cannot be sent. It decides as Offer does, with the
+// same decide and pick over every active build of the model and this one,
+// so the two cannot disagree. Offer uses the headers of the wake itself,
+// which are the stored values unless a wake leaves one out: /api/display
+// then keeps the stored value but offers nothing, so a device listed as
+// offered is not offered on such a wake. The listing never changes what is
+// offered. It takes one query for the build, one for the devices, one for
+// the active builds with their offer counts, and one stat of each build's
+// file, however many devices there are. It wraps ErrNoFirmware for an
+// unknown build.
 func DeviceOffers(ctx context.Context, q *db.Queries, dir string, firmwareID int64) ([]DeviceOffer, error) {
 	row, err := q.GetFirmwareEntry(ctx, firmwareID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -715,28 +770,80 @@ func DeviceOffers(ctx context.Context, q *db.Queries, dir string, firmwareID int
 		return nil, fmt.Errorf("get firmware: %w", err)
 	}
 	entry := db.ListFirmwareRow(row)
-	fw := &entry.Firmware
-	ro := rolloutOf(&entry)
-	devs, err := q.ListFirmwareDevices(ctx, db.ListFirmwareDevicesParams{FirmwareID: firmwareID, FwModel: fw.FwModel})
+	listed := &entry.Firmware
+	devs, err := q.ListFirmwareDevices(ctx, db.ListFirmwareDevicesParams{FirmwareID: firmwareID, FwModel: listed.FwModel})
 	if err != nil {
 		return nil, fmt.Errorf("list firmware devices: %w", err)
 	}
-	fileOK := onDisk(dir, fw)
+	active, err := q.ListActiveFirmwareOffers(ctx, listed.FwModel)
+	if err != nil {
+		return nil, fmt.Errorf("list active firmware: %w", err)
+	}
+
+	// Group the rows by build. counts[build][device] is how many times the
+	// device was offered it, and a missing device was offered it never.
+	var builds []activeBuild
+	counts := map[int64]map[int64]int64{}
+	for i := range active {
+		r := &active[i]
+		id := r.Firmware.ID
+		if counts[id] == nil {
+			counts[id] = map[int64]int64{}
+			builds = append(builds, activeBuild{
+				fw: &r.Firmware,
+				ro: rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers},
+			})
+		}
+		if r.OfferedDeviceID != nil {
+			counts[id][*r.OfferedDeviceID] = derefInt(r.OfferedOffers)
+		}
+	}
+	// The build itself is decided with its own rollout, which is not active
+	// when it has none or was canceled.
+	if counts[listed.ID] == nil {
+		builds = append(builds, activeBuild{fw: listed, ro: rolloutOf(&entry)})
+	}
+	counts[listed.ID] = make(map[int64]int64, len(devs))
+	for i := range devs {
+		counts[listed.ID][devs[i].Device.ID] = devs[i].Offers
+	}
+	fileOK := make(map[int64]bool, len(builds))
+	for i := range builds {
+		fileOK[builds[i].fw.ID] = onDisk(dir, builds[i].fw)
+	}
+	hasFile := func(fw *db.Firmware) bool { return fileOK[fw.ID] }
+
+	canaryID := rolloutOf(&entry).canaryID
+	refused := map[int64]refusal{}
 	out := make([]DeviceOffer, len(devs))
 	for i := range devs {
 		d := &devs[i]
+		for j := range builds {
+			builds[j].offers = counts[builds[j].fw.ID][d.Device.ID]
+		}
+		clear(refused)
+		cands := decide(&d.Device, d.Device.FwModel, d.Device.FwVersion, builds, refused)
 		o := DeviceOffer{
 			DeviceID: d.Device.ID, FriendlyID: d.Device.FriendlyID, Name: d.Device.Name,
-			Model: d.Device.FwModel, Version: d.Device.FwVersion, Canary: d.Device.ID == ro.canaryID,
+			Model: d.Device.FwModel, Version: d.Device.FwVersion, Canary: d.Device.ID == canaryID,
 			Offers: d.Offers, LastOfferedAt: d.LastOfferedAt,
 		}
-		o.Reason, o.Why = notEligible(&d.Device, d.Device.FwModel, d.Device.FwVersion, fw)
-		o.CanBeCanary = o.Reason == ""
-		if o.Reason == "" {
-			o.Reason, o.Why = ro.notOpen(d.Device.ID, fw, d.Offers)
-		}
-		if o.Reason == "" && !fileOK {
+		r, isRefused := refused[listed.ID]
+		o.CanBeCanary = !isRefused || !r.byDevice
+		chosen := pick(cands, hasFile)
+		switch {
+		case isRefused:
+			o.Reason, o.Why = r.reason, r.why
+		case chosen != nil && chosen.ID == listed.ID:
+			// Offered.
+		case !fileOK[listed.ID]:
+			// A candidate, skipped for its file as Offer skips it.
 			o.Reason, o.Why = ReasonFileMissing, "the build's file is missing or is not the size that was added"
+		default:
+			// A candidate with its file, so a newer candidate with its file
+			// was chosen.
+			o.Reason, o.Instead = ReasonNewerBuild, chosen.ID
+			o.Why = "the device is offered the newer version " + chosen.Version + " instead"
 		}
 		out[i] = o
 	}

@@ -245,6 +245,71 @@ func (q *Queries) ListActiveFirmware(ctx context.Context, arg ListActiveFirmware
 	return items, nil
 }
 
+const listActiveFirmwareOffers = `-- name: ListActiveFirmwareOffers :many
+SELECT firmware.id, firmware.fw_model, firmware.version, firmware.sha256, firmware.chip, firmware.idf_version, firmware.bytes, firmware.source, firmware.uploaded_at, r.canary_device_id, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  CAST(COALESCE(co.offers, 0) AS INTEGER) AS canary_offers,
+  o.device_id AS offered_device_id, o.offers AS offered_offers
+FROM firmware
+JOIN firmware_rollout r ON r.firmware_id = firmware.id AND r.state = 'active'
+JOIN device c ON c.id = r.canary_device_id
+LEFT JOIN firmware_offer co ON co.firmware_id = firmware.id AND co.device_id = r.canary_device_id
+LEFT JOIN firmware_offer o ON o.firmware_id = firmware.id
+WHERE firmware.fw_model = ?
+`
+
+type ListActiveFirmwareOffersRow struct {
+	Firmware        Firmware `json:"firmware"`
+	CanaryDeviceID  int64    `json:"canary_device_id"`
+	CanaryModel     string   `json:"canary_model"`
+	CanaryVersion   string   `json:"canary_version"`
+	CanaryOffers    int64    `json:"canary_offers"`
+	OfferedDeviceID *int64   `json:"offered_device_id"`
+	OfferedOffers   *int64   `json:"offered_offers"`
+}
+
+// The builds of a model in an active rollout, with the canary device's
+// model, version and offer count, once for each device that was offered the
+// build, with its offer count. A build nobody was offered has one row with no
+// device.
+func (q *Queries) ListActiveFirmwareOffers(ctx context.Context, fwModel string) ([]ListActiveFirmwareOffersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveFirmwareOffers, fwModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActiveFirmwareOffersRow{}
+	for rows.Next() {
+		var i ListActiveFirmwareOffersRow
+		if err := rows.Scan(
+			&i.Firmware.ID,
+			&i.Firmware.FwModel,
+			&i.Firmware.Version,
+			&i.Firmware.Sha256,
+			&i.Firmware.Chip,
+			&i.Firmware.IdfVersion,
+			&i.Firmware.Bytes,
+			&i.Firmware.Source,
+			&i.Firmware.UploadedAt,
+			&i.CanaryDeviceID,
+			&i.CanaryModel,
+			&i.CanaryVersion,
+			&i.CanaryOffers,
+			&i.OfferedDeviceID,
+			&i.OfferedOffers,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFirmware = `-- name: ListFirmware :many
 SELECT firmware.id, firmware.fw_model, firmware.version, firmware.sha256, firmware.chip, firmware.idf_version, firmware.bytes, firmware.source, firmware.uploaded_at, r.state AS rollout_state, r.started_at AS rollout_started_at,
   c.id AS canary_id, c.friendly_id AS canary, c.fw_model AS canary_model, c.fw_version AS canary_version,

@@ -78,10 +78,13 @@ type firmwareDeviceJSON struct {
 	// LastOfferedAt is when the device was last offered the build, in Unix
 	// seconds, or 0 if never.
 	LastOfferedAt int64 `json:"last_offered_at"`
-	// Reason is a code for why the device would not be offered the build
-	// now, or "" when it would, and Why a sentence saying so.
+	// Reason is a code for why /api/display would not send the device this
+	// build now, or "" when it would, and Why a sentence saying so.
 	Reason string `json:"reason"`
 	Why    string `json:"why"`
+	// InsteadID is the ID of the newer build the device is offered instead,
+	// when Reason is newer_build, and 0 otherwise.
+	InsteadID int64 `json:"instead_id"`
 	// CanBeCanary is whether the device could be the build's canary now.
 	CanBeCanary bool `json:"can_be_canary"`
 }
@@ -102,7 +105,7 @@ func (s *Server) listFirmwareDevices(_ http.ResponseWriter, r *http.Request) ([]
 		o := &rows[i]
 		out[i] = firmwareDeviceJSON{
 			Device: o.FriendlyID, Name: o.Name, Model: o.Model, Version: o.Version, Canary: o.Canary,
-			Offers: o.Offers, LastOfferedAt: o.LastOfferedAt, Reason: string(o.Reason), Why: o.Why, CanBeCanary: o.CanBeCanary,
+			Offers: o.Offers, LastOfferedAt: o.LastOfferedAt, Reason: string(o.Reason), Why: o.Why, InsteadID: o.Instead, CanBeCanary: o.CanBeCanary,
 		}
 	}
 	return out, nil
