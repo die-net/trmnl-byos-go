@@ -171,19 +171,3 @@ func TestNavCurrent(t *testing.T) {
 		})
 	}
 }
-
-func TestStubPages(t *testing.T) {
-	t.Parallel()
-	tu := newTestUI(t, Config{}, true)
-	c := tu.signIn(t)
-	for _, tc := range []struct{ path, heading string }{
-		{"/firmware", "Firmware"},
-	} {
-		body := tu.do(t, "GET", tc.path, "", "Cookie", cookieHeader(c)).Body.String()
-		for _, want := range []string{"<h1>" + tc.heading + "</h1>", "This page is not built yet."} {
-			if !strings.Contains(body, want) {
-				t.Errorf("%s lacks %q", tc.path, want)
-			}
-		}
-	}
-}

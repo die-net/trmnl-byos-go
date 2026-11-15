@@ -277,7 +277,7 @@ func TestDeviceSettingsInvalid(t *testing.T) {
 		{
 			"pin that is not a version",
 			url.Values{"name": {"Hall"}, "fw_pin": {"latest"}, "updates_enabled": {"1"}},
-			`Version &#34;latest&#34; is not dotted numbers.`,
+			`The version &#34;latest&#34; is not dotted numbers, such as 1.8.19.`,
 			[]string{`value="Hall"`, `<option value="latest" selected>`, " checked"},
 		},
 	} {

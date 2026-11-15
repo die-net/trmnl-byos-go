@@ -1,0 +1,44 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<a class="back" href="/firmware"><span aria-hidden="true">←</span> Firmware</a>
+<div class="page-head">
+<h1>{{with .Build}}{{template "firmware-name" .Firmware}}{{end}}</h1>
+{{with .Build}}<span class="badge {{.Firmware.Badge.Class}}">{{.Firmware.Badge.Label}}</span>{{end}}
+</div>{{end}}
+{{define "content"}}{{with .Build}}{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
+<div class="detail-main">
+<section class="panel" aria-labelledby="build-title">
+<h2 id="build-title">Build</h2>
+{{template "firmware-facts" .Firmware}}
+</section>
+{{if .Devices}}<section class="panel form-panel" aria-labelledby="rollout-title">
+<h2 id="rollout-title">{{if .Restart}}Restart the rollout{{else}}Start a rollout{{end}}</h2>
+{{if .Canaries}}<p class="rel">The canary is the one device offered this build first. The others can be offered it only after the canary reports {{.Firmware.Version}} or newer.{{if .Restart}} Restarting gives the canary {{.Tries}} more tries.{{end}}</p>
+{{if .Open}}<p class="note">This rollout is open. Restarting it puts the build back at its canary stage: the other devices are not offered it again until the new canary reports {{.Firmware.Version}} or newer.</p>{{end}}
+<form method="post" action="{{.Action}}">
+<div class="field">
+<label for="canary">Canary</label>
+<select id="canary" name="canary" required>
+<option value="">Choose a device</option>
+{{range .Canaries}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+</div>
+<button class="btn btn-primary" type="submit">{{if .Restart}}Restart rollout{{else}}Start rollout{{end}}</button>
+</form>{{else}}<p class="rel">No device of this model can be the canary now. The list below says why for each.</p>{{end}}
+</section>
+{{end}}<section class="panel" id="devices" aria-labelledby="devices-title">
+<h2 id="devices-title">Devices</h2>
+{{if .Devices}}<p class="rel">From each device's last report. A device is offered a build only on a wake that sends its model and version.</p>
+<ul class="items">
+{{range .Devices}}<li class="item">
+<div class="item-main">
+<a class="item-name" href="{{.Href}}">{{.Name}}</a>
+<span class="rel">{{.Firmware}}</span>
+{{if .Canary}}<span class="badge badge-warn">Canary</span>
+{{end}}{{if .Offered}}<span class="badge badge-ok">Offered now</span>{{else}}<span class="badge badge-neutral">Not offered</span>
+<span class="rel">{{.Why}}{{if .InsteadHref}} <a href="{{.InsteadHref}}">See build</a>{{end}}</span>{{end}}
+</div>
+{{if .Offers}}<p class="rel">{{.Offers}}</p>{{end}}
+</li>
+{{end}}</ul>{{else}}<p class="rel">No device reports the model <code>{{.Firmware.Model}}</code>, so this build has no one to go to.</p>{{end}}
+</section>
+</div>{{end}}{{end}}

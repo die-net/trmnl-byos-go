@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
 // The ESP app image format, from ESP-IDF's esp_image_format.h and
@@ -68,15 +70,15 @@ func ParseImage(r io.ReaderAt, size int64) (Image, error) {
 		return Image{}, err
 	}
 	if hdr[0] != imageMagic {
-		return Image{}, fmt.Errorf("%w: first byte is 0x%02X, not 0x%02X", ErrImage, hdr[0], imageMagic)
+		return Image{}, imageError("the file is not an ESP firmware image (it does not start with the image header)")
 	}
 	segments := int(hdr[offSegmentCount])
 	if segments < 1 || segments > maxSegments {
-		return Image{}, fmt.Errorf("%w: %d segments", ErrImage, segments)
+		return Image{}, imageError("the image header lists %d segments, and an app image has 1 to %d", segments, maxSegments)
 	}
 	hashAppended := hdr[offHashAppended]
 	if hashAppended > 1 {
-		return Image{}, fmt.Errorf("%w: hash_appended is %d", ErrImage, hashAppended)
+		return Image{}, imageError("the image header is damaged (its hash flag is %d, and it can only be 0 or 1)", hashAppended)
 	}
 	img := Image{ChipID: binary.LittleEndian.Uint16(hdr[offChipID:])}
 
@@ -92,11 +94,11 @@ func ParseImage(r io.ReaderAt, size int64) (Image, error) {
 		n := int64(binary.LittleEndian.Uint32(sh[4:]))
 		off += segmentHeaderLen
 		if n > size-off {
-			return Image{}, fmt.Errorf("%w: segment %d runs past the end of the file", ErrImage, i)
+			return Image{}, imageError("the file is cut short (segment %d runs past its end)", i+1)
 		}
 		if i == 0 {
 			if n < appDescLen {
-				return Image{}, fmt.Errorf("%w: first segment has no app descriptor", ErrImage)
+				return Image{}, imageError("the image has no app descriptor (its first segment is too small to hold one)")
 			}
 			desc, err := parseDescriptor(r, size)
 			if err != nil {
@@ -116,14 +118,14 @@ func ParseImage(r io.ReaderAt, size int64) (Image, error) {
 	// multiple of 16.
 	padded := (off + 16) &^ 15
 	if padded > size {
-		return Image{}, fmt.Errorf("%w: the file ends before the checksum", ErrImage)
+		return Image{}, imageError("the file is cut short (it ends before the image's checksum)")
 	}
 	var got [1]byte
 	if err := readAt(r, size, got[:], padded-1); err != nil {
 		return Image{}, err
 	}
 	if got[0] != sum {
-		return Image{}, fmt.Errorf("%w: checksum is 0x%02X, not 0x%02X", ErrImage, got[0], sum)
+		return Image{}, imageError("the image is damaged (its checksum does not match its contents)")
 	}
 	if hashAppended == 1 {
 		var want [hashLen]byte
@@ -135,7 +137,7 @@ func ParseImage(r io.ReaderAt, size int64) (Image, error) {
 			return Image{}, fmt.Errorf("hash image: %w", err)
 		}
 		if !bytes.Equal(h.Sum(nil), want[:]) {
-			return Image{}, fmt.Errorf("%w: the image's own SHA-256 does not match", ErrImage)
+			return Image{}, imageError("the image is damaged (its own SHA-256 does not match its contents)")
 		}
 	}
 	return img, nil
@@ -148,8 +150,8 @@ func parseDescriptor(r io.ReaderAt, size int64) (Image, error) {
 	if err := readAt(r, size, d[:], appDescOffset); err != nil {
 		return Image{}, err
 	}
-	if m := binary.LittleEndian.Uint32(d[:]); m != appDescMagic {
-		return Image{}, fmt.Errorf("%w: app descriptor magic is 0x%08X, not 0x%08X", ErrImage, m, uint32(appDescMagic))
+	if binary.LittleEndian.Uint32(d[:]) != appDescMagic {
+		return Image{}, imageError("the image has no valid app descriptor")
 	}
 	var img Image
 	var err error
@@ -175,17 +177,27 @@ func descString(b []byte) (string, error) {
 	}
 	for _, c := range b {
 		if c < ' ' || c > '~' {
-			return "", fmt.Errorf("%w: app descriptor has a non-text string", ErrImage)
+			return "", imageError("the image's app descriptor has a string that is not plain text")
 		}
 	}
 	return string(b), nil
 }
 
+// imageError returns an error that wraps ErrImage and whose text is the
+// sentence given, which an admin reads as it is.
+func imageError(format string, args ...any) error {
+	return errkind.New(ErrImage, fmt.Sprintf(format, args...))
+}
+
 // readAt fills p from offset off of the first size bytes of r. A file too
-// short for it is truncated.
+// short for it is refused: as too small to be an image when it cannot hold
+// the image header, and as cut short otherwise.
 func readAt(r io.ReaderAt, size int64, p []byte, off int64) error {
 	if off < 0 || off+int64(len(p)) > size {
-		return fmt.Errorf("%w: file is truncated", ErrImage)
+		if size < imageHeaderLen {
+			return imageError("the file is too small to be an ESP firmware image")
+		}
+		return imageError("the file is cut short")
 	}
 	if _, err := r.ReadAt(p, off); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read image: %w", err)

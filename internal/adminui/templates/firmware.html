@@ -1,0 +1,47 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<div class="page-head">
+<h1>{{.Heading}}</h1>
+<a class="btn btn-secondary" href="#upload">Upload a build</a>
+</div>{{end}}
+{{define "content"}}{{if .Firmware}}<ul class="stack">
+{{range .Firmware}}<li class="panel" id="build-{{.ID}}">
+<div class="list-head">
+<h2>{{template "firmware-name" .}}</h2>
+<span class="badge {{.Badge.Class}}">{{.Badge.Label}}</span>
+</div>
+{{template "firmware-facts" .}}
+<div class="more item-actions">
+<a class="btn btn-secondary" href="{{.Href}}" aria-label="{{.StartAria}}">{{.StartLabel}}</a>
+<a class="btn btn-secondary" href="{{.DevicesHref}}" aria-label="{{.DevicesAria}}">Devices</a>
+{{if .CanCancel}}<a class="btn btn-secondary btn-danger" href="{{.CancelHref}}" aria-label="{{.CancelAria}}">Cancel rollout</a>
+{{end}}</div>
+</li>
+{{end}}</ul>{{else}}<div class="empty">
+<h2>No firmware yet</h2>
+<p>Upload a firmware build below.</p>
+</div>{{end}}
+<section class="panel form-panel" id="upload" aria-labelledby="upload-title">
+<h2 id="upload-title">Upload a build</h2>
+<form method="post" action="/firmware#upload" enctype="multipart/form-data">
+{{if .UploadError}}<p class="error" role="alert">{{.UploadError}}</p>{{end}}
+<div class="field">
+<label for="model">Model</label>
+<select id="model" name="model" required>
+<option value="">Choose a model</option>
+{{range .FirmwareModels}}<option value="{{.}}"{{if eq . $.UploadForm.Model}} selected{{end}}>{{.}}</option>
+{{end}}</select>
+</div>
+<div class="field">
+<label for="version">Version</label>
+<input id="version" name="version" type="text" autocomplete="off" value="{{.UploadForm.Version}}">
+<p class="hint">Dotted numbers such as 1.8.19, from the release's file name. Leave empty only if the file states it.</p>
+</div>
+<div class="field">
+<label for="firmware">Firmware file</label>
+<input id="firmware" name="firmware" type="file" accept=".bin,application/octet-stream" required>
+<p class="hint">A .bin app image, up to {{.UploadLimit}}.</p>
+</div>
+<p class="note">The server checks the file's chip, not its board. Upload only a build made for exactly this model. A build for another board on the same chip installs and can leave the device needing a USB cable.</p>
+<button class="btn btn-primary" type="submit">Upload</button>
+</form>
+</section>{{end}}

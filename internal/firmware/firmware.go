@@ -92,7 +92,7 @@ func ValidSHA(s string) bool {
 func Add(ctx context.Context, client *db.Client, dir, model, version string, r io.Reader, now time.Time) (db.Firmware, error) {
 	m, ok := Models[model]
 	if !ok {
-		return db.Firmware{}, fmt.Errorf("%w: model %q is not one this server knows the chip of", errkind.ErrInvalid, model)
+		return db.Firmware{}, errkind.New(errkind.ErrInvalid, fmt.Sprintf("this server does not know the firmware model %q", model))
 	}
 	var declared Version
 	if version != "" {
@@ -119,24 +119,24 @@ func Add(ctx context.Context, client *db.Client, dir, model, version string, r i
 		return db.Firmware{}, fmt.Errorf("save upload: %w", err)
 	}
 	if n > m.MaxBytes {
-		return db.Firmware{}, fmt.Errorf("%w: %s's app partition is %d bytes", ErrTooBig, model, m.MaxBytes)
+		return db.Firmware{}, errkind.New(ErrTooBig, fmt.Sprintf("the file is larger than the app partition of %s, which holds %s", model, ByteSize(m.MaxBytes)))
 	}
 	img, err := ParseImage(f, n)
 	if err != nil {
 		return db.Firmware{}, err
 	}
 	if img.ChipID != m.Chip.ID {
-		return db.Firmware{}, fmt.Errorf("%w: the image is for %s, and %s is %s", ErrImage, chipName(img.ChipID), model, m.Chip.Name)
+		return db.Firmware{}, imageError("the image is built for %s, and %s uses %s", chipName(img.ChipID), model, m.Chip.Name)
 	}
 	if v, ok := cleanDescriptorVersion(img.Version); ok {
 		if declared == nil {
 			declared = v
 		} else if declared.Compare(v) != 0 {
-			return db.Firmware{}, fmt.Errorf("%w: the image says version %s, not %s", errkind.ErrInvalid, v, declared)
+			return db.Firmware{}, errkind.New(errkind.ErrInvalid, fmt.Sprintf("the image says it is version %s, and the version given is %s", v, declared))
 		}
 	}
 	if declared == nil {
-		return db.Firmware{}, fmt.Errorf("%w: the image's version is %q, which says nothing about the firmware's own, so give the version", errkind.ErrInvalid, img.Version)
+		return db.Firmware{}, errkind.New(errkind.ErrInvalid, fmt.Sprintf("the image does not say which firmware version it is (its app descriptor says %q), so the version must be given", img.Version))
 	}
 	if err := f.Sync(); err != nil {
 		return db.Firmware{}, fmt.Errorf("save upload: %w", err)
@@ -154,11 +154,14 @@ func Add(ctx context.Context, client *db.Client, dir, model, version string, r i
 		}
 		for _, r := range rows {
 			if r.Sha256 == sha {
-				return fmt.Errorf("%w: this file is in the catalog already, as %s %s", ErrExists, r.FwModel, r.Version)
+				return errkind.New(ErrExists, fmt.Sprintf("this exact file is already in the catalog, as %s %s", r.FwModel, r.Version))
 			}
 			// A version that does not parse cannot equal this one.
 			if v, err := ParseVersion(r.Version); err == nil && v.Compare(declared) == 0 {
-				return fmt.Errorf("%w: %s %s is the same version as %s, which is in the catalog already", ErrExists, model, declared, r.Version)
+				if r.Version == declared.String() {
+					return errkind.New(ErrExists, fmt.Sprintf("the catalog already has %s %s, from another file", model, declared))
+				}
+				return errkind.New(ErrExists, fmt.Sprintf("the catalog already has %s %s, which is the same version as %s", model, r.Version, declared))
 			}
 		}
 		fw, err = q.CreateFirmware(ctx, db.CreateFirmwareParams{

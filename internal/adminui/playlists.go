@@ -117,10 +117,25 @@ func parseSeconds(text string) (time.Duration, error) {
 	return playlist.DurationFromSeconds(n)
 }
 
-// invalidText returns the message of an error wrapping errkind.ErrInvalid,
-// as a sentence to show.
-func invalidText(err error) string {
-	return capitalize(strings.TrimPrefix(err.Error(), errkind.ErrInvalid.Error()+": ")) + "."
+// kindText returns the message of an error that wraps one of the errkind
+// kinds, as a sentence to show. A message that starts with the kind's own
+// text, as one wrapped with fmt.Errorf("%w: ...", errkind.ErrInvalid) does,
+// is shown without it.
+func kindText(err error) string {
+	msg := err.Error()
+	for _, kind := range []error{errkind.ErrInvalid, errkind.ErrNotFound, errkind.ErrConflict, errkind.ErrTooBig} {
+		if rest, ok := strings.CutPrefix(msg, kind.Error()+": "); ok {
+			msg = rest
+			break
+		}
+	}
+	return sentence(msg)
+}
+
+// sentence returns msg as a sentence: its first letter in upper case, and
+// one full stop at its end.
+func sentence(msg string) string {
+	return capitalize(strings.TrimSuffix(msg, ".")) + "."
 }
 
 // playlistDeviceView is a device a playlist is linked to.
@@ -355,7 +370,7 @@ func (s *Server) itemAction(do func(ctx context.Context, post map[string][]strin
 		case errors.Is(err, playlist.ErrNoItem):
 			s.renderNotFound(w, r, noItem)
 		case errors.Is(err, errkind.ErrInvalid):
-			s.renderPlaylists(w, r, http.StatusBadRequest, invalidText(err))
+			s.renderPlaylists(w, r, http.StatusBadRequest, kindText(err))
 		default:
 			serverError(w, r, "change playlist item", err)
 		}
@@ -477,7 +492,7 @@ func (s *Server) saveItem(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, playlist.ErrNoItem):
 		s.renderNotFound(w, r, noItem)
 	case errors.Is(err, errkind.ErrInvalid):
-		s.renderItem(w, r, http.StatusBadRequest, &row, &form, invalidText(err))
+		s.renderItem(w, r, http.StatusBadRequest, &row, &form, kindText(err))
 	default:
 		serverError(w, r, "save playlist item", err)
 	}
@@ -544,7 +559,7 @@ func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, playlist.ErrNoPlaylist):
 		s.renderNotFound(w, r, noPlaylist)
 	case errors.Is(err, errkind.ErrInvalid):
-		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, invalidText(err))
+		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, kindText(err))
 	default:
 		serverError(w, r, "save playlist", err)
 	}
@@ -578,7 +593,7 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(pl.ID, 10), http.StatusSeeOther)
 	case errors.Is(err, errkind.ErrInvalid):
-		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, invalidText(err))
+		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, kindText(err))
 	case errors.Is(err, errkind.ErrNotFound):
 		// The instance was removed after the page was shown.
 		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, "That instance no longer exists.")

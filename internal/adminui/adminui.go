@@ -44,6 +44,9 @@ type Config struct {
 	// RecipesDir is the directory recipes are installed under, which an
 	// uploaded recipe is installed into.
 	RecipesDir string
+	// FirmwareDir is the directory firmware builds are stored in, which an
+	// uploaded build is added to.
+	FirmwareDir string
 }
 
 // Server handles admin UI requests.
@@ -54,6 +57,8 @@ type Server struct {
 	zone *time.Location
 	// recipesDir is Config.RecipesDir.
 	recipesDir string
+	// firmwareDir is Config.FirmwareDir.
+	firmwareDir string
 	// secureURL is whether PublicURL is https.
 	secureURL bool
 	// cop refuses a cross-origin request that is not safe.
@@ -64,12 +69,13 @@ type Server struct {
 // New returns a Server that keeps state in client.
 func New(client *db.Client, cfg Config) *Server {
 	s := &Server{
-		db:         client,
-		now:        time.Now,
-		zone:       cmp.Or(cfg.Zone, time.UTC),
-		recipesDir: cfg.RecipesDir,
-		cop:        http.NewCrossOriginProtection(),
-		pages:      map[string]*template.Template{},
+		db:          client,
+		now:         time.Now,
+		zone:        cmp.Or(cfg.Zone, time.UTC),
+		recipesDir:  cfg.RecipesDir,
+		firmwareDir: cfg.FirmwareDir,
+		cop:         http.NewCrossOriginProtection(),
+		pages:       map[string]*template.Template{},
 	}
 	if u, err := url.Parse(cfg.PublicURL); err == nil {
 		s.secureURL = strings.EqualFold(u.Scheme, "https")
@@ -77,8 +83,8 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_delete", "recipes", "recipe", "instance_delete", "notfound", "stub"} {
-		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/"+name+".html"))
+	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_delete", "recipes", "recipe", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "notfound"} {
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/"+name+".html"))
 	}
 	return s
 }
@@ -110,7 +116,14 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /playlists/items/{id}/move", page(s.requireSession(s.itemAction(s.moveItem))))
 	mux.Handle("POST /playlists/items/{id}/hidden", page(s.requireSession(s.itemAction(s.hideItem))))
 	mux.Handle("POST /playlists/items/{id}/delete", page(s.requireSession(s.itemAction(s.deleteItem))))
-	mux.Handle("GET /firmware", page(s.requireSession(s.stub("firmware", "Firmware"))))
+	// Build pages are under /firmware/builds/ because the device download
+	// route owns /firmware/{name}.
+	mux.Handle("GET /firmware", page(s.requireSession(s.firmwareCatalog)))
+	mux.Handle("POST /firmware", page(s.requireSession(s.uploadFirmware)))
+	mux.Handle("GET /firmware/builds/{id}", page(s.requireSession(s.buildPage)))
+	mux.Handle("POST /firmware/builds/{id}/rollout", page(s.requireSession(s.startRollout)))
+	mux.Handle("GET /firmware/builds/{id}/cancel", page(s.requireSession(s.confirmCancelRollout)))
+	mux.Handle("POST /firmware/builds/{id}/cancel", page(s.requireSession(s.cancelRollout)))
 	mux.Handle("GET /static/", static())
 }
 
@@ -189,7 +202,8 @@ type pageData struct {
 	// Delete is the removal the confirm page asks about.
 	Delete *deleteView
 	// Recipes is what the recipes page lists, and UploadLimit the size it
-	// says an upload may be, such as "8 MB".
+	// says an upload may be, such as "8 MB". The firmware page uses
+	// UploadLimit too.
 	Recipes     []recipeView
 	UploadLimit string
 	// UploadError is why an upload was refused, shown in the upload panel,
@@ -199,6 +213,15 @@ type pageData struct {
 	RecipeEdit *recipeEdit
 	// InstanceDelete is the instance removal the confirm page asks about.
 	InstanceDelete *instanceDeleteView
+	// Firmware is what the firmware page lists, FirmwareModels the models
+	// its upload form offers, and UploadForm the values the form shows.
+	Firmware       []firmwareView
+	FirmwareModels []string
+	UploadForm     *uploadForm
+	// Build is the firmware build its page shows, and Cancel the rollout
+	// cancel the confirm page asks about.
+	Build  *buildView
+	Cancel *cancelView
 	// NotFound says what the not-found page could not find.
 	NotFound notFoundView
 }
@@ -274,11 +297,4 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 // home sends the admin to the first page.
 func home(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/devices", http.StatusSeeOther)
-}
-
-// stub serves a page that is not built yet.
-func (s *Server) stub(nav, heading string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		s.render(w, r, http.StatusOK, "stub", pageData{Nav: nav, Heading: heading})
-	}
 }

@@ -173,32 +173,34 @@ func TestAddRefusals(t *testing.T) {
 		version string
 		body    io.Reader
 		want    error
+		// msg is the text of the error, which an admin reads as it is.
+		msg string
 	}{
-		{"unknown model", "no_such_model", "1.8.19", bytes.NewReader(good), errkind.ErrInvalid},
-		{"empty model", "", "1.8.19", bytes.NewReader(good), errkind.ErrInvalid},
-		{"model left out for two builds", "xteink_x4", "1.8.19", bytes.NewReader(good), errkind.ErrInvalid},
-		{"wrong chip for the model", "og", "1.8.19", bytes.NewReader(good), ErrImage},
-		{"C3 image for an S3 model", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{chip: chipC3})), ErrImage},
-		{"wrong magic", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{magic: 0x7F})), ErrImage},
-		{"no descriptor", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{noDescriptor: true})), ErrImage},
-		{"bad descriptor magic", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{descMagic: 1})), ErrImage},
-		{"truncated", testModel, "1.8.19", bytes.NewReader(good[:len(good)/2]), ErrImage},
-		{"corrupt checksum", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{badChecksum: true, noHash: true})), ErrImage},
-		{"empty file", testModel, "1.8.19", bytes.NewReader(nil), ErrImage},
-		{"not an image", testModel, "1.8.19", bytes.NewReader([]byte("hello")), ErrImage},
-		{"version not dotted numbers", testModel, "1.8.x", bytes.NewReader(good), errkind.ErrInvalid},
-		{"version with a prefix", testModel, "v1.8.19", bytes.NewReader(good), errkind.ErrInvalid},
-		{"version differs from the descriptor", testModel, "1.8.20", bytes.NewReader(good), errkind.ErrInvalid},
-		{"no version, descriptor is no version", testModel, "", bytes.NewReader(buildImage(imageSpec{version: "1a2b3c4"})), errkind.ErrInvalid},
-		{"no version, descriptor is 1", testModel, "", bytes.NewReader(buildImage(imageSpec{version: "1"})), errkind.ErrInvalid},
-		{"larger than the app partition", "og", "1.8.19", &oversize, ErrTooBig},
+		{"unknown model", "no_such_model", "1.8.19", bytes.NewReader(good), errkind.ErrInvalid, "this server does not know the firmware model \"no_such_model\""},
+		{"empty model", "", "1.8.19", bytes.NewReader(good), errkind.ErrInvalid, "this server does not know the firmware model \"\""},
+		{"model left out for two builds", "xteink_x4", "1.8.19", bytes.NewReader(good), errkind.ErrInvalid, "this server does not know the firmware model \"xteink_x4\""},
+		{"wrong chip for the model", "og", "1.8.19", bytes.NewReader(good), ErrImage, "the image is built for esp32s3, and og uses esp32c3"},
+		{"C3 image for an S3 model", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{chip: chipC3})), ErrImage, "the image is built for esp32c3, and xiao_epaper_display uses esp32s3"},
+		{"wrong magic", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{magic: 0x7F})), ErrImage, "the file is not an ESP firmware image (it does not start with the image header)"},
+		{"no descriptor", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{noDescriptor: true})), ErrImage, "the image has no valid app descriptor"},
+		{"bad descriptor magic", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{descMagic: 1})), ErrImage, "the image has no valid app descriptor"},
+		{"truncated", testModel, "1.8.19", bytes.NewReader(good[:len(good)/2]), ErrImage, "the file is cut short (segment 1 runs past its end)"},
+		{"corrupt checksum", testModel, "1.8.19", bytes.NewReader(buildImage(imageSpec{badChecksum: true, noHash: true})), ErrImage, "the image is damaged (its checksum does not match its contents)"},
+		{"empty file", testModel, "1.8.19", bytes.NewReader(nil), ErrImage, "the file is too small to be an ESP firmware image"},
+		{"not an image", testModel, "1.8.19", bytes.NewReader([]byte("hello")), ErrImage, "the file is too small to be an ESP firmware image"},
+		{"version not dotted numbers", testModel, "1.8.x", bytes.NewReader(good), errkind.ErrInvalid, "the version \"1.8.x\" is not dotted numbers, such as 1.8.19"},
+		{"version with a prefix", testModel, "v1.8.19", bytes.NewReader(good), errkind.ErrInvalid, "the version \"v1.8.19\" is not dotted numbers, such as 1.8.19"},
+		{"version differs from the descriptor", testModel, "1.8.20", bytes.NewReader(good), errkind.ErrInvalid, "the image says it is version 1.8.19, and the version given is 1.8.20"},
+		{"no version, descriptor is no version", testModel, "", bytes.NewReader(buildImage(imageSpec{version: "1a2b3c4"})), errkind.ErrInvalid, "the image does not say which firmware version it is (its app descriptor says \"1a2b3c4\"), so the version must be given"},
+		{"no version, descriptor is 1", testModel, "", bytes.NewReader(buildImage(imageSpec{version: "1"})), errkind.ErrInvalid, "the image does not say which firmware version it is (its app descriptor says \"1\"), so the version must be given"},
+		{"larger than the app partition", "og", "1.8.19", &oversize, ErrTooBig, "the file is larger than the app partition of og, which holds 1.8 MB"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
 			_, err := Add(t.Context(), f.client, f.dir, tc.model, tc.version, tc.body, testNow)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("err = %v, want %v", err, tc.want)
+			if !errors.Is(err, tc.want) || err.Error() != tc.msg {
+				t.Fatalf("err = %q, want %v with the text %q", err, tc.want, tc.msg)
 			}
 			if names := f.files(); len(names) != 0 {
 				t.Errorf("a refused upload left %v", names)
@@ -216,13 +218,17 @@ func TestAddDuplicates(t *testing.T) {
 	f.add("1.8.19")
 	// The same file again, and a different file for the same version.
 	other := buildImage(imageSpec{version: "1.8.19", idf: "v5.4"})
-	for name, body := range map[string][]byte{
-		"same file":    buildImage(imageSpec{version: "1.8.19"}),
-		"same version": other,
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{"same file", buildImage(imageSpec{version: "1.8.19"}), "this exact file is already in the catalog, as " + testModel + " 1.8.19"},
+		{"same version", other, "the catalog already has " + testModel + " 1.8.19, from another file"},
 	} {
-		_, err := Add(t.Context(), f.client, f.dir, testModel, "1.8.19", bytes.NewReader(body), testNow)
-		if !errors.Is(err, ErrExists) {
-			t.Errorf("%s: err = %v, want ErrExists", name, err)
+		_, err := Add(t.Context(), f.client, f.dir, testModel, "1.8.19", bytes.NewReader(tc.body), testNow)
+		if !errors.Is(err, ErrExists) || err.Error() != tc.want {
+			t.Errorf("%s: err = %q, want ErrExists with the text %q", tc.name, err, tc.want)
 		}
 	}
 	if names := f.files(); len(names) != 1 {
@@ -847,5 +853,26 @@ func TestOfferCapCascade(t *testing.T) {
 	}
 	if count() != 0 {
 		t.Errorf("a deleted device left %d offers", count())
+	}
+}
+
+func TestByteSize(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		n    int64
+		want string
+	}{
+		{0, "0 bytes"},
+		{1023, "1023 bytes"},
+		{1024, "1 KB"},
+		{1536, "1.5 KB"},
+		{1 << 20, "1 MB"},
+		{1<<20 + 1<<19, "1.5 MB"},
+		{1_300_000, "1.2 MB"},
+		{3 << 20, "3 MB"},
+	} {
+		if got := ByteSize(tc.n); got != tc.want {
+			t.Errorf("ByteSize(%d) = %q, want %q", tc.n, got, tc.want)
+		}
 	}
 }

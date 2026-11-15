@@ -322,7 +322,7 @@ func TestHeaders(t *testing.T) {
 		{"login page", "GET", "/login", nil, 200, true},
 		{"failed login", "POST", "/login", nil, 401, true},
 		{"devices", "GET", "/devices", []string{"Cookie", cookieHeader(c)}, 200, true},
-		{"stub page", "GET", "/recipes", []string{"Cookie", cookieHeader(c)}, 200, true},
+		{"recipes page", "GET", "/recipes", []string{"Cookie", cookieHeader(c)}, 200, true},
 		{"home", "GET", "/", []string{"Cookie", cookieHeader(c)}, 303, true},
 		{"home redirect", "GET", "/", nil, 303, true},
 		{"refused cross-origin post", "POST", "/logout", []string{"Sec-Fetch-Site", "cross-site"}, 403, true},

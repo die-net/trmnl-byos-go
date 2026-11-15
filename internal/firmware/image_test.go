@@ -123,26 +123,26 @@ func TestParseImage(t *testing.T) {
 		{"good with hash", good, ""},
 		{"good without hash", buildImage(imageSpec{noHash: true}), ""},
 		{"good with five segments", buildImage(imageSpec{segments: 5}), ""},
-		{"wrong magic", buildImage(imageSpec{magic: 0xE8}), "first byte"},
-		{"bad descriptor magic", buildImage(imageSpec{descMagic: 0x12345678}), "descriptor magic"},
-		{"no descriptor", buildImage(imageSpec{noDescriptor: true}), "descriptor magic"},
-		{"bad checksum", buildImage(imageSpec{badChecksum: true, noHash: true}), "checksum"},
+		{"wrong magic", buildImage(imageSpec{magic: 0xE8}), "does not start with the image header"},
+		{"bad descriptor magic", buildImage(imageSpec{descMagic: 0x12345678}), "no valid app descriptor"},
+		{"no descriptor", buildImage(imageSpec{noDescriptor: true}), "no valid app descriptor"},
+		{"bad checksum", buildImage(imageSpec{badChecksum: true, noHash: true}), "its checksum does not match"},
 		{"bad appended hash", buildImage(imageSpec{badHash: true}), "SHA-256"},
-		{"corrupt data", func() []byte { b := bytes.Clone(good); b[100] ^= 1; return b }(), "checksum"},
-		{"too short for a header", good[:10], "truncated"},
-		{"header only", good[:imageHeaderLen], "truncated"},
-		{"ends inside a segment", good[:150], "past the end"},
-		{"ends before the checksum", good[:len(good)-hashLen-3], "before the checksum"},
-		{"ends inside the hash", good[:len(good)-5], "truncated"},
-		{"empty", nil, "truncated"},
-		{"too many segments", func() []byte { b := bytes.Clone(good); b[offSegmentCount] = 17; return b }(), "segments"},
-		{"no segments", func() []byte { b := bytes.Clone(good); b[offSegmentCount] = 0; return b }(), "segments"},
-		{"bad hash_appended", func() []byte { b := bytes.Clone(good); b[offHashAppended] = 2; return b }(), "hash_appended"},
+		{"corrupt data", func() []byte { b := bytes.Clone(good); b[100] ^= 1; return b }(), "its checksum does not match"},
+		{"too short for a header", good[:10], "the file is too small to be an ESP firmware image"},
+		{"header only", good[:imageHeaderLen], "the file is cut short"},
+		{"ends inside a segment", good[:150], "runs past its end"},
+		{"ends before the checksum", good[:len(good)-hashLen-3], "ends before the image's checksum"},
+		{"ends inside the hash", good[:len(good)-5], "the file is cut short"},
+		{"empty", nil, "the file is too small to be an ESP firmware image"},
+		{"too many segments", func() []byte { b := bytes.Clone(good); b[offSegmentCount] = 17; return b }(), "lists 17 segments"},
+		{"no segments", func() []byte { b := bytes.Clone(good); b[offSegmentCount] = 0; return b }(), "lists 0 segments"},
+		{"bad hash_appended", func() []byte { b := bytes.Clone(good); b[offHashAppended] = 2; return b }(), "hash flag is 2"},
 		{"binary version string", func() []byte {
 			b := bytes.Clone(good)
 			b[appDescOffset+offDescVersion] = 0x01
 			return b
-		}(), "non-text"},
+		}(), "not plain text"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
