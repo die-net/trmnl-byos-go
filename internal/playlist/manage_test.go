@@ -342,7 +342,7 @@ func TestMoveLinkRefused(t *testing.T) {
 		{"stale from", ByID(pl[1]), dev.FriendlyID, 0, 0, ErrOrderChanged, "the device's playlist order has changed: the playlist is now at 1, not 0"},
 		{"stale from, same place", ByID(pl[0]), dev.FriendlyID, 1, 1, ErrOrderChanged, "the playlist is now at 0, not 1"},
 		{"stale from, out of range", ByID(pl[0]), dev.FriendlyID, 7, 1, ErrOrderChanged, ""},
-		{"range before stale", ByID(pl[0]), dev.FriendlyID, 7, 5, errkind.ErrInvalid, ""},
+		{"stale before range", ByID(pl[0]), dev.FriendlyID, 7, 5, ErrOrderChanged, "the playlist is now at 0, not 7"},
 	} {
 		err := MoveLink(ctx, client, tc.ref, tc.dev, tc.from, tc.to)
 		if !errors.Is(err, tc.kind) {

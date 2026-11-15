@@ -153,6 +153,39 @@ var (
 // an unknown device one wrapping device.ErrNoDevice. duration is 0, to show
 // the item until a button press, or at least MinDuration.
 func AddItem(ctx context.Context, client *db.Client, ref Ref, deviceName string, instanceID int64, duration time.Duration) (db.PlaylistItem, error) {
+	return appendItem(ctx, client, ref.resolve, deviceName, instanceID, duration)
+}
+
+// AddItemCreating is AddItem for the playlist with the given name, which it
+// creates if no playlist has it. The create is in the add's transaction, so
+// a refused add, such as for an unknown instance, makes no playlist. It is
+// for a first add on a new install, as from the command line. A caller that
+// means a playlist it saw, such as a page that may be out of date, uses
+// AddItem, so a stale or mistyped name cannot make one. The name is checked
+// by CleanName.
+func AddItemCreating(ctx context.Context, client *db.Client, name, deviceName string, instanceID int64, duration time.Duration) (db.PlaylistItem, error) {
+	name, err := CleanName(name)
+	if err != nil {
+		return db.PlaylistItem{}, err
+	}
+	return appendItem(ctx, client, func(ctx context.Context, q *db.Queries) (db.Playlist, error) {
+		pl, err := q.GetPlaylistByName(ctx, name)
+		if errors.Is(err, sql.ErrNoRows) {
+			if pl, err = q.CreatePlaylist(ctx, name); err != nil {
+				return db.Playlist{}, fmt.Errorf("create playlist: %w", err)
+			}
+			return pl, nil
+		}
+		if err != nil {
+			return db.Playlist{}, fmt.Errorf("get playlist: %w", err)
+		}
+		return pl, nil
+	}, deviceName, instanceID, duration)
+}
+
+// appendItem is AddItem with the playlist found by playlistOf, which runs in
+// the add's transaction.
+func appendItem(ctx context.Context, client *db.Client, playlistOf func(context.Context, *db.Queries) (db.Playlist, error), deviceName string, instanceID int64, duration time.Duration) (db.PlaylistItem, error) {
 	if err := validDuration(duration); err != nil {
 		return db.PlaylistItem{}, err
 	}
@@ -163,7 +196,7 @@ func AddItem(ctx context.Context, client *db.Client, ref Ref, deviceName string,
 		} else if err != nil {
 			return fmt.Errorf("get instance: %w", err)
 		}
-		pl, err := ref.resolve(ctx, q)
+		pl, err := playlistOf(ctx, q)
 		if err != nil {
 			return err
 		}

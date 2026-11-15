@@ -247,9 +247,8 @@ func playlistAdd(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer client.Close()
 	// The command creates the playlist if it is missing, so a first
-	// "playlist add -device ID" works on a new install. The library does not:
-	// a caller that means an existing playlist, such as a page that is out of
-	// date, must not make one by a typo or a stale name.
+	// "playlist add -device ID" works on a new install. AddItemCreating does
+	// it in the add's transaction, so a refused add makes no playlist.
 	plName := *name
 	if plName == "" {
 		dev, err := device.FindDevice(ctx, client.Read, *deviceID)
@@ -258,14 +257,7 @@ func playlistAdd(ctx context.Context, args []string, out io.Writer) error {
 		}
 		plName = dev.FriendlyID
 	}
-	plName, err = playlist.CleanName(plName)
-	if err != nil {
-		return err
-	}
-	if _, err := playlist.CreatePlaylist(ctx, client, plName); err != nil && !errors.Is(err, playlist.ErrNameTaken) {
-		return err
-	}
-	item, err := playlist.AddItem(ctx, client, playlist.ByName(plName), *deviceID, *instanceID, *duration)
+	item, err := playlist.AddItemCreating(ctx, client, plName, *deviceID, *instanceID, *duration)
 	if err != nil {
 		return err
 	}
