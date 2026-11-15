@@ -196,13 +196,15 @@ func buildPlaylists(lists []db.Playlist, devs []db.ListPlaylistDevicesRow, items
 	return out
 }
 
-// addItemRequest is the body of a playlist item create request. It needs a
-// playlist or a device, as playlist add does.
+// addItemRequest is the body of a playlist item create request. It names the
+// playlist by exactly one of PlaylistID and Playlist.
 type addItemRequest struct {
-	// Device is the friendly ID or MAC of a device to show the playlist on.
+	// Device is the friendly ID or MAC of a device to link to the playlist,
+	// last, if it is not linked. Optional.
 	Device string `json:"device"`
-	// Playlist is the playlist to add to, created if new. Default: the
-	// device's friendly ID.
+	// PlaylistID is the ID of the playlist to add to.
+	PlaylistID int64 `json:"playlist_id"`
+	// Playlist is the name of the playlist to add to.
 	Playlist   string `json:"playlist"`
 	InstanceID int64  `json:"instance_id"`
 	// DurationSeconds is how long the item shows, 0 until a button press.
@@ -212,15 +214,22 @@ type addItemRequest struct {
 
 // addItemResponse is the item that was added.
 type addItemResponse struct {
-	ID       int64  `json:"id"`
-	Playlist string `json:"playlist"`
-	Position int64  `json:"position"`
+	ID         int64 `json:"id"`
+	PlaylistID int64 `json:"playlist_id"`
+	Position   int64 `json:"position"`
 }
 
 func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) (addItemResponse, error) {
 	var req addItemRequest
 	if err := decode(w, r, &req, false); err != nil {
 		return addItemResponse{}, err
+	}
+	if (req.PlaylistID != 0) == (req.Playlist != "") {
+		return addItemResponse{}, fmt.Errorf("%w: give exactly one of playlist_id and playlist", errBadBody)
+	}
+	ref := playlist.ByName(req.Playlist)
+	if req.PlaylistID != 0 {
+		ref = playlist.ByID(req.PlaylistID)
 	}
 	dur := playlist.DefaultDuration
 	if req.DurationSeconds != nil {
@@ -229,12 +238,11 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) (addIte
 			return addItemResponse{}, err
 		}
 	}
-	ctx := r.Context()
-	item, name, err := playlist.AddItem(ctx, s.db, req.Playlist, req.Device, req.InstanceID, dur)
+	item, err := playlist.AddItem(r.Context(), s.db, ref, req.Device, req.InstanceID, dur)
 	if err != nil {
 		return addItemResponse{}, err
 	}
-	return addItemResponse{ID: item.ID, Playlist: name, Position: item.Position}, nil
+	return addItemResponse{ID: item.ID, PlaylistID: item.PlaylistID, Position: item.Position}, nil
 }
 
 func (s *Server) deletePlaylistItem(r *http.Request) error {
@@ -303,8 +311,10 @@ func (s *Server) patchPlaylist(w http.ResponseWriter, r *http.Request) (playlist
 
 // moveLinkRequest is the body of a request to move a device's link.
 type moveLinkRequest struct {
-	// Priority is the playlist's index in the device's order, from 0, which
-	// is tried first.
+	// From is the playlist's index in the device's order where the caller
+	// saw it, and Priority the index to move it to, from 0, which is tried
+	// first. Both are required.
+	From     *int64 `json:"from"`
 	Priority *int64 `json:"priority"`
 }
 
@@ -337,11 +347,11 @@ func (s *Server) movePlaylistDevice(w http.ResponseWriter, r *http.Request) (pla
 	if err := decode(w, r, &req, false); err != nil {
 		return playlistJSON{}, err
 	}
-	if req.Priority == nil {
-		return playlistJSON{}, fmt.Errorf("%w: give a priority", errBadBody)
+	if req.From == nil || req.Priority == nil {
+		return playlistJSON{}, fmt.Errorf("%w: give both from and priority", errBadBody)
 	}
 	ctx := r.Context()
-	if err := playlist.MoveLink(ctx, s.db, playlist.ByID(id), r.PathValue("device"), *req.Priority); err != nil {
+	if err := playlist.MoveLink(ctx, s.db, playlist.ByID(id), r.PathValue("device"), *req.From, *req.Priority); err != nil {
 		return playlistJSON{}, err
 	}
 	return s.playlistByID(ctx, id)

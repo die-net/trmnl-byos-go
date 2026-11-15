@@ -35,7 +35,7 @@ func (ts *testServer) playlistDevice(t *testing.T) (key string, first, second in
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := playlist.AddItem(ctx, ts.db, "p", dev.FriendlyID, inst.ID, 10*time.Minute); err != nil {
+		if err := addItemTo(ctx, ts.db, "p", dev.FriendlyID, inst.ID, 10*time.Minute); err != nil {
 			t.Fatal(err)
 		}
 		ids[i] = inst.ID
@@ -178,7 +178,7 @@ func TestDisplayPerDeviceRender(t *testing.T) {
 	if err != nil || keyB == "" {
 		t.Fatalf("second device: %v, %v", m, err)
 	}
-	if _, _, err := playlist.AddItem(t.Context(), ts.db, "p", devB.FriendlyID, instance, 10*time.Minute); err != nil {
+	if err := addItemTo(t.Context(), ts.db, "p", devB.FriendlyID, instance, 10*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 
@@ -450,7 +450,7 @@ func TestDisplayDefaultPlaylist(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Playlist "p" has the lower ID, so it is tried first.
-	if _, _, err := playlist.AddItem(t.Context(), ts.db, "fallback", dev.FriendlyID, inst.ID, 10*time.Minute); err != nil {
+	if err := addItemTo(t.Context(), ts.db, "fallback", dev.FriendlyID, inst.ID, 10*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	imgP := ts.saveRender(t, first, "")

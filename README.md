@@ -109,7 +109,8 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/devices
 curl -H "Authorization: Bearer $TOKEN" -X PUT -d '{"for_seconds": 600}' http://localhost:8080/api/v1/join
 curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/zip" --data-binary @recipe.zip http://localhost:8080/api/v1/recipes
 curl -H "Authorization: Bearer $TOKEN" -d '{"recipe_id": 1, "fields": {"city": "Zurich"}, "secrets": {"api_key": "..."}}' http://localhost:8080/api/v1/instances
-curl -H "Authorization: Bearer $TOKEN" -d '{"device": "ABC123", "instance_id": 1, "duration_seconds": 900}' http://localhost:8080/api/v1/playlists/items
+curl -H "Authorization: Bearer $TOKEN" -d '{"name": "Kitchen"}' http://localhost:8080/api/v1/playlists
+curl -H "Authorization: Bearer $TOKEN" -d '{"playlist": "Kitchen", "device": "ABC123", "instance_id": 1, "duration_seconds": 900}' http://localhost:8080/api/v1/playlists/items
 ```
 
 Bodies and responses are JSON, with times in Unix seconds and durations in seconds. Errors are `{"error": "..."}` with the HTTP status that fits. The routes are listed in `docs/design.md`. Secret fields are never returned, only the names of the ones that are set, in `secret_fields`. It is `null`, not a list, when the server has no `TRMNL_SECRET_KEY` and the instance has secrets, because the names cannot be read without the key.

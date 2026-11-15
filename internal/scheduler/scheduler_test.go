@@ -98,7 +98,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := playlist.AddItem(t.Context(), h.db, "p", dev.FriendlyID, inst.ID, 15*time.Minute); err != nil {
+	if _, err := addItemTo(t.Context(), h.db, "p", dev.FriendlyID, inst.ID); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -270,7 +270,7 @@ func TestRenderPerDevice(t *testing.T) {
 	}
 	for _, device := range []string{"ABC123", second.FriendlyID} {
 		for _, instance := range []int64{shared, perDevice.ID} {
-			if _, _, err := playlist.AddItem(t.Context(), h.db, "p"+device, device, instance, 15*time.Minute); err != nil {
+			if _, err := addItemTo(t.Context(), h.db, "p"+device, device, instance); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -303,7 +303,7 @@ func TestRenderPerDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, instance := range []int64{shared, perDevice.ID} {
-		if _, _, err := playlist.AddItem(t.Context(), h.db, "p3", third.FriendlyID, instance, 15*time.Minute); err != nil {
+		if _, err := addItemTo(t.Context(), h.db, "p3", third.FriendlyID, instance); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -507,18 +507,18 @@ func TestCandidatesWanted(t *testing.T) {
 	// q2 first, which holds only the per-device one; device 1 is also on q1
 	// with it, but p comes first.
 	for i, device := range []string{"ABC123", second.FriendlyID} {
-		item, _, err := playlist.AddItem(t.Context(), h.db, "q"+strconv.Itoa(i+1), device, perDevice.ID, 15*time.Minute)
+		item, err := addItemTo(t.Context(), h.db, "q"+strconv.Itoa(i+1), device, perDevice.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if device == second.FriendlyID {
-			err = playlist.MoveLink(t.Context(), h.db, playlist.ByID(item.PlaylistID), device, 0)
+			err = playlist.MoveLink(t.Context(), h.db, playlist.ByID(item.PlaylistID), device, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	if _, _, err := playlist.AddItem(t.Context(), h.db, "p", third.FriendlyID, shared, 15*time.Minute); err != nil {
+	if _, err := addItemTo(t.Context(), h.db, "p", third.FriendlyID, shared); err != nil {
 		t.Fatal(err)
 	}
 	// They woke at the harness's time and will wake in 10, 20 and 30 minutes.
@@ -560,7 +560,7 @@ func TestDueTargetsOrder(t *testing.T) {
 	h := newHarness(t)
 	start := h.now
 	other := h.installRecipe(t, "y")
-	if _, _, err := playlist.AddItem(t.Context(), h.db, "p", "", other.ID, 15*time.Minute); err != nil {
+	if _, err := addItemTo(t.Context(), h.db, "p", "", other.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.renderDue(t, 2)
@@ -714,7 +714,7 @@ func TestRenderMissingRecipeDir(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	other := h.installRecipe(t, "y")
-	if _, _, err := playlist.AddItem(t.Context(), h.db, "p", "", other.ID, 15*time.Minute); err != nil {
+	if _, err := addItemTo(t.Context(), h.db, "p", "", other.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1)); err != nil {
@@ -1008,7 +1008,7 @@ func TestRenderPruning(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	other := h.installRecipe(t, "y")
-	item, _, err := playlist.AddItem(t.Context(), h.db, "p", "", other.ID, 15*time.Minute)
+	item, err := addItemTo(t.Context(), h.db, "p", "", other.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1088,7 +1088,7 @@ func TestPruneKeepsRendersOfUnscannedRecipe(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	per := h.installRecipe(t, "<p>{{ trmnl.device.friendly_id }}</p>")
-	if _, _, err := playlist.AddItem(t.Context(), h.db, "p2", "ABC123", per.ID, 15*time.Minute); err != nil {
+	if _, err := addItemTo(t.Context(), h.db, "p2", "ABC123", per.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.renderDue(t, 2)
@@ -1208,7 +1208,7 @@ func TestRenderNextUrgentFirst(t *testing.T) {
 	second := h.installRecipe(t, "y")
 	third := h.installRecipe(t, "z")
 	for _, in := range []db.PluginInstance{second, third} {
-		if _, _, err := playlist.AddItem(t.Context(), h.db, "p", "", in.ID, 15*time.Minute); err != nil {
+		if _, err := addItemTo(t.Context(), h.db, "p", "", in.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1310,7 +1310,7 @@ func TestCandidatesHonorSchedules(t *testing.T) {
 	other := h.installRecipe(t, "y")
 	// The second playlist has the higher ID, so it is tried after p, and
 	// it has no schedule, so it is the default.
-	if _, _, err := playlist.AddItem(t.Context(), h.db, "fallback", "ABC123", other.ID, 15*time.Minute); err != nil {
+	if _, err := addItemTo(t.Context(), h.db, "fallback", "ABC123", other.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.wake(t, 1, 10*time.Minute)
@@ -1370,7 +1370,7 @@ func TestHiddenItemsAreNotTargets(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	other := h.installRecipe(t, "y")
-	item, _, err := playlist.AddItem(t.Context(), h.db, "p", "", other.ID, 15*time.Minute)
+	item, err := addItemTo(t.Context(), h.db, "p", "", other.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

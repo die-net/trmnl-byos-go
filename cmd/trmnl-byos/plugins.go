@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
@@ -245,7 +246,26 @@ func playlistAdd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	item, plName, err := playlist.AddItem(ctx, client, *name, *deviceID, *instanceID, *duration)
+	// The command creates the playlist if it is missing, so a first
+	// "playlist add -device ID" works on a new install. The library does not:
+	// a caller that means an existing playlist, such as a page that is out of
+	// date, must not make one by a typo or a stale name.
+	plName := *name
+	if plName == "" {
+		dev, err := device.FindDevice(ctx, client.Read, *deviceID)
+		if err != nil {
+			return err
+		}
+		plName = dev.FriendlyID
+	}
+	plName, err = playlist.CleanName(plName)
+	if err != nil {
+		return err
+	}
+	if _, err := playlist.CreatePlaylist(ctx, client, plName); err != nil && !errors.Is(err, playlist.ErrNameTaken) {
+		return err
+	}
+	item, err := playlist.AddItem(ctx, client, playlist.ByName(plName), *deviceID, *instanceID, *duration)
 	if err != nil {
 		return err
 	}
@@ -505,7 +525,7 @@ func playlistDelete(ctx context.Context, args []string, out io.Writer) error {
 // and changes the link between them with do, then prints done, which has a
 // %s for the device and a %q for the playlist.
 func playlistDeviceCommand(ctx context.Context, name string, args []string, out io.Writer, done string,
-	do func(ctx context.Context, client *db.Client, pl playlist.Ref, device string) error,
+	do func(ctx context.Context, client *db.Client, pl playlist.Ref, deviceName string) error,
 ) error {
 	fs := flag.NewFlagSet("playlist "+name, flag.ExitOnError)
 	data := dataFlag(fs)
@@ -533,11 +553,15 @@ func playlistOrder(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("playlist order", flag.ExitOnError)
 	data := dataFlag(fs)
 	rest := parseInterspersed(fs, args)
-	usage := errors.New("usage: trmnl-byos playlist order [-data dir] <playlist name> <device> <index>")
-	if len(rest) != 3 {
+	usage := errors.New("usage: trmnl-byos playlist order [-data dir] <playlist name> <device> <from> <to>")
+	if len(rest) != 4 {
 		return usage
 	}
-	index, err := strconv.ParseInt(rest[2], 10, 64)
+	from, err := strconv.ParseInt(rest[2], 10, 64)
+	if err != nil {
+		return usage
+	}
+	to, err := strconv.ParseInt(rest[3], 10, 64)
 	if err != nil {
 		return usage
 	}
@@ -546,10 +570,10 @@ func playlistOrder(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	if err := playlist.MoveLink(ctx, client, playlist.ByName(rest[0]), rest[1], index); err != nil {
+	if err := playlist.MoveLink(ctx, client, playlist.ByName(rest[0]), rest[1], from, to); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "Moved playlist %q to index %d in device %s's order.\n", rest[0], index, rest[1])
+	_, err = fmt.Fprintf(out, "Moved playlist %q from index %d to %d in device %s's order.\n", rest[0], from, to, rest[1])
 	return err
 }
 

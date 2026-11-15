@@ -385,7 +385,7 @@ func TestDevicePlaylist(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := playlist.AddItem(ctx, tu.db, "", "ABC123", inst.ID, tc.duration); err != nil {
+		if _, err := addItemTo(ctx, tu.db, "", "ABC123", inst.ID, tc.duration); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -430,7 +430,7 @@ func TestDevicePlaylistZone(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if item, _, err = playlist.AddItem(ctx, tu.db, "", "ABC123", inst.ID, 0); err != nil {
+				if item, err = addItemTo(ctx, tu.db, "", "ABC123", inst.ID, 0); err != nil {
 					t.Fatal(err)
 				}
 			}

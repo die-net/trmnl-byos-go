@@ -587,7 +587,7 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) {
 		dur, err = parseSeconds(add.Duration)
 	}
 	if err == nil {
-		_, _, err = playlist.AddItem(r.Context(), s.db, pl.Name, "", instance, dur)
+		_, err = playlist.AddItem(r.Context(), s.db, playlist.ByID(pl.ID), "", instance, dur)
 	}
 	switch {
 	case err == nil:
