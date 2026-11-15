@@ -40,6 +40,13 @@ done
 echo built
 `
 
+// ampleTimeout is the build timeout of a shim whose builds are meant to
+// finish. It is the shim's own default, so a fork and exec of the fake
+// trmnlp on a starved machine does not time out and fail a test about
+// something else. Only the "slow" case of TestBuildFails, which tests the
+// timeout, uses a short one.
+const ampleTimeout = 2 * time.Minute
+
 func newShimServer(t *testing.T, timeout time.Duration, env ...string) *Client {
 	t.Helper()
 	script := filepath.Join(t.TempDir(), "trmnlp")
@@ -76,7 +83,7 @@ func collect(got map[string]string) func(string, io.Reader) error {
 
 func TestBuild(t *testing.T) {
 	t.Parallel()
-	c := newShimServer(t, 10*time.Second)
+	c := newShimServer(t, ampleTimeout)
 	got := map[string]string{}
 	log, err := c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "gray-4", Env: map[string]string{"FIELD_TOKEN": "abc"}},
 		project(), collect(got))
@@ -99,15 +106,16 @@ func TestBuild(t *testing.T) {
 func TestBuildFails(t *testing.T) {
 	t.Parallel()
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
-	c := newShimServer(t, 500*time.Millisecond, "CHILD_PID_FILE="+pidFile)
 	for _, tc := range []struct {
 		name, marker, inLog string
+		c                   *Client
 	}{
-		{"exit status", "fail", "boom"},
-		{"timeout", "slow", ""},
+		{"exit status", "fail", "boom", newShimServer(t, ampleTimeout)},
+		// Only this case may time out: its script sleeps for 30 s.
+		{"timeout", "slow", "", newShimServer(t, 500*time.Millisecond, "CHILD_PID_FILE="+pidFile)},
 	} {
 		got := map[string]string{}
-		log, err := c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(tc.marker), collect(got))
+		log, err := tc.c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(tc.marker), collect(got))
 		if !errors.Is(err, ErrBuildFailed) || !strings.Contains(log, tc.inLog) || len(got) != 0 {
 			t.Errorf("%s: err %v, log %q, %d PNGs", tc.name, err, log, len(got))
 		}
@@ -135,7 +143,7 @@ func TestBuildFails(t *testing.T) {
 // outside its directory, or a request without the job first, is refused before trmnlp runs.
 func TestShimRejects(t *testing.T) {
 	t.Parallel()
-	c := newShimServer(t, 10*time.Second)
+	c := newShimServer(t, ampleTimeout)
 	for _, tc := range []struct {
 		name    string
 		first   string
@@ -233,7 +241,7 @@ func TestUnavailable(t *testing.T) {
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(busy.Close)
-	shim := newShimServer(t, time.Second)
+	shim := newShimServer(t, ampleTimeout)
 
 	for _, tc := range []struct {
 		name        string
@@ -260,7 +268,7 @@ func TestUnavailable(t *testing.T) {
 // reading the body is still ErrUnavailable.
 func TestProjectUnwritable(t *testing.T) {
 	t.Parallel()
-	shim := newShimServer(t, time.Second)
+	shim := newShimServer(t, ampleTimeout)
 	missing := filepath.Join(t.TempDir(), "gone")
 	_, err := shim.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"},
 		func(tw *tar.Writer) error { return AddDir(tw, missing, "src/") },
@@ -308,7 +316,7 @@ func TestJobSize(t *testing.T) {
 
 	// The largest Env fits, HTML in it included, and reaches the build as
 	// it was written.
-	shim := newShimServer(t, 10*time.Second)
+	shim := newShimServer(t, ampleTimeout)
 	fits := Job{Width: 800, Height: 480, Palette: "bw", Env: map[string]string{"FIELD_TOKEN": html + strings.Repeat("y", MaxEnvBytes-len(`{"FIELD_TOKEN":""}`)-len(html))}}
 	if n, err := EnvSize(fits.Env); err != nil || n != MaxEnvBytes {
 		t.Fatalf("EnvSize = %d, %v, want %d", n, err, MaxEnvBytes)
