@@ -96,6 +96,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"POST /api/v1/playlists", handle(http.StatusCreated, s.createPlaylist)},
 		{"DELETE /api/v1/playlists/{id}", handleNoContent(s.deletePlaylist)},
 		{"PUT /api/v1/playlists/{id}/devices/{device}", handle(http.StatusOK, s.linkPlaylistDevice)},
+		{"PATCH /api/v1/playlists/{id}/devices/{device}", handle(http.StatusOK, s.movePlaylistDevice)},
 		{"DELETE /api/v1/playlists/{id}/devices/{device}", handleNoContent(s.unlinkPlaylistDevice)},
 		{"POST /api/v1/playlists/items", handle(http.StatusCreated, s.addPlaylistItem)},
 		{"PATCH /api/v1/playlists/{id}", handle(http.StatusOK, s.patchPlaylist)},

@@ -225,6 +225,7 @@ func playlists(ctx context.Context, args []string, out io.Writer) error {
 		"delete":   playlistDelete,
 		"link":     playlistLink,
 		"unlink":   playlistUnlink,
+		"order":    playlistOrder,
 	})
 }
 
@@ -258,10 +259,18 @@ func playlistRemove(ctx context.Context, args []string, out io.Writer) error {
 
 // parseInterspersed parses args with fs and returns the arguments that are
 // not flags. Unlike fs.Parse alone, it accepts flags after them too, so
-// "playlist set 5 -hidden" works like "playlist set -hidden 5".
+// "playlist set 5 -hidden" works like "playlist set -hidden 5". An argument
+// that is a negative whole number, such as the -1 of "playlist move 5 -1", is
+// not a flag: no command has a flag named for a number, and the command
+// refuses the number itself with a message about the range.
 func parseInterspersed(fs *flag.FlagSet, args []string) []string {
 	var rest []string
 	for {
+		if len(args) > 0 && isNegativeNumber(args[0]) {
+			rest = append(rest, args[0])
+			args = args[1:]
+			continue
+		}
 		_ = fs.Parse(args) // ExitOnError exits on a parse error.
 		if fs.NArg() == 0 {
 			return rest
@@ -269,6 +278,12 @@ func parseInterspersed(fs *flag.FlagSet, args []string) []string {
 		rest = append(rest, fs.Arg(0))
 		args = fs.Args()[1:]
 	}
+}
+
+// isNegativeNumber reports whether arg is a whole number below zero.
+func isNegativeNumber(arg string) bool {
+	n, err := strconv.ParseInt(arg, 10, 64)
+	return err == nil && n < 0
 }
 
 // scheduleFlags are the flags that set a schedule, shared by the commands
@@ -486,49 +501,60 @@ func playlistDelete(ctx context.Context, args []string, out io.Writer) error {
 	return err
 }
 
-func playlistLink(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("playlist link", flag.ExitOnError)
+// playlistDeviceCommand runs a command that takes <playlist name> <device>
+// and changes the link between them with do, then prints done, which has a
+// %s for the device and a %q for the playlist.
+func playlistDeviceCommand(ctx context.Context, name string, args []string, out io.Writer, done string,
+	do func(ctx context.Context, client *db.Client, pl playlist.Ref, device string) error,
+) error {
+	fs := flag.NewFlagSet("playlist "+name, flag.ExitOnError)
 	data := dataFlag(fs)
-	priority := fs.Int64("priority", 0, "the playlist's index in the device's order, from 0, which is tried first; default: last for a new link, unchanged for an existing one")
 	rest := parseInterspersed(fs, args)
 	if len(rest) != 2 {
-		return errors.New("usage: trmnl-byos playlist link [-data dir] <playlist name> <device> [-priority N]")
+		return fmt.Errorf("usage: trmnl-byos playlist %s [-data dir] <playlist name> <device>", name)
 	}
-	var prio *int64
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "priority" {
-			prio = priority
-		}
-	})
 	client, err := openDB(ctx, *data)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	if err := playlist.LinkDevice(ctx, client, playlist.ByName(rest[0]), rest[1], prio); err != nil {
+	if err := do(ctx, client, playlist.ByName(rest[0]), rest[1]); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "Linked device %s to playlist %q.\n", rest[1], rest[0])
+	_, err = fmt.Fprintf(out, done, rest[1], rest[0])
+	return err
+}
+
+func playlistLink(ctx context.Context, args []string, out io.Writer) error {
+	return playlistDeviceCommand(ctx, "link", args, out, "Linked device %s to playlist %q.\n", playlist.LinkDevice)
+}
+
+func playlistOrder(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("playlist order", flag.ExitOnError)
+	data := dataFlag(fs)
+	rest := parseInterspersed(fs, args)
+	usage := errors.New("usage: trmnl-byos playlist order [-data dir] <playlist name> <device> <index>")
+	if len(rest) != 3 {
+		return usage
+	}
+	index, err := strconv.ParseInt(rest[2], 10, 64)
+	if err != nil {
+		return usage
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if err := playlist.MoveLink(ctx, client, playlist.ByName(rest[0]), rest[1], index); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Moved playlist %q to index %d in device %s's order.\n", rest[0], index, rest[1])
 	return err
 }
 
 func playlistUnlink(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("playlist unlink", flag.ExitOnError)
-	data := dataFlag(fs)
-	rest := parseInterspersed(fs, args)
-	if len(rest) != 2 {
-		return errors.New("usage: trmnl-byos playlist unlink [-data dir] <playlist name> <device>")
-	}
-	client, err := openDB(ctx, *data)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	if err := playlist.UnlinkDevice(ctx, client, playlist.ByName(rest[0]), rest[1]); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Unlinked device %s from playlist %q.\n", rest[1], rest[0])
-	return err
+	return playlistDeviceCommand(ctx, "unlink", args, out, "Unlinked device %s from playlist %q.\n", playlist.UnlinkDevice)
 }
 
 func playlistList(ctx context.Context, args []string, out io.Writer) error {

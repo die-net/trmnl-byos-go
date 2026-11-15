@@ -271,14 +271,13 @@ func TestDeviceLists(t *testing.T) {
 	// "q" has priority 0 and "p" 1, so q is tried first even though p has the lower ID.
 	p, _ := client.Read.GetPlaylistByName(ctx, "p")
 	q, _ := client.Read.GetPlaylistByName(ctx, "q")
-	zero := int64(0)
-	for _, l := range []struct {
-		id       int64
-		priority *int64
-	}{{p.ID, nil}, {q.ID, &zero}} {
-		if err := LinkDevice(ctx, client, ByID(l.id), dev.FriendlyID, l.priority); err != nil {
+	for _, id := range []int64{p.ID, q.ID} {
+		if err := LinkDevice(ctx, client, ByID(id), dev.FriendlyID); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := MoveLink(ctx, client, ByID(q.ID), dev.FriendlyID, 0); err != nil {
+		t.Fatal(err)
 	}
 	yes := true
 	if err := UpdateItem(ctx, client, ids[0], ItemUpdate{Hidden: &yes}); err != nil {

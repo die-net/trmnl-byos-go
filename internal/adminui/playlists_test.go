@@ -122,7 +122,7 @@ func TestPlaylistsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := playlist.LinkDevice(ctx, tu.db, playlist.ByID(pl.ID), other.FriendlyID, nil); err != nil {
+	if err := playlist.LinkDevice(ctx, tu.db, playlist.ByID(pl.ID), other.FriendlyID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -266,7 +266,7 @@ func TestPlaylistItemActionRefused(t *testing.T) {
 		form   url.Values
 		want   string
 	}{
-		{"index past the end", "/move", url.Values{"index": {"9"}}, "Position 9 is not between 0 and 1."},
+		{"index past the end", "/move", url.Values{"index": {"9"}}, "9 is not a place in the playlist, which runs from 0 to 1."},
 		{"index not a number", "/move", url.Values{"index": {"x"}}, "is not a position"},
 		{"no index", "/move", url.Values{}, "is not a position"},
 		{"hidden not 0 or 1", "/hidden", url.Values{"hidden": {"yes"}}, "Choose Hide or Show."},

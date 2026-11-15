@@ -321,7 +321,7 @@ func UpdateItem(ctx context.Context, client *db.Client, id int64, u ItemUpdate) 
 				return fmt.Errorf("list items: %w", err)
 			}
 			if *u.Position < 0 || *u.Position >= int64(len(ids)) {
-				return fmt.Errorf("%w: position %d is not between 0 and %d", errkind.ErrInvalid, *u.Position, len(ids)-1)
+				return fmt.Errorf("%w: %d is not a place in the playlist, which runs from 0 to %d", errkind.ErrInvalid, *u.Position, len(ids)-1)
 			}
 		}
 		params := db.UpdatePlaylistItemParams{

@@ -391,7 +391,7 @@ func TestDeleteInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := playlist.LinkDevice(ctx, client, playlist.ByID(pl.ID), dev.FriendlyID, nil); err != nil {
+	if err := playlist.LinkDevice(ctx, client, playlist.ByID(pl.ID), dev.FriendlyID); err != nil {
 		t.Fatal(err)
 	}
 	items := make([]int64, 0, len(ids))
