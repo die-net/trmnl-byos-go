@@ -6,8 +6,9 @@ the root of this repository). Changed for this repository: findings that
 depend on input or state are in scope when a concrete scenario is given,
 reviewers read the code around the diff, findings can be proven by running
 Go code, CLAUDE.md's efficiency, streaming and no-workaround rules are
-findings, open findings are not reposted, and nothing is posted for a clean
-review.
+findings, open findings are not reposted, nothing is posted for a clean
+review, and the comments are returned as structured output for a separate
+job to post.
 
 The workflow .github/workflows/claude-code-review.yml loads this file from
 the default branch, never from the pull request, and appends a "This run"
@@ -22,9 +23,9 @@ The goal is the review a careful senior engineer on this project would give: rea
 - All tools work. Do not test tools or make exploratory calls.
 - Call a tool only when the task needs it.
 - The pull request is checked out at its head commit in the current directory, with full history. Read any file in it. Use `git diff`, `git log`, `git show` and `git blame` for history.
-- GitHub is not reachable from this session except through the inline comment tool. Do not run `gh` or fetch URLs. Everything needed from GitHub is in the files named in "This run".
+- GitHub is not reachable from this session. Do not run `gh` or fetch URLs. Everything needed from GitHub is in the files named in "This run", and a later job posts the comments this review returns.
 - Never edit, commit or push files in the checkout. Throwaway files go only in the scratch directory named in "This run".
-- Allowed commands that run code: `go build`, `go vet` and `go test`, each also with a leading `CGO_ENABLED=0`. No other way to run code is available. Run each from the checkout as a command of its own, with literal paths: a command that sets a shell variable, uses `cd`, or chains another command that is not read-only is denied.
+- Allowed commands that run code: `go build`, `go vet` and `go test`, each also with a leading `CGO_ENABLED=0`. No other way to run code is available. Run each from the checkout as a command of its own, with literal paths: a command that sets a shell variable, uses `cd`, or chains another command that is not read-only is denied. The same goes for git: write `git diff …`, never `git -C <dir> diff …`, which is denied.
 - Create files in the scratch directory with the Write tool, not with shell redirection or `mkdir`. The directory already exists.
 
 Follow these steps. Launch the agents of one step in a single message so they run in parallel, and wait for every one of them to return before starting the next step. Do not skip a step to save time.
@@ -86,19 +87,25 @@ Follow these steps. Launch the agents of one step in a single message so they ru
 
 6. Keep only the valid findings. These, plus the still-open findings from step 4, are the review's result.
 
-7. Post the findings. If there are none, post nothing. No summary comment and no "no issues" comment: the workflow marks a clean review itself.
+7. Write a comment for each new finding. Do not post anything: this session cannot reach GitHub, and the workflow posts what you return in step 8. If there are no new findings, return no comments. Never write a summary or "no issues" comment: the workflow marks a clean review itself.
 
-   Before posting, make a list of the comments you plan to leave, only for yourself. Check that each is one unique issue and that no two say the same thing.
+   Check that each comment is one unique issue and that no two say the same thing.
 
-   Post each new finding as an inline comment with `mcp__github_inline_comment__create_inline_comment`, with `confirmed: true`, on the head commit. Each comment has:
-   - one or two sentences stating the defect
-   - **Scenario:** the concrete input or state and what goes wrong
-   - **Checked:** either "Confirmed by running code:" with the test or command and what it showed, or "Found by reading only:" with the lines that show it
-   - for a CLAUDE.md finding, the rule quoted and a link to it
-   - a fix: a committable suggestion block when it is small, self-contained and fixes the issue entirely; otherwise a sentence or two describing the fix. Never a suggestion block that needs follow-up changes to be correct.
+   Each comment has these fields:
+   - `path`: the file, relative to the repository root
+   - `line`: the line the comment is on. With `side` "RIGHT" (the usual case) it is a line in the head commit that the diff adds or changes, or a line inside a changed hunk. With "LEFT" it is a line in the base commit that the diff deletes.
+   - `start_line`: only for a comment on a range of lines, the first line of the range, on the same side
+   - `side`: "RIGHT" or "LEFT"
+   - `checked`: "running" if the finding was confirmed by running code, "reading" if it was found by reading only. The workflow adds the matching label to the comment, so do not write the label yourself.
+   - `body`, in Markdown:
+     - one or two sentences stating the defect
+     - **Scenario:** the concrete input or state and what goes wrong
+     - **Evidence:** for "running", the test or command and what it showed; for "reading", the lines that show it
+     - for a CLAUDE.md finding, the rule quoted and a link to it
+     - a fix: a committable suggestion block when it is small, self-contained and fixes the issue entirely; otherwise a sentence or two describing the fix. Never a suggestion block that needs follow-up changes to be correct.
 
-   Write in short, plain sentences. No preamble or praise.
+   Write in short, plain sentences. No preamble or praise. Do not @-mention anyone: the workflow breaks every @ before a name so that no one is notified.
 
    When linking to code, use the full commit SHA and this exact form, or the Markdown preview will not render it: `https://github.com/<owner>/<repo>/blob/<full sha>/path/to/file.go#L10-L15`. Give at least one line of context before and after the lines you mean.
 
-8. Finish with the structured output: `open_findings`, the number of findings posted in step 7 plus the still-open findings from step 4, and `posted`, the number posted in step 7.
+8. Finish with the structured output: `comments`, the list from step 7, and `open_findings`, the number of comments in that list plus the still-open findings from step 4.
