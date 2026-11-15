@@ -28,7 +28,7 @@ var steps = []step{
 	{"add admin sessions", addAdminSessions},
 	{"add playlist schedules and hidden items", addPlaylistSchedules},
 	{"make playlist priorities a unique index per device", addPlaylistPriorityIndex},
-	{"add settings_at to instances and renders", addSettingsAt},
+	{"add settings_at to instances and renders, and secret marks to instances", addSettingsAt},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -257,15 +257,17 @@ func addPlaylistPriorityIndex(ctx context.Context, tx DBTX) error {
 }
 
 // addSettingsAtSQL is step 6. It adds settings_at to plugin_instance and
-// render, as in schema.sql. Every existing value is 0, so no render is made
-// stale by the step.
+// render, and secret_keys to plugin_instance, as in schema.sql. Every
+// existing settings_at is 0, so no render is made stale by the step, and no
+// instance has a field marked secret.
 const addSettingsAtSQL = `ALTER TABLE plugin_instance ADD COLUMN settings_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE plugin_instance ADD COLUMN secret_keys TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE render ADD COLUMN settings_at INTEGER NOT NULL DEFAULT 0`
 
 // addSettingsAt is step 6: see addSettingsAtSQL.
 func addSettingsAt(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addSettingsAtSQL); err != nil {
-		return fmt.Errorf("add settings_at: %w", err)
+		return fmt.Errorf("add settings_at and secret_keys: %w", err)
 	}
 	return nil
 }

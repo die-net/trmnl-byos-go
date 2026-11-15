@@ -312,3 +312,82 @@ func TestInstanceClearSecret(t *testing.T) {
 		t.Errorf("clear: %v, %v", err, names())
 	}
 }
+
+// storedMarks returns the names of the fields of instance 1 that are marked
+// secret, its plain field values, and its settings_at.
+func storedMarks(t *testing.T, dir string) (marks []string, fields map[string]recipe.Value, settingsAt int64) {
+	t.Helper()
+	inst, fields := storedInstance(t, dir)
+	marks, err := recipe.SecretKeys(&inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marks, fields, inst.SettingsAt
+}
+
+// TestInstanceSecretMarks checks that -secret on add and set moves a value
+// into the encrypted fields, that -plain moves it back and shows it, and that
+// neither raises settings_at on set. It sets the environment, so it does not
+// run in parallel.
+func TestInstanceSecretMarks(t *testing.T) {
+	dir := instanceDir(t)
+	t.Setenv(secrets.EnvVar, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	if _, err := runInstance(t, dir, "add", "-recipe", "1", "-field", "city=Zurich", "-secret", "city"); err != nil {
+		t.Fatal(err)
+	}
+	marks, fields, _ := storedMarks(t, dir)
+	if len(marks) != 1 || marks[0] != "city" || len(fields) != 0 {
+		t.Errorf("after add -secret: marks %v, plain fields %v", marks, fields)
+	}
+	_, _, at := storedMarks(t, dir)
+	if _, err := runInstance(t, dir, "set", "1", "-plain", "city"); err != nil {
+		t.Fatal(err)
+	}
+	marks, fields, got := storedMarks(t, dir)
+	if len(marks) != 0 || fields["city"].One != "Zurich" || got != at {
+		t.Errorf("after set -plain: marks %v, plain fields %v, settings_at %d (was %d)", marks, fields, got, at)
+	}
+	if _, err := runInstance(t, dir, "set", "1", "-secret", "city"); err != nil {
+		t.Fatal(err)
+	}
+	marks, fields, got = storedMarks(t, dir)
+	if len(marks) != 1 || len(fields) != 0 || got != at {
+		t.Errorf("after set -secret: marks %v, plain fields %v, settings_at %d (was %d)", marks, fields, got, at)
+	}
+	// A mark alone is a change, and a refused one is reported.
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-secret", "days"}, "days: cannot be secret"},
+		{[]string{"-plain", "token"}, "token: is a password field"},
+		{[]string{"-secret", "nope"}, "nope: no such field"},
+	} {
+		if _, err := runInstance(t, dir, append([]string{"set", "1"}, tc.args...)...); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("set %v: err = %v, want one with %q", tc.args, err, tc.want)
+		}
+	}
+	if _, err := runInstance(t, dir, "list"); err != nil {
+		t.Errorf("list: %v", err)
+	}
+}
+
+// TestInstanceSecretAndPlain checks that a key in both -secret and -plain is
+// refused before the database is opened, and that a short value is refused
+// as a secret.
+func TestInstanceSecretAndPlain(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "never-created")
+	var out bytes.Buffer
+	err := instances(t.Context(), []string{"set", "-data", missing, "1", "-secret", "city", "-plain", "city"}, &out)
+	if err == nil || !strings.Contains(err.Error(), `"city" is given to both -secret and -plain`) {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the database was opened: %v", err)
+	}
+	dir := instanceDir(t)
+	if _, err := runInstance(t, dir, "add", "-recipe", "1", "-field", "city=abc", "-secret", "city"); err == nil || !strings.Contains(err.Error(), "city: must be at least 6 characters to be secret") {
+		t.Errorf("a short secret: %v", err)
+	}
+}

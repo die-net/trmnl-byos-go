@@ -64,12 +64,18 @@ type fieldJSON struct {
 	Default recipe.Value `json:"default,omitzero"`
 	// Required is whether an instance needs a value.
 	Required bool `json:"required"`
-	// Secret is whether the value is stored encrypted and never shown back.
-	Secret   bool         `json:"secret"`
-	Options  []optionJSON `json:"options,omitempty"`
-	Multiple bool         `json:"multiple,omitempty"`
-	Min      *float64     `json:"min,omitempty"`
-	Max      *float64     `json:"max,omitempty"`
+	// Secret is whether the value is always stored encrypted and never shown
+	// back, as a password field's is.
+	Secret bool `json:"secret"`
+	// CanMarkSecret is whether an instance may mark the field secret.
+	CanMarkSecret bool `json:"can_mark_secret"`
+	// LooksSecret is whether the field's name looks like a credential, so a
+	// form ticks its secret box in advance. It is only a guess.
+	LooksSecret bool         `json:"looks_secret"`
+	Options     []optionJSON `json:"options,omitempty"`
+	Multiple    bool         `json:"multiple,omitempty"`
+	Min         *float64     `json:"min,omitempty"`
+	Max         *float64     `json:"max,omitempty"`
 	// MaxLength is the most characters the value may have, left out for no
 	// limit.
 	MaxLength int `json:"max_length,omitempty"`
@@ -86,6 +92,7 @@ func newField(f *recipe.Field) fieldJSON {
 	out := fieldJSON{
 		Keyname: f.Keyname, Label: f.Label, Type: f.Type, Input: f.Input(), Description: f.Description,
 		HelpText: f.HelpText, Placeholder: f.Placeholder, Default: f.Default, Required: f.Required(), Secret: f.Secret(),
+		CanMarkSecret: f.CanMarkSecret(), LooksSecret: f.LooksSecret(),
 		Multiple: f.Multiple, Min: f.Min, Max: f.Max, MaxLength: f.MaxLength, Rows: f.Rows,
 	}
 	for _, o := range f.Options {

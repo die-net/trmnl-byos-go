@@ -20,6 +20,18 @@ func TestFieldErrors(t *testing.T) {
 	}
 }
 
+// checkPasswords runs checkValues with only the password fields sealed, and
+// returns the values, or a FieldErrors if any are refused.
+func checkPasswords(fields []Field, values map[string]Value, creating bool) (map[string]Value, error) {
+	byName := fieldsByName(fields)
+	bad := FieldErrors{}
+	out := checkValues(fields, values, creating, func(k string) bool { return byName[k] != nil && byName[k].Secret() }, bad)
+	if len(bad) > 0 {
+		return nil, bad
+	}
+	return out, nil
+}
+
 // TestCheckValues checks each rule of validation, with the message for the
 // field that breaks it.
 func TestCheckValues(t *testing.T) {
@@ -53,7 +65,7 @@ func TestCheckValues(t *testing.T) {
 	}{
 		{"nothing to check", nil, false, nil},
 		{"unknown field", map[string]Value{"nope": {One: "x"}}, false, map[string]string{"nope": "no such field"}},
-		{"unknown and empty", map[string]Value{"nope": {}}, false, map[string]string{"nope": "no such field"}},
+		{"unknown and empty, which clears a value left from a dropped field", map[string]Value{"nope": {}}, false, nil},
 		{"display only with a value", map[string]Value{"bio": {One: "x"}}, false, map[string]string{"bio": "takes no value"}},
 		{"list for a string", map[string]Value{"str": {Many: []string{"a"}}}, false, map[string]string{"str": "takes one value, not a list"}},
 		{"list for a single select", map[string]Value{"sel": {Many: []string{"a"}}}, false, map[string]string{"sel": "takes one value, not a list"}},
@@ -64,7 +76,7 @@ func TestCheckValues(t *testing.T) {
 			map[string]string{"str": "must be at most 4 characters", "area": "must be at most 3 characters"},
 		},
 		{"long enough in characters", map[string]Value{"str": {One: "éééé"}}, false, nil},
-		{"short password", map[string]Value{"sealed": {One: "abcde"}}, false, map[string]string{"sealed": "must be at least 6 characters"}},
+		{"short password", map[string]Value{"sealed": {One: "abcde"}}, false, map[string]string{"sealed": "must be at least 6 characters to be secret"}},
 		{"password counted in characters", map[string]Value{"sealed": {One: "éééééé"}}, false, nil},
 		{"long password", map[string]Value{"sealed": {One: "abcdefghi"}}, false, map[string]string{"sealed": "must be at most 8 characters"}},
 		{"number ok", map[string]Value{"num": {One: "2.5"}, "free": {One: "-1e3"}}, false, nil},
@@ -114,7 +126,7 @@ func TestCheckValues(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := checkValues(fields, tc.values, tc.creating)
+			got, err := checkPasswords(fields, tc.values, tc.creating)
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("err = %v", err)
@@ -146,11 +158,11 @@ func TestCheckValuesNormalizes(t *testing.T) {
 		{Keyname: "multi", Type: "select", Multiple: true, Optional: true, Options: []Option{{"A", "a"}}},
 		{Keyname: "s", Type: "string", Optional: true},
 	}
-	got, err := checkValues(fields, map[string]Value{"multi": {One: "a"}, "s": {}}, false)
+	got, err := checkPasswords(fields, map[string]Value{"multi": {One: "a"}, "s": {}}, false)
 	if err != nil || len(got) != 2 || !got["multi"].IsList() || !slices.Equal(got["multi"].Many, []string{"a"}) || !got["s"].Empty() {
 		t.Errorf("got %v, %v", got, err)
 	}
-	if _, err := checkValues(fields, map[string]Value{"multi": {One: "z"}}, false); err == nil || !strings.Contains(err.Error(), "multi: ") {
+	if _, err := checkPasswords(fields, map[string]Value{"multi": {One: "z"}}, false); err == nil || !strings.Contains(err.Error(), "multi: ") {
 		t.Errorf("a bad single choice: %v", err)
 	}
 }
@@ -174,7 +186,7 @@ func TestMessagesDoNotEchoValues(t *testing.T) {
 	const secret = "hunter2-secret\x00"
 	for _, f := range fields {
 		for _, v := range []Value{{One: secret}, {Many: []string{secret, secret}}} {
-			_, err := checkValues(fields, map[string]Value{f.Keyname: v}, false)
+			_, err := checkPasswords(fields, map[string]Value{f.Keyname: v}, false)
 			if err == nil || strings.Contains(err.Error(), "hunter2") {
 				t.Errorf("%s with %v: %v", f.Keyname, v, err)
 			}

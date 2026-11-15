@@ -7,8 +7,8 @@ RETURNING *;
 SELECT * FROM recipe ORDER BY id;
 
 -- name: CreateInstance :one
-INSERT INTO plugin_instance (recipe_id, name, field_values, secret_values, palette, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO plugin_instance (recipe_id, name, field_values, secret_values, secret_keys, palette, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: SetInstanceSecrets :exec
@@ -55,6 +55,6 @@ ORDER BY playlist.name;
 -- in the same transaction. settings_at is the caller's, since it rises only
 -- when the field values or secrets changed.
 UPDATE plugin_instance
-SET name = ?, palette = ?, field_values = ?, secret_values = ?, settings_at = ?
+SET name = ?, palette = ?, field_values = ?, secret_values = ?, secret_keys = ?, settings_at = ?
 WHERE id = ?
 RETURNING *;

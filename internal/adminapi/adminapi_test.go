@@ -451,6 +451,15 @@ func TestRecipes(t *testing.T) {
 	if f := one.CustomFields[1]; f.Keyname != "apikey" || f.Input != "password" || !f.Secret {
 		t.Errorf("the password field %+v", f)
 	}
+	if f := one.CustomFields[0]; !f.CanMarkSecret || f.LooksSecret {
+		t.Errorf("the string field's marks %+v", f)
+	}
+	if f := one.CustomFields[1]; f.CanMarkSecret || !f.LooksSecret {
+		t.Errorf("the password field's marks %+v", f)
+	}
+	if f := one.CustomFields[5]; f.CanMarkSecret || f.LooksSecret {
+		t.Errorf("the number field's marks %+v", f)
+	}
 	tags := one.CustomFields[4]
 	if tags.Input != "select" || !tags.Multiple || len(tags.Options) != 3 || tags.Options[1] != (optionJSON{Label: "b", Value: "b"}) {
 		t.Errorf("the select field %+v", tags)
@@ -1104,7 +1113,7 @@ func TestInstanceSecretsUnreadable(t *testing.T) {
 				t.Fatalf("good instance: %s", good.Body)
 			}
 			inst, err := ta.db.Write.CreateInstance(t.Context(), db.CreateInstanceParams{
-				RecipeID: rec.ID, Name: tc.name, FieldValues: `{"city":"Oslo"}`, Palette: "bw", CreatedAt: 1,
+				RecipeID: rec.ID, Name: tc.name, FieldValues: `{"city":"Oslo"}`, SecretKeys: "[]", Palette: "bw", CreatedAt: 1,
 			})
 			if err != nil {
 				t.Fatal(err)

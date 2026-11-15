@@ -121,7 +121,13 @@ CREATE TABLE IF NOT EXISTS plugin_instance (
   -- 0 if they never have. It rises with every change, by at least a second,
   -- so a render that read the settings can tell newer ones from the ones it
   -- read. A rename or a palette change leaves it alone.
-  settings_at INTEGER NOT NULL DEFAULT 0
+  settings_at INTEGER NOT NULL DEFAULT 0,
+  -- secret_keys is a sorted JSON array of the keynames the admin marked
+  -- secret, on top of the password fields, which always are. A marked
+  -- field's value is in secret_values, never in field_values. The names are
+  -- not sealed: they come from the recipe's settings.yml, which is not
+  -- secret, and which store a value goes in must be known without the key.
+  secret_keys TEXT NOT NULL DEFAULT '[]'
 );
 
 -- playlist is a list of items that devices rotate through.
