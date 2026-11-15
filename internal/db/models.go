@@ -141,6 +141,7 @@ type PluginInstance struct {
 	Palette      string `json:"palette"`
 	CreatedAt    int64  `json:"created_at"`
 	SettingsAt   int64  `json:"settings_at"`
+	SecretKeys   string `json:"secret_keys"`
 }
 
 type Recipe struct {

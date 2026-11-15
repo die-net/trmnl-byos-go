@@ -253,7 +253,7 @@ func TestUpdateInstance(t *testing.T) {
 			wantErr: errkind.ErrInvalid, wantFields: []string{"city", "days"},
 		},
 		{desc: "Clear of a required field", update: InstanceUpdate{Clear: []string{"city"}}, key: "a", wantErr: errkind.ErrInvalid, wantFields: []string{"city"}},
-		{desc: "Clear of an unknown field", update: InstanceUpdate{Clear: []string{"nope"}}, key: "a", wantErr: errkind.ErrInvalid, wantFields: []string{"nope"}},
+		{desc: "Clear of a field the recipe lacks clears nothing", update: InstanceUpdate{Clear: []string{"nope"}}, key: "a"},
 		{desc: "a rename with no key opens nothing", update: InstanceUpdate{Name: ptr("Home"), Palette: ptr("bw")}, key: "", name: "Home", palette: "bw"},
 		{desc: "a rename under another key opens nothing", update: InstanceUpdate{Name: ptr("Home")}, key: "b", name: "Home"},
 		{desc: "a plain change must open the sealed secrets, and has no key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "", wantErr: secrets.ErrNoKey},
@@ -640,12 +640,13 @@ func TestUpdateOneStorePerKey(t *testing.T) {
 		wantSecretOf []string         // PublicFields' secret names
 	}{
 		{
+			// It was sealed and nothing unmarked it, so it stays sealed.
 			"password to string, set", "token", "password", "string",
 			Value{One: "hunter2"},
-			InstanceUpdate{Values: map[string]Value{"token": {One: "visible"}}},
-			map[string]Value{"city": {One: "Zurich"}, "token": {One: "visible"}},
-			map[string]Value{"city": {One: "Zurich"}, "token": {One: "visible"}},
-			[]string{},
+			InstanceUpdate{Values: map[string]Value{"token": {One: "notvisible"}}},
+			map[string]Value{"city": {One: "Zurich"}, "token": {One: "notvisible"}},
+			map[string]Value{"city": {One: "Zurich"}},
+			[]string{"token"},
 		},
 		{
 			"password to string, clear", "token", "password", "string",
@@ -725,5 +726,358 @@ func TestSecretsDoNotOpenUnderAReusedID(t *testing.T) {
 	}
 	if _, _, err := InstanceFields(&first, key); err != nil {
 		t.Errorf("the instance's own secrets do not open: %v", err)
+	}
+}
+
+// markFixture is a fixture with an instance of the recipe of weatherYML made
+// with the key and the given values and marks. Its "notes" field is a code
+// field, which an admin can mark secret.
+func markFixture(t *testing.T, key *secrets.Key, values map[string]Value, marks map[string]bool) (fixture, db.PluginInstance) {
+	t.Helper()
+	f := newFixture(t)
+	values = maps.Clone(values)
+	if values == nil {
+		values = map[string]Value{}
+	}
+	values["city"] = Value{One: "Zurich"}
+	inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: values, Secret: marks}, time.Unix(1000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f, inst
+}
+
+// wantFieldErrors checks that err is a FieldErrors with exactly the given
+// messages by keyname.
+func wantFieldErrors(t *testing.T, err error, want map[string]string) {
+	t.Helper()
+	var fe FieldErrors
+	if !errors.As(err, &fe) || !maps.Equal(fe, FieldErrors(want)) {
+		t.Errorf("err = %v, want field errors %v", err, want)
+	}
+}
+
+// TestCreateMarkedSecret checks that a field marked secret at creation has
+// its value sealed, hidden, and listed as a mark.
+func TestCreateMarkedSecret(t *testing.T) {
+	t.Parallel()
+	const value = "sw0rdfish-note"
+	key := testKey(t, keyA)
+	f, inst := markFixture(t, key, map[string]Value{"notes": {One: value}}, map[string]bool{"notes": true})
+	if strings.Contains(inst.FieldValues, "notes") || strings.Contains(inst.FieldValues, value) || inst.SecretValues == nil {
+		t.Errorf("field_values = %s, secret_values set = %v; want the value only in the secrets", inst.FieldValues, inst.SecretValues != nil)
+	}
+	if bytes.Contains(inst.SecretValues, []byte(value)) {
+		t.Error("secret stored in the clear")
+	}
+	if marks, err := SecretKeys(&inst); err != nil || !slices.Equal(marks, []string{"notes"}) {
+		t.Errorf("SecretKeys = %v, %v", marks, err)
+	}
+	public, names, err := PublicFields(&inst, key)
+	if err != nil || !slices.Equal(names, []string{"notes"}) || !maps.EqualFunc(public, map[string]Value{"city": {One: "Zurich"}}, Value.equal) {
+		t.Errorf("PublicFields = %v, %v, %v", public, names, err)
+	}
+	all, secret, err := InstanceFields(&inst, key)
+	if err != nil || all["notes"].One != value || !slices.Equal(secret, []string{value}) {
+		t.Errorf("InstanceFields = %v, %v, %v", all, secret, err)
+	}
+	if stored, err := f.client.Read.GetInstance(t.Context(), inst.ID); err != nil || stored.SecretKeys != `["notes"]` {
+		t.Errorf("stored marks = %q, %v", stored.SecretKeys, err)
+	}
+}
+
+// TestCreateMarkRefused checks that a mark that is refused is a field error
+// on its keyname, that several are reported together with other bad values,
+// and that nothing is created.
+func TestCreateMarkRefused(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	for _, tc := range []struct {
+		name  string
+		marks map[string]bool
+		extra map[string]Value
+		want  map[string]string
+	}{
+		{"a non-text field", map[string]bool{"days": true}, nil, map[string]string{"days": "cannot be secret, since its value is not text"}},
+		{"a select", map[string]bool{"units": true}, nil, map[string]string{"units": "cannot be secret, since its value is not text"}},
+		{"a display-only field", map[string]bool{"about": true}, nil, map[string]string{"about": "cannot be secret, since its value is not text"}},
+		{"unmarking a password field", map[string]bool{"token": false}, nil, map[string]string{"token": "is a password field, which is always secret"}},
+		{"an unknown keyname", map[string]bool{"nope": true}, nil, map[string]string{"nope": "no such field"}},
+		{"several together with a bad value", map[string]bool{"days": true, "token": false, "nope": true}, map[string]Value{"units": {One: "kelvin"}}, map[string]string{
+			"days": "cannot be secret, since its value is not text", "token": "is a password field, which is always secret",
+			"nope": "no such field", "units": "is not one of the options",
+		}},
+	} {
+		values := map[string]Value{"city": {One: "Zurich"}}
+		maps.Copy(values, tc.extra)
+		_, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: values, Secret: tc.marks}, time.Now())
+		if !errors.Is(err, errkind.ErrInvalid) {
+			t.Errorf("%s: err = %v, want errkind.ErrInvalid", tc.name, err)
+		}
+		wantFieldErrors(t, err, tc.want)
+	}
+	if left, err := f.client.Read.ListInstances(ctx); err != nil || len(left) != 0 {
+		t.Errorf("refused instances were stored: %+v, %v", left, err)
+	}
+	// Marking a password field is allowed and is not stored as a mark.
+	inst, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}}, Secret: map[string]bool{"token": true, "notes": false}}, time.Now())
+	if err != nil || inst.SecretKeys != `[]` {
+		t.Errorf("marks of a password field and an unmarked field: %q, %v", inst.SecretKeys, err)
+	}
+}
+
+// TestCreateEmptySecretValues checks that an empty value for an optional
+// password field and for an optional marked field stores nothing and is not
+// refused, even with no key.
+func TestCreateEmptySecretValues(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	inst, err := CreateInstance(t.Context(), f.client, nil, f.recipesDir, InstanceParams{
+		RecipeID: f.recipe.ID,
+		Values:   map[string]Value{"city": {One: "Zurich"}, "token": {}, "notes": {}},
+		Secret:   map[string]bool{"notes": true},
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.FieldValues != `{"city":"Zurich"}` || inst.SecretValues != nil || inst.SecretKeys != `["notes"]` {
+		t.Errorf("field_values = %s, secret_values set = %v, secret_keys = %s", inst.FieldValues, inst.SecretValues != nil, inst.SecretKeys)
+	}
+}
+
+// TestUpdateMarks checks that marking and unmarking on update moves a value
+// between the stores without raising settings_at, and the refusals of it.
+func TestUpdateMarks(t *testing.T) {
+	t.Parallel()
+	const note = "a plain note"
+	key := testKey(t, keyA)
+	ctx := t.Context()
+	now := time.Unix(5000, 0)
+	notes := map[string]Value{"notes": {One: note}}
+
+	t.Run("mark moves a plain value into the secrets", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, key, notes, nil)
+		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": true}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, err := f.client.Read.GetInstance(ctx, before.ID)
+		if err != nil || !reflect.DeepEqual(stored, got) {
+			t.Fatalf("stored %+v, %v; returned %+v", stored, err, got)
+		}
+		if strings.Contains(stored.FieldValues, "notes") || stored.SecretValues == nil || stored.SecretKeys != `["notes"]` || stored.SettingsAt != before.SettingsAt {
+			t.Errorf("field_values = %s, secrets set = %v, secret_keys = %s, settings_at = %d (was %d)",
+				stored.FieldValues, stored.SecretValues != nil, stored.SecretKeys, stored.SettingsAt, before.SettingsAt)
+		}
+		if _, secret, err := InstanceFields(&stored, key); err != nil || !slices.Equal(secret, []string{note}) {
+			t.Errorf("secrets = %v, %v", secret, err)
+		}
+	})
+
+	t.Run("unmark moves a secret back to plain", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, key, notes, map[string]bool{"notes": true})
+		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": false}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, names, err := PublicFields(&got, key)
+		if err != nil || len(names) != 0 || public["notes"].One != note {
+			t.Errorf("PublicFields = %v, %v, %v", public, names, err)
+		}
+		if marks, err := SecretKeys(&got); err != nil || len(marks) != 0 || got.SecretValues != nil || got.SettingsAt != before.SettingsAt {
+			t.Errorf("marks = %v, %v, secrets set = %v, settings_at = %d (was %d)", marks, err, got.SecretValues != nil, got.SettingsAt, before.SettingsAt)
+		}
+	})
+
+	t.Run("unmark with an empty value keeps the value", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, key, notes, map[string]bool{"notes": true})
+		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": false}, Values: map[string]Value{"notes": {}}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, names, err := PublicFields(&got, key)
+		if err != nil || len(names) != 0 || public["notes"].One != note || got.SettingsAt != before.SettingsAt {
+			t.Errorf("PublicFields = %v, %v, %v, settings_at = %d", public, names, err, got.SettingsAt)
+		}
+	})
+
+	t.Run("mark with no key and a value to move", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, nil, notes, nil)
+		_, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": true}}, now)
+		if !errors.Is(err, secrets.ErrNoKey) {
+			t.Fatalf("err = %v, want secrets.ErrNoKey", err)
+		}
+		if stored, err := f.client.Read.GetInstance(ctx, before.ID); err != nil || !reflect.DeepEqual(stored, before) {
+			t.Errorf("a refused update changed the instance: %+v, %v", stored, err)
+		}
+	})
+
+	t.Run("mark with no key and no value", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, nil, nil, nil)
+		got, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": true}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if marks, err := SecretKeys(&got); err != nil || !slices.Equal(marks, []string{"notes"}) || got.SettingsAt != before.SettingsAt {
+			t.Errorf("marks = %v, %v, settings_at = %d", marks, err, got.SettingsAt)
+		}
+	})
+
+	t.Run("mark a value that is too short", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, key, map[string]Value{"notes": {One: "abc"}}, nil)
+		_, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Secret: map[string]bool{"notes": true}}, now)
+		wantFieldErrors(t, err, map[string]string{"notes": "must be at least 6 characters to be secret"})
+		if stored, err := f.client.Read.GetInstance(ctx, before.ID); err != nil || !reflect.DeepEqual(stored, before) {
+			t.Errorf("a refused update changed the instance: %+v, %v", stored, err)
+		}
+	})
+
+	t.Run("set a short value on a marked field", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, key, notes, map[string]bool{"notes": true})
+		_, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Values: map[string]Value{"notes": {One: "abc"}}}, now)
+		wantFieldErrors(t, err, map[string]string{"notes": "must be at least 6 characters to be secret"})
+		if stored, err := f.client.Read.GetInstance(ctx, before.ID); err != nil || !reflect.DeepEqual(stored, before) {
+			t.Errorf("a refused update changed the instance: %+v, %v", stored, err)
+		}
+	})
+
+	t.Run("empty keeps a marked value and Clear clears it", func(t *testing.T) {
+		t.Parallel()
+		f, before := markFixture(t, key, notes, map[string]bool{"notes": true})
+		got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Values: map[string]Value{"notes": {}}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if all, _, err := InstanceFields(&got, key); err != nil || all["notes"].One != note || got.SettingsAt != before.SettingsAt {
+			t.Errorf("after an empty value: %v, %v, settings_at = %d", all, err, got.SettingsAt)
+		}
+		got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, InstanceUpdate{Clear: []string{"notes"}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all, _, err := InstanceFields(&got, key)
+		if _, ok := all["notes"]; ok || err != nil || got.SecretKeys != `["notes"]` || got.SettingsAt != now.Unix() {
+			t.Errorf("after Clear: %v, %v, secret_keys = %s, settings_at = %d", all, err, got.SecretKeys, got.SettingsAt)
+		}
+	})
+}
+
+// TestUpdateMarkRefused checks the refusals of a mark on update, that none
+// changes the instance, and that no error text, the plain fields or the
+// stored row shows the secret value.
+func TestUpdateMarkRefused(t *testing.T) {
+	t.Parallel()
+	const secret = "topsecret-note"
+	key := testKey(t, keyA)
+	ctx := t.Context()
+	f, before := markFixture(t, key, map[string]Value{"notes": {One: secret}, "token": {One: "hunter2"}}, map[string]bool{"notes": true})
+	if strings.Contains(before.FieldValues, secret) || strings.Contains(before.FieldValues, "hunter2") {
+		t.Errorf("field_values = %s shows a secret", before.FieldValues)
+	}
+	if public, _, err := PublicFields(&before, key); err != nil || public["notes"].One != "" || public["token"].One != "" {
+		t.Errorf("PublicFields shows a secret: %v, %v", public, err)
+	}
+	for _, tc := range []struct {
+		name string
+		u    InstanceUpdate
+		want map[string]string
+	}{
+		{"mark a number", InstanceUpdate{Secret: map[string]bool{"days": true}}, map[string]string{"days": "cannot be secret, since its value is not text"}},
+		{"unmark a password field", InstanceUpdate{Secret: map[string]bool{"token": false}}, map[string]string{"token": "is a password field, which is always secret"}},
+		{"unknown keyname", InstanceUpdate{Secret: map[string]bool{"nope": true}}, map[string]string{"nope": "no such field"}},
+		{"several at once", InstanceUpdate{Secret: map[string]bool{"days": true, "nope": true}}, map[string]string{"days": "cannot be secret, since its value is not text", "nope": "no such field"}},
+		{"short value", InstanceUpdate{Values: map[string]Value{"notes": {One: "abc"}}}, map[string]string{"notes": "must be at least 6 characters to be secret"}},
+		{"set and cleared, with a value that would also fail", InstanceUpdate{Values: map[string]Value{"notes": {One: "abc"}}, Clear: []string{"notes"}}, map[string]string{"notes": "is both set and cleared"}},
+		{"set and cleared, a number out of range", InstanceUpdate{Values: map[string]Value{"days": {One: "0"}}, Clear: []string{"days"}}, map[string]string{"days": "is both set and cleared"}},
+	} {
+		_, err := UpdateInstance(ctx, f.client, key, f.recipesDir, before.ID, tc.u, time.Unix(5000, 0))
+		wantFieldErrors(t, err, tc.want)
+		if err != nil && (strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "abc")) {
+			t.Errorf("%s: the error shows a value: %v", tc.name, err)
+		}
+		if stored, err := f.client.Read.GetInstance(ctx, before.ID); err != nil || !reflect.DeepEqual(stored, before) {
+			t.Errorf("%s: a refused update changed the instance: %+v, %v", tc.name, stored, err)
+		}
+	}
+}
+
+// TestSealedStaysSealed checks that a sealed password value stays sealed,
+// and is marked, when its field stops being a password field or leaves the
+// recipe and an update changes another field, and that only an unmark then
+// shows it, after which it can be cleared.
+func TestSealedStaysSealed(t *testing.T) {
+	t.Parallel()
+	const secret = "hunter2"
+	key := testKey(t, keyA)
+	now := time.Unix(5000, 0)
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, f fixture)
+	}{
+		{"retyped to string", func(t *testing.T, f fixture) { retype(t, f, "token", "password", "string") }},
+		{"retyped to select", func(t *testing.T, f fixture) { retype(t, f, "token", "password", "select") }},
+		{"dropped", func(t *testing.T, f fixture) { dropField(t, f, "token") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			f, inst := markFixture(t, key, map[string]Value{"token": {One: secret}}, nil)
+			tc.change(t, f)
+			got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			public, names, err := PublicFields(&got, key)
+			if err != nil || strings.Contains(got.FieldValues, secret) || public["token"].One != "" || !slices.Equal(names, []string{"token"}) || got.SecretKeys != `["token"]` {
+				t.Fatalf("after another field's edit: field_values %s, public %v, names %v, marks %s, %v", got.FieldValues, public, names, got.SecretKeys, err)
+			}
+			got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Secret: map[string]bool{"token": false}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if public, names, err := PublicFields(&got, key); err != nil || public["token"].One != secret || len(names) != 0 || got.SecretKeys != `[]` {
+				t.Fatalf("after the unmark: public %v, names %v, marks %s, %v", public, names, got.SecretKeys, err)
+			}
+			got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Clear: []string{"token"}}, now)
+			if err != nil || strings.Contains(got.FieldValues, "token") {
+				t.Errorf("after the clear: field_values %s, %v", got.FieldValues, err)
+			}
+		})
+	}
+}
+
+// dropField removes the field with the keyname from the fixture recipe's
+// settings.yml, as a recipe update that drops it would.
+func dropField(t *testing.T, f fixture, keyname string) {
+	t.Helper()
+	root, err := os.OpenRoot(Dir(f.recipesDir, f.recipe.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	b, err := root.ReadFile("settings.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(b), "\n")
+	start := slices.IndexFunc(lines, func(l string) bool { return l == "- keyname: "+keyname+"\n" })
+	if start < 0 {
+		t.Fatalf("settings.yml has no field %q", keyname)
+	}
+	end := start + 1
+	for end < len(lines) && strings.HasPrefix(lines[end], "  ") {
+		end++
+	}
+	if err := root.WriteFile("settings.yml", []byte(strings.Join(slices.Delete(lines, start, end), "")), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -122,12 +122,13 @@ func (f fieldFlag) Set(v string) error {
 	return nil
 }
 
-// clearFlag collects the names of fields to clear.
-type clearFlag []string
+// nameFlag collects the names of custom fields, as -clear, -secret and
+// -plain take them.
+type nameFlag []string
 
-func (clearFlag) String() string { return "" }
+func (nameFlag) String() string { return "" }
 
-func (c *clearFlag) Set(v string) error {
+func (c *nameFlag) Set(v string) error {
 	if v == "" {
 		return errors.New("a field name is needed")
 	}
@@ -212,18 +213,46 @@ func readValue(path string, stdin io.Reader) ([]byte, error) {
 	return b, nil
 }
 
+// fieldHelp is the help of -field.
+const fieldHelp = "custom field value as keyname=value; repeat for each field, and for each choice of a multi-select. The value is in the command line, which ps and the shell history show, so give a value meant to be secret, such as a password or a key, with -field-file. A password field, and a field marked with -secret, is stored encrypted with " + secrets.EnvVar
+
+// marks returns the marks of -secret and -plain as an update's Secret: true
+// for each secret name and false for each plain one. A name in both is an
+// error, so it is found before the database is opened.
+func marks(secret, plain nameFlag) (map[string]bool, error) {
+	if len(secret)+len(plain) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]bool, len(secret)+len(plain))
+	for _, k := range secret {
+		out[k] = true
+	}
+	for _, k := range plain {
+		if out[k] {
+			return nil, fmt.Errorf("field %q is given to both -secret and -plain", k)
+		}
+		out[k] = false
+	}
+	return out, nil
+}
+
 func instanceAdd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	fs := flag.NewFlagSet("instance add", flag.ExitOnError)
 	data := dataFlag(fs)
 	recipeID := fs.Int64("recipe", 0, "ID of the recipe, from recipe list")
 	name := fs.String("name", "", "name of the instance (default: the recipe's)")
 	palette := fs.String("palette", "", "palette to render with when the device takes it, such as bw (default: the device's)")
-	fields, files := fieldFlag{}, fileFlag{}
-	fs.Var(fields, "field", "custom field value as keyname=value; repeat for each field, and for each choice of a multi-select. The value is in the command line, which ps and the shell history show, so give a password with -field-file. A password field is stored encrypted with "+secrets.EnvVar)
+	fields, files, secret := fieldFlag{}, fileFlag{}, nameFlag{}
+	fs.Var(fields, "field", fieldHelp)
+	fs.Var(&secret, "secret", "name of a text field to mark secret, so its value is stored encrypted and never shown back; repeat for each. A value shorter than 6 characters cannot be secret")
 	fs.Var(&files, "field-file", "custom field value read from a file as keyname=path, or from stdin for -, which only one may be; one trailing newline is dropped. Repeat as for -field")
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
 	if *recipeID == 0 || fs.NArg() != 0 {
-		return errors.New("usage: trmnl-byos instance add [-data dir] -recipe ID [-name name] [-palette id] [-field k=v ...] [-field-file k=path ...]")
+		return errors.New("usage: trmnl-byos instance add [-data dir] -recipe ID [-name name] [-palette id] [-field k=v ...] [-field-file k=path ...] [-secret k ...]")
+	}
+	marked, err := marks(secret, nil)
+	if err != nil {
+		return err
 	}
 	if err := files.addFiles(fields, stdin); err != nil {
 		return err
@@ -243,6 +272,7 @@ func instanceAdd(ctx context.Context, args []string, stdin io.Reader, out io.Wri
 		Name:     *name,
 		Palette:  *palette,
 		Values:   fields,
+		Secret:   marked,
 	}, time.Now())
 	if err != nil {
 		return err
@@ -286,19 +316,25 @@ func instanceSet(ctx context.Context, args []string, stdin io.Reader, out io.Wri
 	data := dataFlag(fs)
 	name := fs.String("name", "", "new name of the instance; empty for the recipe's")
 	palette := fs.String("palette", "", "new palette to render with, such as bw; empty for the device's")
-	fields, cleared := fieldFlag{}, clearFlag{}
+	fields, cleared, secret, plain := fieldFlag{}, nameFlag{}, nameFlag{}, nameFlag{}
 	files := fileFlag{}
-	fs.Var(fields, "field", "custom field value as keyname=value; repeat for each field, and for each choice of a multi-select. The value is in the command line, which ps and the shell history show, so give a password with -field-file. A password field is stored encrypted with "+secrets.EnvVar)
+	fs.Var(fields, "field", fieldHelp)
 	fs.Var(&files, "field-file", "custom field value read from a file as keyname=path, or from stdin for -, which only one may be; one trailing newline is dropped. Repeat as for -field")
-	fs.Var(&cleared, "clear", "name of a custom field to clear, a password field included; repeat for each. A field left out is kept, and so is a password given an empty value")
+	fs.Var(&cleared, "clear", "name of a custom field to clear, a password field included; repeat for each. A field left out is kept, and so is a secret given an empty value")
+	fs.Var(&secret, "secret", "name of a text field to mark secret, which moves its value into the encrypted fields; repeat for each. A value shorter than 6 characters cannot be secret")
+	fs.Var(&plain, "plain", "name of a field marked secret to unmark, which moves its value out of the encrypted fields and shows it; repeat for each. A password field is always secret")
 	rest := parseInterspersed(fs, args)
-	usage := errors.New("usage: trmnl-byos instance set [-data dir] <instance ID> [-name name] [-palette id] [-field k=v ...] [-field-file k=path ...] [-clear k ...]")
+	usage := errors.New("usage: trmnl-byos instance set [-data dir] <instance ID> [-name name] [-palette id] [-field k=v ...] [-field-file k=path ...] [-clear k ...] [-secret k ...] [-plain k ...]")
 	if len(rest) != 1 {
 		return usage
 	}
 	id, err := strconv.ParseInt(rest[0], 10, 64)
 	if err != nil {
 		return usage
+	}
+	marked, err := marks(secret, plain)
+	if err != nil {
+		return err
 	}
 	var u recipe.InstanceUpdate
 	fs.Visit(func(f *flag.Flag) {
@@ -312,10 +348,10 @@ func instanceSet(ctx context.Context, args []string, stdin io.Reader, out io.Wri
 	if err := files.addFiles(fields, stdin); err != nil {
 		return err
 	}
-	if u.Name == nil && u.Palette == nil && len(fields) == 0 && len(cleared) == 0 {
+	if u.Name == nil && u.Palette == nil && len(fields) == 0 && len(cleared) == 0 && len(marked) == 0 {
 		return usage
 	}
-	u.Values, u.Clear = fields, cleared
+	u.Values, u.Clear, u.Secret = fields, cleared, marked
 	key, err := secrets.FromEnv()
 	if err != nil {
 		return err

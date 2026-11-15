@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
 
@@ -54,9 +55,116 @@ type Field struct {
 	HasConditions bool
 }
 
-// Secret reports whether the field holds a secret, which is stored sealed
-// and never shown back. Only a password field does.
+// Secret reports whether the field is a password field, whose value is
+// always stored sealed and never shown back. An instance may also have other
+// fields marked secret by the admin: see CanMarkSecret.
 func (f *Field) Secret() bool { return f.Type == "password" }
+
+// CanMarkSecret reports whether an admin may mark the field secret for an
+// instance, so its value is stored sealed and never shown back as a password
+// field's is. Many recipes declare a credential as a string or text field,
+// so the recipe's type alone cannot be trusted to say what is secret. Only a
+// field that takes free text can be marked: the choice of a select, a number,
+// a boolean, a date or a time is not a credential. A password field is
+// always secret, so it cannot be marked or unmarked.
+func (f *Field) CanMarkSecret() bool {
+	in := f.Input()
+	return in == "text" || in == "textarea"
+}
+
+// secretWords are words that, alone in a field's keyname or label, suggest
+// it holds a credential.
+var secretWords = []string{
+	"auth", "authorization", "bearer", "credential", "credentials", "passphrase",
+	"passwd", "password", "pwd", "secret", "token",
+}
+
+// secretKeyWords are the words that, just before "key" in a field's keyname
+// or label, suggest it holds a credential, as "api key" does. "key" alone
+// does not, since "sort key" does not.
+var secretKeyWords = []string{
+	"access", "account", "api", "app", "client", "consumer", "developer",
+	"license", "private", "secret", "subscription",
+}
+
+// secretGlued are run-together words that suggest a credential when they
+// are part of one word of a keyname or label, as in "openaiapikey".
+var secretGlued = []string{
+	"accesstoken", "apikey", "apitoken", "authtoken", "bearertoken",
+	"clientsecret", "passwd", "password", "privatekey", "secretkey",
+}
+
+// LooksSecret reports whether the field's keyname or label looks like a
+// credential, such as api_key, apiKey, "Access Token" or client_secret. A
+// password field always does. It is only a guess a form uses to tick its
+// secret box in advance for a field that CanMarkSecret: nothing is stored
+// sealed unless the admin leaves the box ticked.
+func (f *Field) LooksSecret() bool {
+	if f.Secret() {
+		return true
+	}
+	if !f.CanMarkSecret() {
+		return false
+	}
+	return looksSecret(words(f.Keyname)) || looksSecret(words(f.Label))
+}
+
+// looksSecret reports whether a field name's words suggest a credential.
+func looksSecret(ws []string) bool {
+	for i, w := range ws {
+		if slices.Contains(secretWords, w) {
+			return true
+		}
+		if i > 0 && w == "key" && slices.Contains(secretKeyWords, ws[i-1]) {
+			return true
+		}
+		// An access ID, such as AWS's access_id, comes with a secret.
+		if i > 0 && w == "id" && ws[i-1] == "access" {
+			return true
+		}
+		if slices.ContainsFunc(secretGlued, func(g string) bool { return strings.Contains(w, g) }) {
+			return true
+		}
+	}
+	return false
+}
+
+// words splits a keyname or label into lowercase words, at every character
+// that is not a letter or digit, where a lowercase letter or digit is
+// followed by an uppercase one, as in apiKey, and before the last capital of
+// a run that a lowercase letter follows, as in AWSAccessKey.
+func words(s string) []string {
+	var out []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, string(cur))
+			cur = cur[:0]
+		}
+	}
+	rs := []rune(s)
+	for i, r := range rs {
+		var prev, next rune
+		if i > 0 {
+			prev = rs[i-1]
+		}
+		if i+1 < len(rs) {
+			next = rs[i+1]
+		}
+		switch {
+		case !unicode.IsLetter(r) && !unicode.IsDigit(r):
+			flush()
+			continue
+		case unicode.IsUpper(r) && (unicode.IsLower(prev) || unicode.IsDigit(prev)):
+			flush()
+		case unicode.IsUpper(r) && unicode.IsUpper(prev) && unicode.IsLower(next):
+			flush()
+		}
+		cur = append(cur, unicode.ToLower(r))
+	}
+	flush()
+	return out
+}
 
 // Input is what a form shows for the field and how its value is checked:
 // "text", "textarea", "number", "select", "boolean", "date", "time" or

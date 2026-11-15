@@ -29,31 +29,43 @@ func (e FieldErrors) Error() string {
 // Unwrap returns errkind.ErrInvalid, so a caller answers it as bad input.
 func (FieldErrors) Unwrap() error { return errkind.ErrInvalid }
 
-// MinSecretLen is the fewest characters a password field's value may have.
-// A shorter value is easy to guess, so sealing it protects nothing, and
-// redacting it from a build log would hide every place its characters
-// appear. Such a value can be a plain field.
+// MinSecretLen is the fewest characters a secret field's value may have,
+// whether it is a password field or one the admin marked secret. A shorter
+// value is easy to guess, so sealing it protects nothing, and redacting it
+// from a build log would hide every place its characters appear. Such a
+// value can be a plain field.
 const MinSecretLen = 6
+
+// shortSecret returns why s is too short to be a secret field's value, ""
+// if it is not.
+func shortSecret(s string) string {
+	if utf8.RuneCountInString(s) < MinSecretLen {
+		return fmt.Sprintf("must be at least %d characters to be secret", MinSecretLen)
+	}
+	return ""
+}
 
 // checkValues checks values against the recipe's field definitions and
 // returns them with a single string for a multi-select turned into a list.
-// Every problem is reported at once, in a FieldErrors. A value that is empty
-// clears its field, so only its being required is checked. When creating,
-// each required field also needs a value, given or not.
-func checkValues(fields []Field, values map[string]Value, creating bool) (map[string]Value, error) {
+// sealed says whether a keyname's value is stored sealed, which it then has
+// to be long enough for. Every problem is added to bad, so one FieldErrors
+// reports them all. A value that is empty clears its field, so only its
+// being required is checked, and it may name a field the recipe no longer
+// has, so a value left from one can be cleared. When creating, each
+// required field also needs a value, given or not.
+func checkValues(fields []Field, values map[string]Value, creating bool, sealed func(string) bool, bad FieldErrors) map[string]Value {
 	byName := fieldsByName(fields)
-	bad := FieldErrors{}
 	out := make(map[string]Value, len(values))
 	for k, v := range values {
 		f := byName[k]
 		switch {
-		case f == nil:
-			bad[k] = "no such field"
 		case v.Empty():
 			out[k] = v
+		case f == nil:
+			bad[k] = "no such field"
 		default:
 			var msg string
-			if out[k], msg = f.check(v); msg != "" {
+			if out[k], msg = f.check(v, sealed(k)); msg != "" {
 				bad[k] = msg
 			}
 		}
@@ -65,10 +77,7 @@ func checkValues(fields []Field, values map[string]Value, creating bool) (map[st
 			bad[f.Keyname] = "is required"
 		}
 	}
-	if len(bad) > 0 {
-		return nil, bad
-	}
-	return out, nil
+	return out
 }
 
 // fieldsByName indexes fields by keyname.
@@ -81,10 +90,10 @@ func fieldsByName(fields []Field) map[string]*Field {
 }
 
 // check returns the value, a single string for a multi-select as a list,
-// and why it is not acceptable for the field, "" if it is. v is not empty.
-// A message never repeats the value, which may be a secret put in the wrong
-// field.
-func (f *Field) check(v Value) (Value, string) {
+// and why it is not acceptable for the field, "" if it is. v is not empty,
+// and sealed says whether it is stored sealed. A message never repeats the
+// value, which may be a secret put in the wrong field.
+func (f *Field) check(v Value, sealed bool) (Value, string) {
 	input := f.Input()
 	if input == "none" {
 		return v, "takes no value"
@@ -126,7 +135,10 @@ func (f *Field) check(v Value) (Value, string) {
 			return v, "must be a time as HH:MM, from 00:00 to 23:59"
 		}
 	default:
-		return v, f.checkText(v.One, input)
+		if msg := f.checkText(v.One); msg != "" || !sealed {
+			return v, msg
+		}
+		return v, shortSecret(v.One)
 	}
 	return v, ""
 }
@@ -154,15 +166,10 @@ func (f *Field) checkNumber(s string) string {
 	return ""
 }
 
-// checkText returns why s is too long, or for a password too short, for
-// the field, "" if it is not.
-func (f *Field) checkText(s, input string) string {
-	n := utf8.RuneCountInString(s)
-	if f.MaxLength > 0 && n > f.MaxLength {
+// checkText returns why s is too long for the field, "" if it is not.
+func (f *Field) checkText(s string) string {
+	if f.MaxLength > 0 && utf8.RuneCountInString(s) > f.MaxLength {
 		return fmt.Sprintf("must be at most %d characters", f.MaxLength)
-	}
-	if input == "password" && n < MinSecretLen {
-		return fmt.Sprintf("must be at least %d characters", MinSecretLen)
 	}
 	return ""
 }

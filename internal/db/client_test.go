@@ -769,6 +769,7 @@ var dropPlaylistPriorityIndex = []string{
 // schema.sql, so that it has the shape from before that step.
 var dropSettingsAt = []string{
 	`ALTER TABLE plugin_instance DROP COLUMN settings_at`,
+	`ALTER TABLE plugin_instance DROP COLUMN secret_keys`,
 	`ALTER TABLE render DROP COLUMN settings_at`,
 }
 
@@ -917,7 +918,8 @@ func TestMigratePlaylistPriorityIndex(t *testing.T) {
 }
 
 // TestMigrateSettingsAt checks step 6: a database at version 5 gets
-// settings_at on its instances and renders, 0 in every existing row, which
+// settings_at on its instances and renders, 0 in every existing row, and
+// secret_keys on its instances, with no field marked, which
 // leaves the rows otherwise as they were, and ends with the shape of
 // schema.sql.
 func TestMigrateSettingsAt(t *testing.T) {
@@ -958,7 +960,7 @@ func TestMigrateSettingsAt(t *testing.T) {
 		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	inst, err := client.Read.GetInstance(ctx, 1)
-	if err != nil || inst.SettingsAt != 0 || inst.FieldValues != `{"a":"b"}` || inst.CreatedAt != 7 {
+	if err != nil || inst.SettingsAt != 0 || inst.SecretKeys != "[]" || inst.FieldValues != `{"a":"b"}` || inst.CreatedAt != 7 {
 		t.Errorf("instance after migration: %+v, %v", inst, err)
 	}
 	rows, err := client.Read.ListRenderRows(ctx)

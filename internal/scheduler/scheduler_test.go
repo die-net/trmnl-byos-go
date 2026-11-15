@@ -1551,7 +1551,7 @@ func TestRejectedJobCounts(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = h.db.Write.UpdateInstance(t.Context(), db.UpdateInstanceParams{
-				ID: 1, Name: inst.Name, Palette: inst.Palette, FieldValues: string(huge), SecretValues: inst.SecretValues, SettingsAt: 1,
+				ID: 1, Name: inst.Name, Palette: inst.Palette, FieldValues: string(huge), SecretValues: inst.SecretValues, SecretKeys: inst.SecretKeys, SettingsAt: 1,
 			})
 			if err != nil {
 				t.Fatal(err)

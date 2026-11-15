@@ -95,7 +95,7 @@ func TestPatchInstance(t *testing.T) {
 	}{
 		{"bad value", `{"name": "x", "fields": {"days": "zero"}}`, 400, "days: must be a number"},
 		{"set and cleared", `{"fields": {"city": "x"}, "clear": ["city"]}`, 400, "city: is both set and cleared"},
-		{"clear an unknown field", `{"clear": ["nope"]}`, 400, "nope: no such field"},
+		{"a value for an unknown field", `{"fields": {"nope": "x"}}`, 400, "nope: no such field"},
 		{"unknown palette", `{"name": "x", "palette": "neon"}`, 400, "unknown palette"},
 		{"secrets is not a field", `{"secrets": {"k": "` + testSecret + `"}}`, 400, "unknown field"},
 		{"a number for a value", `{"fields": {"city": 7}}`, 400, "string or an array of strings"},
@@ -136,5 +136,66 @@ func TestPatchInstanceNeedsKey(t *testing.T) {
 	ta.call(t, "PATCH", path, `{"fields": {"city": "Oslo"}}`, 200, &got)
 	if got.Fields["city"].One != "Oslo" {
 		t.Errorf("after an update: %+v", got)
+	}
+}
+
+// TestMarkSecret checks that mark_secret hides a field's value and lists it
+// in secret_keys and secret_fields, that unmarking shows it again, and that
+// a refused mark answers 400 with the field error.
+func TestMarkSecret(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, true)
+	rec := ta.addRecipe(t)
+	var inst instanceJSON
+	w := ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "fields": {"city": "`+testSecret+`"}, "mark_secret": {"city": true}}`, 201, &inst)
+	bodies := append(make([]string, 0, 8), w.Body.String())
+	if _, ok := inst.Fields["city"]; ok || strings.Join(inst.SecretKeys, ",") != "city" || strings.Join(inst.SecretFields, ",") != "city" {
+		t.Errorf("after a create with a mark: %+v", inst)
+	}
+	path := "/api/v1/instances/" + strconv.FormatInt(inst.ID, 10)
+
+	// An instance with no marks has an empty array, not null.
+	w = ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`}`, 201, nil)
+	if !strings.Contains(w.Body.String(), `"secret_keys":[]`) {
+		t.Errorf("an instance with no marks: %s", w.Body)
+	}
+
+	// Refused marks answer 400 with the field error, and change nothing.
+	for _, tc := range []struct{ body, field, msg string }{
+		{`{"mark_secret": {"days": true}}`, "days", "cannot be secret, since its value is not text"},
+		{`{"mark_secret": {"apikey": false}}`, "apikey", "is a password field, which is always secret"},
+		{`{"mark_secret": {"nope": true}}`, "nope", "no such field"},
+	} {
+		var e errorBody
+		bodies = append(bodies, ta.call(t, "PATCH", path, tc.body, 400, &e).Body.String())
+		if e.Fields[tc.field] != tc.msg {
+			t.Errorf("%s: fields = %v, want %q", tc.body, e.Fields, tc.msg)
+		}
+	}
+	var e errorBody
+	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": 1, "mark_secret": {"days": true}}`, 400, &e)
+	if e.Fields["days"] != "cannot be secret, since its value is not text" {
+		t.Errorf("a refused mark on create: %v", e.Fields)
+	}
+
+	// Unmarking shows the value again.
+	var got instanceJSON
+	w = ta.call(t, "PATCH", path, `{"mark_secret": {"city": false}}`, 200, &got)
+	if got.Fields["city"].One != testSecret || len(got.SecretKeys) != 0 || len(got.SecretFields) != 0 {
+		t.Errorf("after unmarking: %+v", got)
+	}
+	if !strings.Contains(w.Body.String(), `"secret_keys":[]`) {
+		t.Errorf("unmarked body: %s", w.Body)
+	}
+	// And marking hides it again.
+	got = instanceJSON{}
+	bodies = append(bodies, ta.call(t, "PATCH", path, `{"mark_secret": {"city": true}}`, 200, &got).Body.String())
+	if _, ok := got.Fields["city"]; ok || strings.Join(got.SecretKeys, ",") != "city" {
+		t.Errorf("after marking: %+v", got)
+	}
+	for _, b := range bodies {
+		if strings.Contains(b, testSecret) {
+			t.Errorf("response shows a secret: %s", b)
+		}
 	}
 }

@@ -302,3 +302,55 @@ func TestSettingsTooBig(t *testing.T) {
 		t.Errorf("recipes recorded: %v, %v", rows, err)
 	}
 }
+
+// TestCanMarkSecret checks which field types an admin may mark secret.
+func TestCanMarkSecret(t *testing.T) {
+	t.Parallel()
+	for typ, want := range map[string]bool{
+		"string": true, "text": true, "code": true, "url": true, "hologram": true,
+		"password": false, "select": false, "number": false, "boolean": false,
+		"date": false, "time": false, "author_bio": false,
+	} {
+		if got := (&Field{Keyname: "a", Type: typ}).CanMarkSecret(); got != want {
+			t.Errorf("%s: CanMarkSecret = %v, want %v", typ, got, want)
+		}
+	}
+}
+
+// TestLooksSecret checks which keynames and labels a form ticks the secret
+// box for, including near misses that must not be ticked.
+func TestLooksSecret(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		field Field
+		want  bool
+	}{
+		{"api_key", Field{Keyname: "api_key", Type: "string"}, true},
+		{"apiKey", Field{Keyname: "apiKey", Type: "string"}, true},
+		{"APIKey", Field{Keyname: "APIKey", Type: "string"}, true},
+		{"an acronym run before a word", Field{Keyname: "AWSAccessKeyId", Type: "string"}, true},
+		{"openaiapikey", Field{Keyname: "openaiapikey", Type: "string"}, true},
+		{"access_token", Field{Keyname: "access_token", Type: "string"}, true},
+		{"client_secret", Field{Keyname: "client_secret", Type: "string"}, true},
+		{"bearer", Field{Keyname: "bearer", Type: "string"}, true},
+		{"auth_token", Field{Keyname: "auth_token", Type: "url"}, true},
+		{"private_key in a text area", Field{Keyname: "private_key", Type: "text"}, true},
+		{"access_id", Field{Keyname: "access_id", Type: "string"}, true},
+		{"password keyname on a string", Field{Keyname: "password", Type: "string"}, true},
+		{"label Access Token", Field{Keyname: "x", Label: "Access Token", Type: "string"}, true},
+		{"password field", Field{Keyname: "city", Type: "password"}, true},
+		{"author", Field{Keyname: "author", Type: "string"}, false},
+		{"city", Field{Keyname: "city", Type: "string"}, false},
+		{"sort_key", Field{Keyname: "sort_key", Type: "string"}, false},
+		{"station_id", Field{Keyname: "station_id", Type: "string"}, false},
+		{"keyboard", Field{Keyname: "keyboard", Type: "string"}, false},
+		{"tokenizer", Field{Keyname: "tokenizer", Type: "string"}, false},
+		{"select named api_key", Field{Keyname: "api_key", Type: "select"}, false},
+		{"number named token", Field{Keyname: "token", Type: "number"}, false},
+	} {
+		if got := tc.field.LooksSecret(); got != tc.want {
+			t.Errorf("%s: LooksSecret = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

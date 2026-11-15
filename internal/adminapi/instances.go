@@ -13,7 +13,8 @@ import (
 
 // instanceJSON is a plugin instance. It has the values of its plain
 // fields, each a string or, for a multi-select, an array of strings, but of
-// its secret fields only the names, never the values.
+// its secret fields only the names, never the values. Its secret fields are
+// the password fields and the fields in SecretKeys, which the admin marked.
 // SecretFields is null when the names cannot be read: the server has no
 // TRMNL_SECRET_KEY, or the sealed secrets do not open, as after a key
 // change. The names are sealed with the values.
@@ -25,7 +26,10 @@ type instanceJSON struct {
 	Palette      string                  `json:"palette"`
 	Fields       map[string]recipe.Value `json:"fields"`
 	SecretFields []string                `json:"secret_fields"`
-	CreatedAt    int64                   `json:"created_at"`
+	// SecretKeys is the keynames the admin marked secret, set or not, and
+	// is always an array. It is readable without the secrets key.
+	SecretKeys []string `json:"secret_keys"`
+	CreatedAt  int64    `json:"created_at"`
 }
 
 func (s *Server) newInstance(inst *db.PluginInstance, recipeName string) (instanceJSON, error) {
@@ -33,9 +37,13 @@ func (s *Server) newInstance(inst *db.PluginInstance, recipeName string) (instan
 	if err != nil {
 		return instanceJSON{}, fmt.Errorf("instance %d: %w", inst.ID, err)
 	}
+	marks, err := recipe.SecretKeys(inst)
+	if err != nil {
+		return instanceJSON{}, fmt.Errorf("instance %d: %w", inst.ID, err)
+	}
 	return instanceJSON{
 		ID: inst.ID, RecipeID: inst.RecipeID, RecipeName: recipeName, Name: inst.Name, Palette: inst.Palette,
-		Fields: fields, SecretFields: names, CreatedAt: inst.CreatedAt,
+		Fields: fields, SecretFields: names, SecretKeys: marks, CreatedAt: inst.CreatedAt,
 	}, nil
 }
 
@@ -88,9 +96,13 @@ type createInstanceRequest struct {
 	// Palette defaults to the device's.
 	Palette string `json:"palette"`
 	// Fields are custom field values by keyname: a string, or an array of
-	// strings for a multi-select. A password field's value is stored
-	// encrypted.
+	// strings for a multi-select. A secret field's value, a password
+	// field's or a marked one's, is stored encrypted.
 	Fields map[string]recipe.Value `json:"fields"`
+	// MarkSecret marks a field secret by keyname when true, so its value
+	// is stored encrypted and never shown back. Only a text field can be
+	// marked, and a password field always is.
+	MarkSecret map[string]bool `json:"mark_secret"`
 }
 
 func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) (instanceJSON, error) {
@@ -104,6 +116,7 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) (instanc
 		Name:     req.Name,
 		Palette:  req.Palette,
 		Values:   req.Fields,
+		Secret:   req.MarkSecret,
 	}, s.now())
 	if err != nil {
 		return instanceJSON{}, err
@@ -125,6 +138,10 @@ type patchInstanceRequest struct {
 	// Clear is the keynames of the fields to clear, which is how a secret
 	// is cleared.
 	Clear []string `json:"clear"`
+	// MarkSecret marks a field secret by keyname when true and unmarks it
+	// when false, which moves its value between the encrypted and the shown
+	// fields. A key left out keeps its mark.
+	MarkSecret map[string]bool `json:"mark_secret"`
 }
 
 func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instanceJSON, error) {
@@ -142,6 +159,7 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instance
 		Palette: req.Palette,
 		Values:  req.Fields,
 		Clear:   req.Clear,
+		Secret:  req.MarkSecret,
 	}, s.now())
 	if err != nil {
 		return instanceJSON{}, err

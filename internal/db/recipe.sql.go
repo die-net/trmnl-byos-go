@@ -10,9 +10,9 @@ import (
 )
 
 const createInstance = `-- name: CreateInstance :one
-INSERT INTO plugin_instance (recipe_id, name, field_values, secret_values, palette, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at
+INSERT INTO plugin_instance (recipe_id, name, field_values, secret_values, secret_keys, palette, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at, secret_keys
 `
 
 type CreateInstanceParams struct {
@@ -20,6 +20,7 @@ type CreateInstanceParams struct {
 	Name         string `json:"name"`
 	FieldValues  string `json:"field_values"`
 	SecretValues []byte `json:"secret_values"`
+	SecretKeys   string `json:"secret_keys"`
 	Palette      string `json:"palette"`
 	CreatedAt    int64  `json:"created_at"`
 }
@@ -30,6 +31,7 @@ func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) 
 		arg.Name,
 		arg.FieldValues,
 		arg.SecretValues,
+		arg.SecretKeys,
 		arg.Palette,
 		arg.CreatedAt,
 	)
@@ -43,6 +45,7 @@ func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) 
 		&i.Palette,
 		&i.CreatedAt,
 		&i.SettingsAt,
+		&i.SecretKeys,
 	)
 	return i, err
 }
@@ -92,7 +95,7 @@ func (q *Queries) DeleteInstance(ctx context.Context, id int64) (int64, error) {
 }
 
 const getInstance = `-- name: GetInstance :one
-SELECT id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at FROM plugin_instance WHERE id = ?
+SELECT id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at, secret_keys FROM plugin_instance WHERE id = ?
 `
 
 func (q *Queries) GetInstance(ctx context.Context, id int64) (PluginInstance, error) {
@@ -107,6 +110,7 @@ func (q *Queries) GetInstance(ctx context.Context, id int64) (PluginInstance, er
 		&i.Palette,
 		&i.CreatedAt,
 		&i.SettingsAt,
+		&i.SecretKeys,
 	)
 	return i, err
 }
@@ -168,7 +172,7 @@ func (q *Queries) ListInstancePlaylists(ctx context.Context) ([]ListInstancePlay
 }
 
 const listInstances = `-- name: ListInstances :many
-SELECT plugin_instance.id, plugin_instance.recipe_id, plugin_instance.name, plugin_instance.field_values, plugin_instance.secret_values, plugin_instance.palette, plugin_instance.created_at, plugin_instance.settings_at, recipe.name AS recipe_name
+SELECT plugin_instance.id, plugin_instance.recipe_id, plugin_instance.name, plugin_instance.field_values, plugin_instance.secret_values, plugin_instance.palette, plugin_instance.created_at, plugin_instance.settings_at, plugin_instance.secret_keys, recipe.name AS recipe_name
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
 ORDER BY plugin_instance.id
@@ -197,6 +201,7 @@ func (q *Queries) ListInstances(ctx context.Context) ([]ListInstancesRow, error)
 			&i.PluginInstance.Palette,
 			&i.PluginInstance.CreatedAt,
 			&i.PluginInstance.SettingsAt,
+			&i.PluginInstance.SecretKeys,
 			&i.RecipeName,
 		); err != nil {
 			return nil, err
@@ -301,9 +306,9 @@ func (q *Queries) SetInstanceSecrets(ctx context.Context, arg SetInstanceSecrets
 
 const updateInstance = `-- name: UpdateInstance :one
 UPDATE plugin_instance
-SET name = ?, palette = ?, field_values = ?, secret_values = ?, settings_at = ?
+SET name = ?, palette = ?, field_values = ?, secret_values = ?, secret_keys = ?, settings_at = ?
 WHERE id = ?
-RETURNING id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at
+RETURNING id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at, secret_keys
 `
 
 type UpdateInstanceParams struct {
@@ -311,6 +316,7 @@ type UpdateInstanceParams struct {
 	Palette      string `json:"palette"`
 	FieldValues  string `json:"field_values"`
 	SecretValues []byte `json:"secret_values"`
+	SecretKeys   string `json:"secret_keys"`
 	SettingsAt   int64  `json:"settings_at"`
 	ID           int64  `json:"id"`
 }
@@ -324,6 +330,7 @@ func (q *Queries) UpdateInstance(ctx context.Context, arg UpdateInstanceParams) 
 		arg.Palette,
 		arg.FieldValues,
 		arg.SecretValues,
+		arg.SecretKeys,
 		arg.SettingsAt,
 		arg.ID,
 	)
@@ -337,6 +344,7 @@ func (q *Queries) UpdateInstance(ctx context.Context, arg UpdateInstanceParams) 
 		&i.Palette,
 		&i.CreatedAt,
 		&i.SettingsAt,
+		&i.SecretKeys,
 	)
 	return i, err
 }
