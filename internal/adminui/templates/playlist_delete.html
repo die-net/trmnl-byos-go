@@ -1,8 +1,10 @@
 {{define "title"}}{{.Heading}}{{end}}
 {{define "content"}}{{with .PlaylistDelete}}<section class="panel form-panel" aria-labelledby="delete-title">
 <h2 id="delete-title">Delete {{.Name}}?</h2>
+{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
 <p class="rel">{{.Summary}}</p>
 <form method="post" action="{{.Action}}">
+<input type="hidden" name="items" value="{{.Items}}"><input type="hidden" name="devices" value="{{.Devices}}">
 <button class="btn btn-primary btn-danger-solid" type="submit">Delete playlist</button>
 </form>
 <p class="more"><a class="btn btn-secondary" href="{{.Cancel}}">Keep playlist</a></p>

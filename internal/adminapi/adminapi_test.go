@@ -707,13 +707,13 @@ func TestPlaylistCRUD(t *testing.T) {
 		{"link unknown playlist", "PUT", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
 		{"link unknown device", "PUT", pa + "/devices/ZZZ999", "", 404, "no such device"},
 		{"link takes no priority", "PUT", pa + "/devices/" + testFriend, `{"priority": 0}`, 400, "unknown field"},
-		{"move unlinked", "PATCH", pa + "/devices/" + testFriend, `{"from": 0, "priority": 0}`, 404, "not linked"},
-		{"move unknown playlist", "PATCH", "/api/v1/playlists/999/devices/" + testFriend, `{"from": 0, "priority": 0}`, 404, "no such playlist"},
-		{"move unknown device", "PATCH", pa + "/devices/ZZZ999", `{"from": 0, "priority": 0}`, 404, "no such device"},
-		{"move no priority", "PATCH", pa + "/devices/" + testFriend, `{"from": 0}`, 400, "give both from and priority"},
-		{"move no from", "PATCH", pa + "/devices/" + testFriend, `{"priority": 0}`, 400, "give both from and priority"},
+		{"move unlinked", "PATCH", pa + "/devices/" + testFriend, `{"order": [], "priority": 0}`, 404, "not linked"},
+		{"move unknown playlist", "PATCH", "/api/v1/playlists/999/devices/" + testFriend, `{"order": [], "priority": 0}`, 404, "no such playlist"},
+		{"move unknown device", "PATCH", pa + "/devices/ZZZ999", `{"order": [], "priority": 0}`, 404, "no such device"},
+		{"move no priority", "PATCH", pa + "/devices/" + testFriend, `{"order": []}`, 400, "give both order and priority"},
+		{"move no from", "PATCH", pa + "/devices/" + testFriend, `{"priority": 0}`, 400, "give both order and priority"},
 		{"move no body", "PATCH", pa + "/devices/" + testFriend, ``, 400, "bad request body"},
-		{"move priority not a number", "PATCH", pa + "/devices/" + testFriend, `{"from": 0, "priority": "first"}`, 400, "bad request body"},
+		{"move priority not a number", "PATCH", pa + "/devices/" + testFriend, `{"order": [], "priority": "first"}`, 400, "bad request body"},
 		{"unlink not linked", "DELETE", pa + "/devices/" + testFriend, "", 404, "not linked"},
 		{"unlink unknown device", "DELETE", pa + "/devices/ZZZ999", "", 404, "no such device"},
 		{"unlink unknown playlist", "DELETE", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
@@ -736,7 +736,7 @@ func TestPlaylistCRUD(t *testing.T) {
 	ta.call(t, "PATCH", pa, `{"name": "Early"}`, 200, &got)
 
 	// A move that is refused makes no link.
-	ta.wantError(t, "PATCH", pa+"/devices/"+testFriend, `{"from": 0, "priority": 0}`, 404, "not linked")
+	ta.wantError(t, "PATCH", pa+"/devices/"+testFriend, `{"order": [], "priority": 0}`, 404, "not linked")
 	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
 	if len(lists[0].Devices)+len(lists[1].Devices) != 0 {
 		t.Errorf("a refused move linked a device: %+v", lists)
@@ -750,10 +750,13 @@ func TestPlaylistCRUD(t *testing.T) {
 	if len(got.Devices) != 1 || got.Devices[0].Priority != 1 {
 		t.Errorf("linked last %+v", got.Devices)
 	}
-	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 1, "priority": 2}`, 400, "2 is not a place in the device's playlist order, which runs from 0 to 1")
-	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 1, "priority": -1}`, 400, "-1 is not a place")
-	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 0, "priority": 0}`, 409, "the playlist is now at 1, not 0")
-	ta.call(t, "PATCH", pb+"/devices/"+testMAC, `{"from": 1, "priority": 0}`, 200, &got)
+	ab := fmt.Sprintf(`[%d, %d]`, a.ID, b.ID)
+	ba := fmt.Sprintf(`[%d, %d]`, b.ID, a.ID)
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"order": `+ab+`, "priority": 2}`, 400, "2 is not a place in the device's playlist order, which runs from 0 to 1")
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"order": `+ab+`, "priority": -1}`, 400, "-1 is not a place")
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"order": `+ba+`, "priority": 0}`, 409, "the device's playlist order has changed")
+	ta.wantError(t, "PATCH", pb+"/devices/"+testMAC, `{"order": [`+fmt.Sprint(a.ID)+`], "priority": 0}`, 409, "the device's playlist order has changed")
+	ta.call(t, "PATCH", pb+"/devices/"+testMAC, `{"order": `+ab+`, "priority": 0}`, 200, &got)
 	if len(got.Devices) != 1 || got.Devices[0].Priority != 0 {
 		t.Errorf("moved to the front %+v", got.Devices)
 	}
@@ -767,7 +770,7 @@ func TestPlaylistCRUD(t *testing.T) {
 	if got.Devices[0].Priority != 1 {
 		t.Errorf("relinked %+v", got.Devices)
 	}
-	ta.call(t, "PATCH", pa+"/devices/"+testFriend, `{"from": 1, "priority": 0}`, 200, &got)
+	ta.call(t, "PATCH", pa+"/devices/"+testFriend, `{"order": `+ba+`, "priority": 0}`, 200, &got)
 	if got.Devices[0].Priority != 0 {
 		t.Errorf("moved %+v", got.Devices)
 	}

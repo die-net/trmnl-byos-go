@@ -276,7 +276,7 @@ func (s *Server) deletePlaylist(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return playlist.DeletePlaylist(r.Context(), s.db, playlist.ByID(id))
+	return playlist.DeletePlaylist(r.Context(), s.db, playlist.ByID(id), nil)
 }
 
 // patchPlaylistRequest is the body of a playlist update request. A field
@@ -311,11 +311,11 @@ func (s *Server) patchPlaylist(w http.ResponseWriter, r *http.Request) (playlist
 
 // moveLinkRequest is the body of a request to move a device's link.
 type moveLinkRequest struct {
-	// From is the playlist's index in the device's order where the caller
-	// saw it, and Priority the index to move it to, from 0, which is tried
-	// first. Both are required.
-	From     *int64 `json:"from"`
-	Priority *int64 `json:"priority"`
+	// Order is the IDs of the device's playlists in the order the caller saw
+	// them, and Priority the index to move the playlist to, from 0, which is
+	// tried first. Both are required.
+	Order    *[]int64 `json:"order"`
+	Priority *int64   `json:"priority"`
 }
 
 // linkPlaylistDevice links a device last, or leaves an existing link alone.
@@ -347,11 +347,11 @@ func (s *Server) movePlaylistDevice(w http.ResponseWriter, r *http.Request) (pla
 	if err := decode(w, r, &req, false); err != nil {
 		return playlistJSON{}, err
 	}
-	if req.From == nil || req.Priority == nil {
-		return playlistJSON{}, fmt.Errorf("%w: give both from and priority", errBadBody)
+	if req.Order == nil || req.Priority == nil {
+		return playlistJSON{}, fmt.Errorf("%w: give both order and priority", errBadBody)
 	}
 	ctx := r.Context()
-	if err := playlist.MoveLink(ctx, s.db, playlist.ByID(id), r.PathValue("device"), *req.From, *req.Priority); err != nil {
+	if err := playlist.MoveLink(ctx, s.db, playlist.ByID(id), r.PathValue("device"), *req.Order, *req.Priority); err != nil {
 		return playlistJSON{}, err
 	}
 	return s.playlistByID(ctx, id)

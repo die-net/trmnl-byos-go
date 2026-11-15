@@ -143,6 +143,9 @@ var (
 	// ErrOrderChanged means a device's playlist order is not what the caller
 	// saw, so its change was refused.
 	ErrOrderChanged = errkind.New(errkind.ErrConflict, "the device's playlist order has changed")
+	// ErrPlaylistChanged means a playlist is not what the caller saw, so
+	// its change was refused.
+	ErrPlaylistChanged = errkind.New(errkind.ErrConflict, "the playlist has changed")
 )
 
 // AddItem appends an item showing one instance on the whole screen to the

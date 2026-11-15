@@ -1,8 +1,11 @@
 package adminui
 
 import (
+	"html"
+	"html/template"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -85,6 +88,43 @@ func itemNames(rows []db.ListPlaylistItemsRow) string {
 }
 
 func id(n int64) string { return strconv.FormatInt(n, 10) }
+
+// seenFields are the hidden fields of the name and schedule form that say
+// what the page showed.
+var seenFields = []string{"seen_name", "seen_days", "seen_window_start", "seen_window_end", "seen_starts_at", "seen_ends_at"}
+
+// hidden returns the value of the hidden field name on the page, unescaped,
+// and fails the test if the page has none.
+func hidden(t *testing.T, body, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`<input type="hidden" name="` + name + `" value="([^"]*)">`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("the page has no hidden field %s:\n%s", name, body)
+	}
+	return html.UnescapeString(m[1])
+}
+
+// withSeen adds to form the hidden fields of the playlist's page as it is
+// now, as a browser that loaded the page would post them.
+func withSeen(t *testing.T, tu *testUI, pid int64, form url.Values) url.Values {
+	t.Helper()
+	body := tu.get(t, tu.signIn(t), "/playlists/"+id(pid)).Body.String()
+	for _, name := range seenFields {
+		form.Set(name, hidden(t, body, name))
+	}
+	return form
+}
+
+// withContents adds to form the hidden fields of the playlist's delete
+// confirm page as it is now.
+func withContents(t *testing.T, tu *testUI, pid int64, form url.Values) url.Values {
+	t.Helper()
+	body := tu.get(t, tu.signIn(t), "/playlists/delete/"+id(pid)).Body.String()
+	for _, name := range []string{"items", "devices"} {
+		form.Set(name, hidden(t, body, name))
+	}
+	return form
+}
 
 func TestPlaylistsEmpty(t *testing.T) {
 	t.Parallel()
@@ -367,7 +407,7 @@ func TestPlaylistAddItemNoPlaylist(t *testing.T) {
 	inst := addInstance(t, tu, "Fresh")
 	pid := playlistID(t, tu, "p")
 	c := tu.signIn(t)
-	if w := tu.post(t, c, "/playlists/delete/"+id(pid), nil); w.Code != http.StatusSeeOther {
+	if w := tu.post(t, c, "/playlists/delete/"+id(pid), withContents(t, tu, pid, url.Values{})); w.Code != http.StatusSeeOther {
 		t.Fatalf("delete: status %d: %s", w.Code, w.Body)
 	}
 	w := tu.post(t, c, "/playlists/add-item/"+id(pid), url.Values{"instance": {id(inst)}, "duration": {"600"}})
@@ -525,7 +565,7 @@ func TestPlaylistScheduleEdit(t *testing.T) {
 	c := tu.signIn(t)
 	path := "/playlists/" + id(pid)
 
-	form := validPost()
+	form := withSeen(t, tu, pid, validPost())
 	form.Set("name", "p")
 	form.Set("until", "2026-12-31")
 	w := tu.post(t, c, path, form)
@@ -559,7 +599,7 @@ func TestPlaylistScheduleEditRefused(t *testing.T) {
 			tu := newTestUI(t, Config{}, true)
 			addItem(t, tu, "p", "a", 0)
 			pid := playlistID(t, tu, "p")
-			form := validPost()
+			form := withSeen(t, tu, pid, validPost())
 			form.Set("name", "p")
 			tc.set(form)
 			w := tu.post(t, tu.signIn(t), "/playlists/"+id(pid), form)
@@ -587,7 +627,7 @@ func TestPlaylistDatesUseServerZone(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	addItem(t, tu, "p", "a", 0)
 	pid := playlistID(t, tu, "p")
-	form := validPost()
+	form := withSeen(t, tu, pid, validPost())
 	form.Set("name", "p")
 	form.Set("from", "2026-12-01")
 	form.Set("until", "2026-12-01")
@@ -1004,8 +1044,16 @@ func TestPlaylistSaveNameAndSchedule(t *testing.T) {
 	page := tu.get(t, c, "/playlists/"+id(pid)).Body.String()
 	wantInOrder(t, page, `<h2 id="schedule-title">Name and schedule</h2>`, `<label for="name">Name</label>`,
 		`<input id="name" name="name" type="text" maxlength="64" autocomplete="off" required value="p">`, `name="days"`)
+	// The form says what the page showed: the name and the stored schedule.
+	for name, want := range map[string]string{
+		"seen_name": "p", "seen_days": id(playlist.AllDays), "seen_window_start": "0", "seen_window_end": "0", "seen_starts_at": "0", "seen_ends_at": "0",
+	} {
+		if got := hidden(t, page, name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
 
-	form := validPost()
+	form := withSeen(t, tu, pid, validPost())
 	form.Set("name", "  Mornings & <i>x</i> ")
 	w := tu.post(t, c, "/playlists/"+id(pid), form)
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/playlists#playlist-"+id(pid) {
@@ -1020,6 +1068,7 @@ func TestPlaylistSaveNameAndSchedule(t *testing.T) {
 		t.Errorf("playlist %+v, want the new name and schedule", pl)
 	}
 	// Saving with the name it has is not a clash.
+	withSeen(t, tu, pid, form)
 	form.Set("name", "Mornings & <i>x</i>")
 	if w := tu.post(t, c, "/playlists/"+id(pid), form); w.Code != http.StatusSeeOther {
 		t.Errorf("saving under the same name: status %d", w.Code)
@@ -1046,7 +1095,7 @@ func TestPlaylistSaveRefused(t *testing.T) {
 			addItem(t, tu, "p", "a", 0)
 			newPlaylist(t, tu, "other")
 			pid := playlistID(t, tu, "p")
-			form := validPost()
+			form := withSeen(t, tu, pid, validPost())
 			tc.set(form)
 			w := tu.post(t, tu.signIn(t), "/playlists/"+id(pid), form)
 			body := w.Body.String()
@@ -1069,6 +1118,220 @@ func TestPlaylistSaveRefused(t *testing.T) {
 			pl, _ := tu.db.Read.GetPlaylist(t.Context(), pid)
 			if pl.Name != "p" || pl.Days != playlist.AllDays || pl.WindowStart != 0 || pl.WindowEnd != 0 || pl.StartsAt != 0 || pl.EndsAt != 0 {
 				t.Errorf("playlist %+v changed by a refused save", pl)
+			}
+		})
+	}
+}
+
+// TestPlaylistSaveStale saves the name and schedule form from a page that
+// another change has made out of date, in both directions the reviewer found.
+// Each is refused with 409, nothing is written, and the page it shows keeps
+// the typed values, says what the playlist is now, and holds the current
+// values in its hidden fields, so that saving again applies the typed ones.
+func TestPlaylistSaveStale(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	addItem(t, tu, "Morning", "a", 0)
+	pid := playlistID(t, tu, "Morning")
+	c := tu.signIn(t)
+	path := "/playlists/" + id(pid)
+	stored := func() db.Playlist {
+		t.Helper()
+		pl, err := tu.db.Read.GetPlaylist(t.Context(), pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pl
+	}
+
+	// This tab loaded the page, and then another tab renamed the playlist.
+	staleName := withSeen(t, tu, pid, url.Values{})
+	mornings := "Mornings <b>"
+	if err := playlist.UpdatePlaylist(t.Context(), tu.db, playlist.ByID(pid), playlist.Update{Name: &mornings}); err != nil {
+		t.Fatal(err)
+	}
+	// This tab saves days, with the name it showed.
+	typed := validPost()
+	typed.Set("name", "Morning")
+	for k, v := range staleName {
+		typed[k] = v
+	}
+	w := tu.post(t, c, path, typed)
+	body := w.Body.String()
+	wantMsg := template.HTMLEscapeString(`This playlist changed after the page loaded, so nothing was saved. It is now "Mornings <b>" (Every day, all day). Save again to use the values below.`)
+	if w.Code != http.StatusConflict || !strings.Contains(body, wantMsg) {
+		t.Fatalf("stale name: status %d, body %s; want 409 with %q", w.Code, body, wantMsg)
+	}
+	if pl := stored(); pl.Name != mornings || pl.Days != playlist.AllDays || pl.WindowStart != 0 {
+		t.Errorf("a refused save changed the playlist: %+v", pl)
+	}
+	// The form keeps what was typed, and its hidden fields hold what is stored.
+	if !strings.Contains(body, `required value="Morning"`) || !strings.Contains(body, `value="08:00"`) || !strings.Contains(body, `value="tue" checked`) {
+		t.Errorf("the refusal lost the typed values:\n%s", body)
+	}
+	if got := hidden(t, body, "seen_name"); got != mornings {
+		t.Errorf("seen_name = %q, want the stored name", got)
+	}
+	if strings.Contains(body, "<b>") {
+		t.Error("the refusal has an unescaped name")
+	}
+	// Saving again from the refusal's own fields applies the typed values.
+	again := validPost()
+	again.Set("name", "Morning")
+	for _, name := range seenFields {
+		again.Set(name, hidden(t, body, name))
+	}
+	if got := tu.post(t, c, path, again); got.Code != http.StatusSeeOther {
+		t.Fatalf("save again: status %d: %s", got.Code, got.Body)
+	}
+	if pl := stored(); pl.Name != "Morning" || pl.WindowStart != 8*60 {
+		t.Errorf("after saving again: %+v", pl)
+	}
+
+	// This tab loaded the page, and then another tab set a schedule.
+	staleSchedule := withSeen(t, tu, pid, url.Values{})
+	weekdays := playlist.Schedule{Days: 0b0111110, WindowStart: 9 * 60, WindowEnd: 17 * 60}.Full()
+	if err := playlist.UpdatePlaylist(t.Context(), tu.db, playlist.ByID(pid), playlist.Update{Schedule: &weekdays}); err != nil {
+		t.Fatal(err)
+	}
+	// This tab renames, with the schedule it showed.
+	rename := validPost()
+	rename.Set("name", "Breakfast")
+	for k, v := range staleSchedule {
+		rename[k] = v
+	}
+	w = tu.post(t, c, path, rename)
+	body = w.Body.String()
+	wantMsg = `It is now &#34;Morning&#34; (Weekdays, 09:00 to 17:00). Save again`
+	if w.Code != http.StatusConflict || !strings.Contains(body, wantMsg) {
+		t.Fatalf("stale schedule: status %d, body %s; want 409 with %q", w.Code, body, wantMsg)
+	}
+	if pl := stored(); pl.Name != "Morning" || pl.Days != 0b0111110 || pl.WindowStart != 9*60 || pl.WindowEnd != 17*60 {
+		t.Errorf("a refused save changed the playlist: %+v", pl)
+	}
+	if got := hidden(t, body, "seen_days"); got != "62" {
+		t.Errorf("seen_days = %q, want the stored 62", got)
+	}
+}
+
+// TestPlaylistSaveWithoutSeen checks that a save that does not say what its
+// page showed is refused with 400 and changes nothing.
+func TestPlaylistSaveWithoutSeen(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		set  func(v url.Values)
+	}{
+		{"no seen fields", func(v url.Values) {
+			for _, name := range seenFields {
+				v.Del(name)
+			}
+		}},
+		{"no seen name", func(v url.Values) { v.Del("seen_name") }},
+		{"no seen days", func(v url.Values) { v.Del("seen_days") }},
+		{"no seen end", func(v url.Values) { v.Del("seen_ends_at") }},
+		{"seen days not a number", func(v url.Values) { v.Set("seen_days", "all") }},
+		{"seen start empty", func(v url.Values) { v.Set("seen_starts_at", "") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			addItem(t, tu, "p", "a", 0)
+			pid := playlistID(t, tu, "p")
+			form := withSeen(t, tu, pid, validPost())
+			form.Set("name", "fresh")
+			tc.set(form)
+			w := tu.post(t, tu.signIn(t), "/playlists/"+id(pid), form)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Reload the page and try again.") {
+				t.Fatalf("status %d, body %s; want 400 saying to reload", w.Code, w.Body)
+			}
+			pl, _ := tu.db.Read.GetPlaylist(t.Context(), pid)
+			if pl.Name != "p" || pl.Days != playlist.AllDays || pl.WindowStart != 0 {
+				t.Errorf("playlist %+v changed by a refused save", pl)
+			}
+		})
+	}
+}
+
+// TestPlaylistDeleteStale posts the delete form from a confirm page that
+// another change has made out of date, and checks that it is refused with
+// 409, deletes nothing, and shows what goes with the playlist now.
+func TestPlaylistDeleteStale(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, tu *testUI, pid int64)
+		want   string // in the page that comes back.
+	}{
+		{"a device linked", func(t *testing.T, tu *testUI, pid int64) { linkTo(t, tu, "ABC123", pid) }, "Kitchen stops showing it."},
+		{"an item added", func(t *testing.T, tu *testUI, pid int64) {
+			if _, err := playlist.AddItem(t.Context(), tu.db, playlist.ByID(pid), "", addInstance(t, tu, "more"), 0); err != nil {
+				t.Fatal(err)
+			}
+		}, "Its 1 item goes with it."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+			pid := newPlaylist(t, tu, "Lunch")
+			c := tu.signIn(t)
+			// The confirm page said it has no items and no device shows it.
+			shown := withContents(t, tu, pid, url.Values{})
+			if shown.Get("items") != "0" || shown.Get("devices") != "" {
+				t.Fatalf("the confirm page holds %v, want no items and no devices", shown)
+			}
+			tc.change(t, tu, pid)
+			w := tu.post(t, c, "/playlists/delete/"+id(pid), shown)
+			body := w.Body.String()
+			for _, want := range []string{"This playlist changed after the page loaded, so nothing was deleted. Check what goes with it now.", tc.want} {
+				if !strings.Contains(body, want) {
+					t.Errorf("the refusal lacks %q", want)
+				}
+			}
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status %d, want 409", w.Code)
+			}
+			if names := playlistNames(t, tu); len(names) != 1 {
+				t.Fatalf("playlists %v, want Lunch to still exist", names)
+			}
+			// The page holds the current values, so deleting from it goes through.
+			again := url.Values{"items": {hidden(t, body, "items")}, "devices": {hidden(t, body, "devices")}}
+			if w := tu.post(t, c, "/playlists/delete/"+id(pid), again); w.Code != http.StatusSeeOther {
+				t.Fatalf("delete from the refusal's fields: status %d: %s", w.Code, w.Body)
+			}
+			if names := playlistNames(t, tu); len(names) != 0 {
+				t.Errorf("playlists %v, want none", names)
+			}
+		})
+	}
+}
+
+// TestPlaylistDeleteWithoutContents checks that a delete that does not say
+// what its confirm page showed is refused with 400 and deletes nothing.
+func TestPlaylistDeleteWithoutContents(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		form url.Values
+	}{
+		{"no fields", url.Values{}},
+		{"no items", url.Values{"devices": {""}}},
+		{"no devices", url.Values{"items": {"0"}}},
+		{"items not a number", url.Values{"items": {"none"}, "devices": {""}}},
+		{"devices not numbers", url.Values{"items": {"0"}, "devices": {"1,x"}}},
+		{"devices with a gap", url.Values{"items": {"0"}, "devices": {"1,,2"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			pid := newPlaylist(t, tu, "Lunch")
+			w := tu.post(t, tu.signIn(t), "/playlists/delete/"+id(pid), tc.form)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Reload the page and try again.") {
+				t.Fatalf("status %d, body %s; want 400 saying to reload", w.Code, w.Body)
+			}
+			if names := playlistNames(t, tu); len(names) != 1 {
+				t.Errorf("playlists %v, want Lunch to still exist", names)
 			}
 		})
 	}
@@ -1351,7 +1614,7 @@ func TestPlaylistDelete(t *testing.T) {
 	item := addItem(t, tu, "gone", "a", 0)
 	keep := newPlaylist(t, tu, "keep")
 	linkTo(t, tu, "ABC123", item.PlaylistID, keep)
-	w := tu.post(t, tu.signIn(t), "/playlists/delete/"+id(item.PlaylistID), url.Values{})
+	w := tu.post(t, tu.signIn(t), "/playlists/delete/"+id(item.PlaylistID), withContents(t, tu, item.PlaylistID, url.Values{}))
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/playlists" {
 		t.Fatalf("status %d to %q, want 303 to /playlists: %s", w.Code, w.Header().Get("Location"), w.Body)
 	}

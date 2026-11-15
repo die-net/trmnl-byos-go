@@ -8,6 +8,7 @@
 <section class="panel" aria-labelledby="schedule-title">
 <h2 id="schedule-title">Name and schedule</h2>
 <form method="post" action="{{.Action}}">
+{{with .Form.Seen}}<input type="hidden" name="seen_name" value="{{.Name}}"><input type="hidden" name="seen_days" value="{{.Schedule.Days}}"><input type="hidden" name="seen_window_start" value="{{.Schedule.WindowStart}}"><input type="hidden" name="seen_window_end" value="{{.Schedule.WindowEnd}}"><input type="hidden" name="seen_starts_at" value="{{.Schedule.StartsAt}}"><input type="hidden" name="seen_ends_at" value="{{.Schedule.EndsAt}}">{{end}}
 <div class="field">
 <label for="name">Name</label>
 <input id="name" name="name" type="text" maxlength="64" autocomplete="off" required value="{{.Form.Name}}">
