@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net/http"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
 	"github.com/die-net/trmnl-byos-go/internal/upload"
@@ -90,13 +91,21 @@ type firmwareDeviceJSON struct {
 }
 
 // listFirmwareDevices lists the devices of the build's model and whether
-// each would be offered the build now.
+// each would be offered the build now. DeviceOffers reads the build, its
+// devices and the active builds in several queries, so they run in one
+// snapshot, as the web UI's build page reads them, and a change between
+// them cannot give an answer no state of the database had.
 func (s *Server) listFirmwareDevices(_ http.ResponseWriter, r *http.Request) ([]firmwareDeviceJSON, error) {
 	id, err := pathID(r, firmware.ErrNoFirmware)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := firmware.DeviceOffers(r.Context(), s.db.Read, s.cfg.FirmwareDir, id)
+	var rows []firmware.DeviceOffer
+	err = s.db.ReadTx(r.Context(), func(q *db.Queries) error {
+		var err error
+		rows, err = firmware.DeviceOffers(r.Context(), q, s.cfg.FirmwareDir, id)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -195,5 +204,5 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) (deviceJSON
 			return deviceJSON{}, err
 		}
 	}
-	return s.deviceStatus(r.Context(), dev.ID)
+	return deviceStatus(r.Context(), s.db.Read, dev.ID)
 }

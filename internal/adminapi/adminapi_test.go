@@ -1227,3 +1227,19 @@ func TestBuildPlaylists(t *testing.T) {
 		t.Errorf("second playlist %+v", got[1])
 	}
 }
+
+// TestVanishedRowIsNotFound checks that a device or an instance that is gone
+// by the time a response reads it, as after a delete that lands just after
+// the caller's own write, is not found (404) rather than a server error.
+func TestVanishedRowIsNotFound(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, true)
+	ctx := t.Context()
+	if _, err := deviceStatus(ctx, ta.db.Read, 999); !errors.Is(err, device.ErrNoDevice) || !errors.Is(err, errkind.ErrNotFound) {
+		t.Errorf("deviceStatus of a missing device: %v", err)
+	}
+	gone := db.PluginInstance{ID: 7, RecipeID: 999}
+	if _, err := ta.srv.instanceWithRecipe(ctx, ta.db.Read, &gone); !errors.Is(err, recipe.ErrNoInstance) || !errors.Is(err, errkind.ErrNotFound) {
+		t.Errorf("instanceWithRecipe of an instance whose recipe is gone: %v", err)
+	}
+}
