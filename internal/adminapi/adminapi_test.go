@@ -166,6 +166,7 @@ func (ta *testAPI) addRecipe(t *testing.T) recipeJSON {
 }
 
 func TestAuth(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, true)
 	removed, err := apitoken.Create(t.Context(), ta.db, "old", ta.now)
 	if err != nil {
@@ -214,6 +215,7 @@ func TestAuth(t *testing.T) {
 }
 
 func TestTokenLastUsed(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	lastUsed := func() int64 {
 		rows, err := ta.db.Read.ListTokens(t.Context())
@@ -252,6 +254,7 @@ func TestTokenLastUsed(t *testing.T) {
 }
 
 func TestTokens(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	ctx := t.Context()
 	if _, err := apitoken.Create(ctx, ta.db, "test", ta.now); !errors.Is(err, apitoken.ErrExists) {
@@ -282,6 +285,7 @@ func TestTokens(t *testing.T) {
 }
 
 func TestDevices(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	dev := ta.addDevice(t)
 	err := ta.db.Write.UpsertDeviceState(t.Context(), db.UpsertDeviceStateParams{
@@ -310,6 +314,7 @@ func TestDevices(t *testing.T) {
 }
 
 func TestJoin(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	var j joinJSON
 	ta.call(t, "GET", "/api/v1/join", "", 200, &j)
@@ -346,6 +351,7 @@ func TestJoin(t *testing.T) {
 		{"empty", ``, "bad request body"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			w := ta.do(t, "PUT", "/api/v1/join", strings.NewReader(tc.body))
 			if w.Code != 400 || !strings.Contains(w.Body.String(), tc.contains) {
 				t.Errorf("status %d: %s", w.Code, w.Body)
@@ -363,6 +369,7 @@ func TestJoin(t *testing.T) {
 }
 
 func TestCalibrate(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	dev := ta.addDevice(t)
 	var c calibrateResponse
@@ -389,6 +396,7 @@ func TestCalibrate(t *testing.T) {
 }
 
 func TestRecipes(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	rec := ta.addRecipe(t)
 	if rec.Name != "Weather" || rec.RefreshSeconds != 3600 || rec.Source != "upload" || rec.InstalledAt != ta.now.Unix() {
@@ -425,6 +433,9 @@ func TestRecipes(t *testing.T) {
 		{"zip with parameters", "application/zip; charset=binary", good, 201},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ta := newTestAPI(t, false)
+			ta.addRecipe(t)
 			before, err := ta.db.Read.ListRecipes(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -452,14 +463,15 @@ func TestRecipes(t *testing.T) {
 			if len(entries) != len(after) {
 				t.Errorf("recipes dir has %d entries for %d recipes", len(entries), len(after))
 			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(ta.recipes), "escape")); err == nil {
+				t.Error("the zip escaped the recipes directory")
+			}
 		})
-	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(ta.recipes), "escape")); err == nil {
-		t.Error("the zip escaped the recipes directory")
 	}
 }
 
 func TestInstances(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, true)
 	rec := ta.addRecipe(t)
 	body := `{"recipe_id": ` + strconv.FormatInt(rec.ID, 10) + `, "name": "Home", "palette": "bw", "fields": {"city": "Oslo"}, "secrets": {"zkey": "` + testSecret + `", "apikey": "` + testSecret + `"}}`
@@ -526,6 +538,7 @@ func TestInstances(t *testing.T) {
 // refuses a new secret value, and that it still lists an instance whose
 // secrets were sealed earlier, with secret_fields null.
 func TestInstanceSecretsNeedKey(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	rec := ta.addRecipe(t)
 	recID := strconv.FormatInt(rec.ID, 10)
@@ -567,6 +580,7 @@ func TestInstanceSecretsNeedKey(t *testing.T) {
 }
 
 func TestPlaylists(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	ta.addDevice(t)
 	rec := ta.addRecipe(t)
@@ -630,6 +644,7 @@ func TestPlaylists(t *testing.T) {
 // of items and the schedule of playlists: what a successful PATCH answers and
 // stores, and that a refused one, whatever else it asked for, changes nothing.
 func TestPatchPlaylists(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	rec := ta.addRecipe(t)
 	var inst instanceJSON
@@ -730,6 +745,7 @@ func TestPatchPlaylists(t *testing.T) {
 }
 
 func TestRenders(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	dev := ta.addDevice(t)
 	rec := ta.addRecipe(t)
@@ -768,6 +784,7 @@ func TestRenders(t *testing.T) {
 // TestServerError checks that a failure the caller did not cause is
 // answered with a generic message, not the detail.
 func TestServerError(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, true)
 	rec := ta.addRecipe(t)
 	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "secrets": {"k": "hunter2"}}`, 201, nil)
@@ -784,6 +801,7 @@ func TestServerError(t *testing.T) {
 // own read timeout still completes, since the upload routes set their own
 // deadlines.
 func TestSlowUpload(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	srv := httptest.NewUnstartedServer(ta.mux)
 	srv.Config.ReadTimeout = 200 * time.Millisecond
@@ -820,6 +838,7 @@ func TestSlowUpload(t *testing.T) {
 // error from each package that wraps one, and that an error of no kind is a
 // 500 whose message is not shown.
 func TestFailStatus(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -866,15 +885,10 @@ func TestFailStatus(t *testing.T) {
 // shows secret_fields null in the list and in a single GET, and does not
 // fail the list for the other instances.
 func TestInstanceSecretsUnreadable(t *testing.T) {
-	ta := newTestAPI(t, true)
-	rec := ta.addRecipe(t)
+	t.Parallel()
 	other, err := secrets.Parse(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
 	if err != nil {
 		t.Fatal(err)
-	}
-	good := ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "good", "secrets": {"k": "`+testSecret+`"}}`, 201, nil)
-	if !strings.Contains(good.Body.String(), `"secret_fields":["k"]`) {
-		t.Fatalf("good instance: %s", good.Body)
 	}
 	for _, tc := range []struct {
 		name string
@@ -885,6 +899,13 @@ func TestInstanceSecretsUnreadable(t *testing.T) {
 		{"no binding", nil, []byte{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ta := newTestAPI(t, true)
+			rec := ta.addRecipe(t)
+			good := ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "good", "secrets": {"k": "`+testSecret+`"}}`, 201, nil)
+			if !strings.Contains(good.Body.String(), `"secret_fields":["k"]`) {
+				t.Fatalf("good instance: %s", good.Body)
+			}
 			inst, err := ta.db.Write.CreateInstance(t.Context(), db.CreateInstanceParams{
 				RecipeID: rec.ID, Name: tc.name, FieldValues: `{"city":"Oslo"}`, Palette: "bw", CreatedAt: 1,
 			})
@@ -931,6 +952,7 @@ func TestInstanceSecretsUnreadable(t *testing.T) {
 // value, trailing white space, and a trailing byte over the size limit,
 // which must still come back as a MaxBytesError and not a bad body.
 func TestDecode(t *testing.T) {
+	t.Parallel()
 	type body struct {
 		N int `json:"n"`
 	}
@@ -956,6 +978,7 @@ func TestDecode(t *testing.T) {
 		{"too big inside", `{"n": "` + strings.Repeat("x", maxJSONBody) + `"}`, false, 0, "big"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/", strings.NewReader(tc.in))
 			var v body
 			err := decode(httptest.NewRecorder(), r, &v, tc.emptyOK)

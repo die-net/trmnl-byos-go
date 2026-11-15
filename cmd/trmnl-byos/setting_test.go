@@ -18,6 +18,7 @@ func runSetting(t *testing.T, args ...string) (string, error) {
 }
 
 func TestSetting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	list := func() map[string][]string {
 		t.Helper()
@@ -57,6 +58,7 @@ func TestSetting(t *testing.T) {
 }
 
 func TestSettingRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -75,6 +77,7 @@ func TestSettingRefused(t *testing.T) {
 		{"no subcommand", nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			args := tc.args
 			if len(args) > 0 {

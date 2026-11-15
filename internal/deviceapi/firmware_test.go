@@ -52,6 +52,7 @@ func firmwareDisplayHeaders(token, version string) map[string]string {
 }
 
 func TestDisplayOffersFirmware(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	token := ts.register(t)
 	body := []byte("pretend this is a firmware image")
@@ -151,6 +152,7 @@ func withModel(h map[string]string, v string) map[string]string {
 // TestDisplayFirmwareOnlyToTheCanary checks that a second device is offered
 // nothing until the canary reports the new version.
 func TestDisplayFirmwareOnlyToTheCanary(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	canaryToken := ts.register(t)
 	// A second device of the same model.
@@ -194,6 +196,7 @@ func TestDisplayFirmwareOnlyToTheCanary(t *testing.T) {
 }
 
 func TestFirmwareDownloadRefusals(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.register(t)
 	fw := ts.addFirmware(t, []byte("image"))
@@ -219,6 +222,7 @@ func TestFirmwareDownloadRefusals(t *testing.T) {
 // TestFirmwareDownloadHeaders checks that the file is served by
 // http.ServeContent, with its length, so a client can resume.
 func TestFirmwareDownloadHeaders(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.register(t)
 	if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
@@ -247,6 +251,7 @@ func TestFirmwareDownloadHeaders(t *testing.T) {
 // is told to update three times and then not again, however many times it
 // wakes.
 func TestDisplayFirmwareOfferCap(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	token := ts.register(t)
 	if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
@@ -273,6 +278,7 @@ func TestDisplayFirmwareOfferCap(t *testing.T) {
 // firmware version and sends no Model header is offered nothing, even
 // though the stored model would qualify. The stored copy keeps its model.
 func TestDisplayNoModelHeaderNoOffer(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	token := ts.register(t)
 	fw := ts.addFirmware(t, []byte("image"))

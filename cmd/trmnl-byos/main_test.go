@@ -21,6 +21,7 @@ func newServer(t *testing.T, addr string) *http.Server {
 }
 
 func TestListenAndServeStopsWithContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- listenAndServe(ctx, newServer(t, "127.0.0.1:0"), time.Second) }()
@@ -39,6 +40,7 @@ func TestListenAndServeStopsWithContext(t *testing.T) {
 // cannot listen ends the group, and the loops beside it return before Wait
 // does, so the database can be closed after it.
 func TestGroupStopsWhenServerCannotListen(t *testing.T) {
+	t.Parallel()
 	busy, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

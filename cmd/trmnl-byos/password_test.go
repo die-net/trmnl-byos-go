@@ -31,6 +31,7 @@ func stdin(t *testing.T, s string) *os.File {
 }
 
 func TestPasswordFromStdin(t *testing.T) {
+	t.Parallel()
 	const pw = "correct horse battery"
 	for _, tc := range []struct {
 		name  string
@@ -48,6 +49,7 @@ func TestPasswordFromStdin(t *testing.T) {
 		{"empty", "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			var out bytes.Buffer
 			err := password(t.Context(), []string{"-data", dir}, stdin(t, tc.input), &out)
@@ -76,6 +78,7 @@ func TestPasswordFromStdin(t *testing.T) {
 }
 
 func TestPasswordTooShortIsInvalid(t *testing.T) {
+	t.Parallel()
 	err := password(t.Context(), []string{"-data", t.TempDir()}, stdin(t, "short\n"), &bytes.Buffer{})
 	if !errors.Is(err, errkind.ErrInvalid) {
 		t.Fatalf("err = %v, want invalid input", err)

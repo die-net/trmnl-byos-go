@@ -29,6 +29,7 @@ func put(t *testing.T, c *Cache, k Key, name, body string) {
 }
 
 func TestRoundTrip(t *testing.T) {
+	t.Parallel()
 	c, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +64,7 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestAbort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c, err := New(dir)
 	if err != nil {
@@ -81,6 +83,7 @@ func TestAbort(t *testing.T) {
 }
 
 func TestSweep(t *testing.T) {
+	t.Parallel()
 	c, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

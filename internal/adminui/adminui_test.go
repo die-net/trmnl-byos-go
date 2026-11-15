@@ -110,6 +110,7 @@ func (tu *testUI) signIn(t *testing.T) *http.Cookie {
 func cookieHeader(c *http.Cookie) string { return c.Name + "=" + c.Value }
 
 func TestLoginCookie(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		cfg    Config
@@ -123,6 +124,7 @@ func TestLoginCookie(t *testing.T) {
 		{"https public URL, any case", Config{PublicURL: "HTTPS://trmnl.example.com"}, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tu := newTestUI(t, tc.cfg, true)
 			req := httptest.NewRequestWithContext(t.Context(), "POST", "/login", strings.NewReader(url.Values{"password": {testPassword}}.Encode()))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -147,6 +149,7 @@ func TestLoginCookie(t *testing.T) {
 }
 
 func TestLoginFailures(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		setPassword bool
@@ -160,6 +163,7 @@ func TestLoginFailures(t *testing.T) {
 		{"no password set", false, testPassword, 401, "Run trmnl-byos password", "Wrong password."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tu := newTestUI(t, Config{}, tc.setPassword)
 			w := tu.login(t, tc.password)
 			if w.Code != tc.want {
@@ -177,6 +181,7 @@ func TestLoginFailures(t *testing.T) {
 }
 
 func TestLoginRedirectIgnoresNext(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	w := tu.do(t, "POST", "/login?next=https://evil.example/", url.Values{"password": {testPassword}, "next": {"https://evil.example/"}}.Encode())
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
@@ -185,7 +190,7 @@ func TestLoginRedirectIgnoresNext(t *testing.T) {
 }
 
 func TestPagesNeedSession(t *testing.T) {
-	tu := newTestUI(t, Config{}, true)
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		cookie string
@@ -194,6 +199,8 @@ func TestPagesNeedSession(t *testing.T) {
 		{"unknown token", adminauth.CookieName + "=nope"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
 			var h []string
 			if tc.cookie != "" {
 				h = []string{"Cookie", tc.cookie}
@@ -207,25 +214,30 @@ func TestPagesNeedSession(t *testing.T) {
 		})
 	}
 
-	c := tu.signIn(t)
-	if w := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/devices" {
-		t.Fatalf("signed-in home: status %d to %q, want 303 to /devices", w.Code, w.Header().Get("Location"))
-	}
-	if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `action="/logout"`) {
-		t.Fatalf("signed-in devices: status %d, body %q", w.Code, w.Body)
-	}
-	// The login page sends a signed-in admin home.
-	if w := tu.do(t, "GET", "/login", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
-		t.Errorf("GET /login signed in: status %d to %q", w.Code, w.Header().Get("Location"))
-	}
-	// A session that has expired is not one.
-	tu.now = tu.now.Add(adminauth.Lifetime)
-	if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther {
-		t.Errorf("expired session: status %d, want 303", w.Code)
-	}
+	t.Run("signed in", func(t *testing.T) {
+		t.Parallel()
+		tu := newTestUI(t, Config{}, true)
+		c := tu.signIn(t)
+		if w := tu.do(t, "GET", "/", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/devices" {
+			t.Fatalf("signed-in home: status %d to %q, want 303 to /devices", w.Code, w.Header().Get("Location"))
+		}
+		if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `action="/logout"`) {
+			t.Fatalf("signed-in devices: status %d, body %q", w.Code, w.Body)
+		}
+		// The login page sends a signed-in admin home.
+		if w := tu.do(t, "GET", "/login", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+			t.Errorf("GET /login signed in: status %d to %q", w.Code, w.Header().Get("Location"))
+		}
+		// A session that has expired is not one.
+		tu.now = tu.now.Add(adminauth.Lifetime)
+		if w := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)); w.Code != http.StatusSeeOther {
+			t.Errorf("expired session: status %d, want 303", w.Code)
+		}
+	})
 }
 
 func TestLogout(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{PublicURL: "https://trmnl.example.com"}, true)
 	c := tu.signIn(t)
 	other := tu.signIn(t)
@@ -249,6 +261,7 @@ func TestLogout(t *testing.T) {
 // and logout, and does not sign anyone out, while a same-origin post and a
 // post with neither header, as from a script, go through.
 func TestCrossOrigin(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		headers []string
@@ -262,6 +275,7 @@ func TestCrossOrigin(t *testing.T) {
 		{"other Origin", []string{"Origin", "https://evil.example"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tu := newTestUI(t, Config{}, true)
 			c := tu.signIn(t)
 			w := tu.login(t, testPassword, tc.headers...)
@@ -285,6 +299,7 @@ func TestCrossOrigin(t *testing.T) {
 }
 
 func TestFormTooBig(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	w := tu.login(t, strings.Repeat("a", maxFormBody+1))
 	if w.Code != http.StatusRequestEntityTooLarge {
@@ -293,6 +308,7 @@ func TestFormTooBig(t *testing.T) {
 }
 
 func TestHeaders(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	for _, tc := range []struct {
@@ -315,6 +331,7 @@ func TestHeaders(t *testing.T) {
 		{"static directory", "GET", "/static/", nil, 404, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			body := ""
 			if tc.method == "POST" {
 				body = "password=x"
@@ -338,6 +355,7 @@ func TestHeaders(t *testing.T) {
 }
 
 func TestStaticAndMarkup(t *testing.T) {
+	t.Parallel()
 	tu := newTestUI(t, Config{}, true)
 	w := tu.do(t, "GET", "/static/app.css", "")
 	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {

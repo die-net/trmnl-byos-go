@@ -50,6 +50,7 @@ func withPassword(t *testing.T) *db.Client {
 }
 
 func TestSetPasswordLength(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// minSetting is the min_password_length setting, or 0 to leave the
@@ -69,6 +70,7 @@ func TestSetPasswordLength(t *testing.T) {
 		{"set to 20, 20 bytes", 20, strings.Repeat("a", 20), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			client := openTest(t)
 			if tc.minSetting != 0 {
 				if err := settings.Set(t.Context(), client, settings.KeyMinPasswordLength, strconv.Itoa(tc.minSetting), t0); err != nil {
@@ -98,6 +100,7 @@ func TestSetPasswordLength(t *testing.T) {
 // TestRaisedMinimumKeepsOldPassword checks that the minimum applies only
 // when a password is set: one set under a lower minimum still logs in.
 func TestRaisedMinimumKeepsOldPassword(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := openTest(t)
 	if err := settings.Set(ctx, client, settings.KeyMinPasswordLength, "6", t0); err != nil {
@@ -120,6 +123,7 @@ func TestRaisedMinimumKeepsOldPassword(t *testing.T) {
 // TestSetPasswordCorruptMinimum checks that an unusable setting is an error
 // naming the key, not a silent default.
 func TestSetPasswordCorruptMinimum(t *testing.T) {
+	t.Parallel()
 	client := openTest(t)
 	if err := client.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyMinPasswordLength, Value: "lots", UpdatedAt: 1}); err != nil {
 		t.Fatal(err)
@@ -131,6 +135,7 @@ func TestSetPasswordCorruptMinimum(t *testing.T) {
 }
 
 func TestCheckPassword(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := withPassword(t)
 	for _, tc := range []struct {
@@ -144,6 +149,7 @@ func TestCheckPassword(t *testing.T) {
 		{"too long", strings.Repeat("a", settings.MaxPasswordLen+1), ErrWrongPassword},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if err := CheckPassword(ctx, client, tc.pw); !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
@@ -157,30 +163,29 @@ func TestCheckPassword(t *testing.T) {
 // TestHashUsesStoredParams checks that a hash made with one set of settings
 // still verifies after the settings for new hashes change.
 func TestHashUsesStoredParams(t *testing.T) {
-	phc, err := hashPassword(t.Context(), testPassword)
+	t.Parallel()
+	phc, err := hashPassword(t.Context(), testPassword, hashParams)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(phc, "$argon2id$v=19$m=64,t=1,p=1$") {
 		t.Fatalf("hash %q is not a PHC string with the test settings", phc)
 	}
-	old := hashParams
-	t.Cleanup(func() { hashParams = old })
-	hashParams = argonParams{memoryKiB: 128, passes: 2, threads: 2}
 	if ok, err := verifyHash(t.Context(), phc, testPassword); err != nil || !ok {
 		t.Fatalf("verify = %v, %v, want true", ok, err)
 	}
 	if ok, err := verifyHash(t.Context(), phc, "another password"); err != nil || ok {
 		t.Fatalf("verify wrong = %v, %v, want false", ok, err)
 	}
-	phc2, err := hashPassword(t.Context(), testPassword)
+	phc2, err := hashPassword(t.Context(), testPassword, argonParams{memoryKiB: 128, passes: 2, threads: 2})
 	if err != nil || phc2 == phc || !strings.Contains(phc2, "m=128,t=2,p=2") {
 		t.Fatalf("second hash %q, %v: want a new salt and the new settings", phc2, err)
 	}
 }
 
 func TestBadStoredHash(t *testing.T) {
-	good, err := hashPassword(t.Context(), testPassword)
+	t.Parallel()
+	good, err := hashPassword(t.Context(), testPassword, hashParams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +219,7 @@ func TestBadStoredHash(t *testing.T) {
 		{"key too short", with(5, "AAAA")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			client := openTest(t)
 			err := client.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settingPasswordHash, Value: tc.phc, UpdatedAt: 1})
 			if err != nil {
@@ -230,6 +236,7 @@ func TestBadStoredHash(t *testing.T) {
 }
 
 func TestLoginWrongOrUnset(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := withPassword(t)
 	if tok, err := Login(ctx, client, "wrong password!", t0); !errors.Is(err, ErrWrongPassword) || tok != "" {
@@ -245,6 +252,7 @@ func TestLoginWrongOrUnset(t *testing.T) {
 }
 
 func TestSessionLifecycle(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := withPassword(t)
 	tok, err := Login(ctx, client, testPassword, t0)
@@ -308,6 +316,7 @@ func TestSessionLifecycle(t *testing.T) {
 }
 
 func TestSessionExpires(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := withPassword(t)
 	tok, err := Login(ctx, client, testPassword, t0)
@@ -328,6 +337,7 @@ func TestSessionExpires(t *testing.T) {
 }
 
 func TestLoginMakesNewToken(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := withPassword(t)
 	a, err := Login(ctx, client, testPassword, t0)
@@ -341,6 +351,7 @@ func TestLoginMakesNewToken(t *testing.T) {
 }
 
 func TestLogoutAndSetPassword(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := withPassword(t)
 	a, _ := Login(ctx, client, testPassword, t0)
@@ -376,6 +387,7 @@ func TestLogoutAndSetPassword(t *testing.T) {
 }
 
 func TestSignedIn(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := withPassword(t)
 	tok, err := Login(ctx, client, testPassword, t0)
@@ -392,6 +404,7 @@ func TestSignedIn(t *testing.T) {
 		{"none", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := httptest.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
 			if tc.cookie != "" {
 				r.Header.Set("Cookie", CookieName+"="+tc.cookie)
@@ -404,6 +417,7 @@ func TestSignedIn(t *testing.T) {
 }
 
 func TestCookie(t *testing.T) {
+	t.Parallel()
 	for _, secure := range []bool{false, true} {
 		c := NewCookie("tok", secure)
 		if c.Name != "trmnl_session" || c.Value != "tok" || c.Path != "/" || !c.HttpOnly ||
@@ -420,6 +434,7 @@ func TestCookie(t *testing.T) {
 // returns when its context is canceled, and that the slot is free again once
 // the holder is done.
 func TestHashWaitsForSlot(t *testing.T) {
+	t.Parallel()
 	client := withPassword(t)
 	hashSlot <- struct{}{}
 	held := true

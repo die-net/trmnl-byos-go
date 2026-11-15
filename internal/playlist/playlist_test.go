@@ -6,6 +6,7 @@ import (
 )
 
 func TestAdvance(t *testing.T) {
+	t.Parallel()
 	t0 := time.Unix(1_800_000_000, 0)
 	mins := func(m int) time.Duration { return time.Duration(m) * time.Minute }
 	timed := []Item{{ID: 10, Duration: mins(10)}, {ID: 20, Duration: mins(5)}, {ID: 30, Duration: mins(15)}}
@@ -42,6 +43,7 @@ func TestAdvance(t *testing.T) {
 }
 
 func TestAdvanceSkip(t *testing.T) {
+	t.Parallel()
 	t0 := time.Unix(1_800_000_000, 0)
 	mins := func(m int) time.Duration { return time.Duration(m) * time.Minute }
 	// The middle item is not shown now.
@@ -87,6 +89,7 @@ func TestAdvanceSkip(t *testing.T) {
 }
 
 func TestPressed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		source string
 		want   bool

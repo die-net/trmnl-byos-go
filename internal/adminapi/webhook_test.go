@@ -34,6 +34,7 @@ func (ta *testAPI) push(t *testing.T, path, body string, want int) string {
 }
 
 func TestPushNeedsToken(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	_, path := ta.newInstancePath(t)
 	for _, method := range []string{"GET", "POST"} {
@@ -55,6 +56,7 @@ func TestPushNeedsToken(t *testing.T) {
 }
 
 func TestPushStrategies(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	_, path := ta.newInstancePath(t)
 	ta.wantEmpty(t, path)
@@ -104,6 +106,7 @@ func (ta *testAPI) wantEmpty(t *testing.T, path string) {
 }
 
 func TestPushRefusals(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	_, path := ta.newInstancePath(t)
 	ta.call(t, "POST", path, `{"merge_variables": {"keep": 1}}`, 200, nil)
@@ -141,6 +144,7 @@ func TestPushRefusals(t *testing.T) {
 }
 
 func TestPushRateLimit(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	_, path := ta.newInstancePath(t)
 	_, other := ta.newInstancePath(t)
@@ -166,6 +170,7 @@ func TestPushRateLimit(t *testing.T) {
 }
 
 func TestPushDeletedWithInstance(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	id, path := ta.newInstancePath(t)
 	ta.call(t, "POST", path, `{"merge_variables": {"a": 1}}`, 200, nil)

@@ -25,6 +25,7 @@ func calibrationPNG(p Profile, dot int) ([]byte, error) {
 // at the smallest PNG bit depth for its gray levels, and that a 4-level
 // screen has more than 2 colors, which is what puts an OG in gray mode.
 func TestRenderBitDepth(t *testing.T) {
+	t.Parallel()
 	lines := []Line{{Text: "Connected", Size: 44, Bold: true}, {Text: "small anti-aliased text", Size: 14}}
 	for _, tc := range []struct {
 		levels, depth int
@@ -63,12 +64,14 @@ func TestRenderBitDepth(t *testing.T) {
 
 // TestRenderScales checks that a TRMNL X-sized screen renders.
 func TestRenderScales(t *testing.T) {
+	t.Parallel()
 	if _, err := renderPNG(Profile{Width: 1872, Height: 1404, Levels: 16}, []Line{{Text: "Hello", Size: 44}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestRenderRejects(t *testing.T) {
+	t.Parallel()
 	for _, p := range []Profile{
 		{Width: 0, Height: 480, Levels: 4},
 		{Width: 800, Height: -1, Levels: 4},
@@ -84,6 +87,7 @@ func TestRenderRejects(t *testing.T) {
 // TestSwatches checks that a swatch row shows every gray level the panel
 // has, and fits on panels from the OG to the TRMNL X.
 func TestSwatches(t *testing.T) {
+	t.Parallel()
 	for _, p := range []Profile{
 		{Width: 800, Height: 480, Levels: 2},
 		{Width: 800, Height: 480, Levels: 4},
@@ -125,6 +129,7 @@ func TestSwatches(t *testing.T) {
 // TestDitherBlack checks that the patch for k has exactly k of every 16
 // dots black in any 4x4-dot tile, for each dot size.
 func TestDitherBlack(t *testing.T) {
+	t.Parallel()
 	for _, dot := range []int{1, 2} {
 		for k := range CalibrationSteps + 1 {
 			for _, origin := range [][2]int{{0, 0}, {5, 7}} {
@@ -147,6 +152,7 @@ func TestDitherBlack(t *testing.T) {
 // TestCalibration checks that the calibration screen uses every gray level
 // on panels with grays, and that a 2-level panel is refused.
 func TestCalibration(t *testing.T) {
+	t.Parallel()
 	for _, p := range []Profile{
 		{Width: 800, Height: 480, Levels: 4},
 		{Width: 480, Height: 800, Levels: 4},
@@ -182,6 +188,7 @@ var ogLight = []float64{0, 2.0 / 16, 6.0 / 16, 1}
 // TestQuantizeByLight checks that coverage maps to the level nearest in
 // light, with measured levels and with the evenly spaced sRGB default.
 func TestQuantizeByLight(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		light []float64
@@ -213,6 +220,7 @@ func TestQuantizeByLight(t *testing.T) {
 // TestLevelFillsExact checks that filling with a level's ink encodes as that
 // level, for measured and default light.
 func TestLevelFillsExact(t *testing.T) {
+	t.Parallel()
 	for _, light := range [][]float64{ogLight, nil} {
 		p := Profile{Width: 4, Height: 1, Levels: 4, Light: light}
 		img := blank(p)
@@ -229,6 +237,7 @@ func TestLevelFillsExact(t *testing.T) {
 }
 
 func TestProfileLightRejects(t *testing.T) {
+	t.Parallel()
 	for _, light := range [][]float64{
 		{0, 1},              // wrong length
 		{0, 0.5, 0.4, 1},    // not rising

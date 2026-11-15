@@ -93,6 +93,7 @@ func (ts *testServer) saveDeviceRender(t *testing.T, instance, device int64, tex
 // one's time is up, a failed render, a button press, and a render too old
 // to show.
 func TestDisplayPlaylist(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key, first, second := ts.playlistDevice(t)
 	timer := displayHeaders(testMAC, key)
@@ -162,6 +163,7 @@ func TestDisplayPlaylist(t *testing.T) {
 // each get the render built for them, and that a device whose render is not
 // built yet does not get the other's.
 func TestDisplayPerDeviceRender(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	keyA, instance, _ := ts.playlistDevice(t)
 	devA, err := ts.db.Read.GetDeviceByMAC(t.Context(), testMAC)
@@ -208,6 +210,7 @@ func TestDisplayPerDeviceRender(t *testing.T) {
 }
 
 func TestClip(t *testing.T) {
+	t.Parallel()
 	long := string(bytes.Repeat([]byte("é"), 100))
 	for _, tc := range []struct{ in, want string }{
 		{"short", "short"},
@@ -223,6 +226,7 @@ func TestClip(t *testing.T) {
 // TestScreenCacheIsBounded checks that the table of drawn system screens
 // does not grow without limit when the text keeps changing.
 func TestScreenCacheIsBounded(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	sp := screen.Profile{Width: 80, Height: 40, Levels: 2}
 	for i := range maxScreens + 20 {
@@ -242,6 +246,7 @@ func TestScreenCacheIsBounded(t *testing.T) {
 // leaves the image unnamed, and expiry must not delete it from under the
 // device because it was last stored long ago.
 func TestDisplayKeepsRenderImage(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key, first, _ := ts.playlistDevice(t)
 	img := ts.saveRender(t, first, "")
@@ -267,6 +272,7 @@ func TestDisplayKeepsRenderImage(t *testing.T) {
 // is deleted so the scheduler builds it again. A row replaced by a newer
 // build, which names a different image, is not deleted.
 func TestDisplayMissingRenderImage(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key, first, _ := ts.playlistDevice(t)
 	img := ts.saveRender(t, first, "")
@@ -343,6 +349,7 @@ func (ts *testServer) nothingScheduled(t *testing.T) string {
 // follows gets the "Nothing scheduled now" screen, not the last item, with
 // the usual refresh since nothing changes soon.
 func TestDisplaySchedule(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, testZone)
 	key, first, second := ts.playlistDevice(t)
@@ -382,6 +389,7 @@ func TestDisplaySchedule(t *testing.T) {
 // shown one is, and a playlist whose items are all hidden shows the
 // "Nothing scheduled now" screen.
 func TestDisplayHiddenItem(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key, first, second := ts.playlistDevice(t)
 	imgFirst, imgSecond := ts.saveRender(t, first, ""), ts.saveRender(t, second, "")
@@ -424,6 +432,7 @@ func TestDisplayHiddenItem(t *testing.T) {
 // active, the device shows the next playlist, which is the unscheduled
 // default, and goes back when the schedule opens.
 func TestDisplayDefaultPlaylist(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, testZone)
 	key, first, _ := ts.playlistDevice(t)

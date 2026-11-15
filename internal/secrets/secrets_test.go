@@ -20,6 +20,7 @@ func newKey(t *testing.T) *Key {
 }
 
 func TestSealOpen(t *testing.T) {
+	t.Parallel()
 	k := newKey(t)
 	sealed, err := k.Seal([]byte("hunter2"), []byte("1"))
 	if err != nil {
@@ -48,6 +49,7 @@ func TestSealOpen(t *testing.T) {
 }
 
 func TestBadKeys(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, key string }{
 		{"not base64", "!!!"},
 		{"short", base64.StdEncoding.EncodeToString(make([]byte, 16))},

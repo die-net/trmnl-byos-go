@@ -95,6 +95,7 @@ func (ta *testAPI) firmwareFiles(t *testing.T) []string {
 }
 
 func TestFirmwareUpload(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	image := testImage(chipS3, "1a2b3c4")
 	sum := sha256.Sum256(image)
@@ -167,6 +168,7 @@ func decodeBody(t *testing.T, w *httptest.ResponseRecorder, want int, out any) {
 }
 
 func TestFirmwareNeedsToken(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	for _, r := range []struct{ method, path string }{
 		{"GET", "/api/v1/firmware"},
@@ -182,6 +184,7 @@ func TestFirmwareNeedsToken(t *testing.T) {
 }
 
 func TestFirmwareRollout(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	dev := ta.addDevice(t)
 	var fw firmwareJSON
@@ -259,6 +262,7 @@ func TestFirmwareRollout(t *testing.T) {
 }
 
 func TestPatchDevice(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	ta.addDevice(t)
 	var d deviceJSON
@@ -283,6 +287,7 @@ func TestPatchDevice(t *testing.T) {
 }
 
 func TestPatchDeviceName(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	ta.addDevice(t)
 	path := "/api/v1/devices/" + testFriend

@@ -188,6 +188,7 @@ func (ts *testServer) fetchImage(t *testing.T, url, filename string) {
 // is open, for a new MAC and for a known one alike, and that each setup
 // issues a new key and retires the old one.
 func TestSetupJoinWindow(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 
 	m := ts.getJSON(t, "/api/setup", setupHeaders(testMAC))
@@ -243,6 +244,7 @@ func TestSetupJoinWindow(t *testing.T) {
 // the size headers give for an unknown one. Firmware 1.8.10 sends no size
 // on setup; newer firmware does.
 func TestSetupScreenSize(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	for _, tc := range []struct {
 		name          string
@@ -273,6 +275,7 @@ func TestSetupScreenSize(t *testing.T) {
 }
 
 func TestSetupBadID(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	for _, id := range []string{"", "not a mac", "D8:3B:DA:12:34"} {
 		if code, _ := ts.do(t, http.MethodGet, "/api/setup", setupHeaders(id), nil); code != http.StatusBadRequest {
@@ -285,8 +288,7 @@ func TestSetupBadID(t *testing.T) {
 // refresh_seconds setting, read at each wake so a change needs no restart,
 // and that an unusable stored value gives the default, not a failure.
 func TestDisplayRefreshFollowsSetting(t *testing.T) {
-	ts := newTestServer(t)
-	key := ts.register(t)
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// stored is written raw to the setting, or "" to delete the row.
@@ -302,6 +304,9 @@ func TestDisplayRefreshFollowsSetting(t *testing.T) {
 		{"reset", "", 900},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ts := newTestServer(t)
+			key := ts.register(t)
 			var err error
 			if tc.stored == "" {
 				err = ts.db.Write.DeleteSetting(t.Context(), settings.KeyRefreshSeconds)
@@ -323,6 +328,7 @@ func TestDisplayRefreshFollowsSetting(t *testing.T) {
 // refresh_rate, a filename that names the image, the same filename on the
 // next wake, and the device's state saved.
 func TestDisplay(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 
@@ -364,6 +370,7 @@ func TestDisplay(t *testing.T) {
 // TestDisplayFirmwareChange checks that a new Model or FW-Version header
 // updates the device.
 func TestDisplayFirmwareChange(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	h := displayHeaders(testMAC, key)
@@ -381,6 +388,7 @@ func TestDisplayFirmwareChange(t *testing.T) {
 // An unknown MAC, or a request with no ID, may come from a server that lost
 // its database, so it is never reset.
 func TestDisplayRefused(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	for _, tc := range []struct {
@@ -413,6 +421,7 @@ func TestDisplayRefused(t *testing.T) {
 // TestDisplayWithoutID checks that a client that sends no ID header, as
 // some non-TRMNL clients do, is found by its token alone.
 func TestDisplayWithoutID(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	h := displayHeaders(testMAC, key)
@@ -438,6 +447,7 @@ func logBody(n int) []byte {
 // TestLog checks that log entries are stored whole, that only the newest
 // keepLogs are kept, and that a wrong token is refused.
 func TestLog(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	// As captured from firmware 1.8.10.
@@ -485,6 +495,7 @@ func TestLog(t *testing.T) {
 // calibration screen until it ends, wakes the device when it ends, and then
 // goes back to the usual screen.
 func TestShowScreenCalibrate(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	usual := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))["filename"]
@@ -531,6 +542,7 @@ func TestShowScreenCalibrate(t *testing.T) {
 // deleted, as image expiry does, is drawn again on the next wake rather
 // than handed out as a name with no file behind it.
 func TestScreenRedrawnAfterExpiry(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
@@ -564,6 +576,7 @@ func (ts *testServer) imageOf(t *testing.T, m map[string]any) (image.Config, int
 // device's size and gray depth, from its Model header when known and its
 // size headers otherwise.
 func TestDisplayProfiles(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	for _, tc := range []struct {
@@ -606,6 +619,7 @@ func bitsFor(colors int) uint8 {
 // wakes again soon. The "og" model takes at most 90000 bytes, and the
 // render is noise, which a PNG cannot shrink.
 func TestDisplayTooLarge(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key, first, _ := ts.playlistDevice(t)
 	h := displayHeaders(testMAC, key)
@@ -647,6 +661,7 @@ func TestDisplayTooLarge(t *testing.T) {
 // TestCalibrateTwoLevels checks that a panel with no grays to calibrate
 // keeps its usual screen during a calibration override.
 func TestCalibrateTwoLevels(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
 	h := displayHeaders(testMAC, key)
@@ -665,6 +680,7 @@ func TestCalibrateTwoLevels(t *testing.T) {
 // the firmware takes as "keep the screen and wake again soon", and never an
 // HTTP error or a JSON status 500, which would reset the device.
 func TestDisplayInternalFailure(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		breakIt func(t *testing.T, ts *testServer)
@@ -692,6 +708,7 @@ func TestDisplayInternalFailure(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ts := newTestServer(t)
 			key := ts.register(t)
 			tc.breakIt(t, ts)

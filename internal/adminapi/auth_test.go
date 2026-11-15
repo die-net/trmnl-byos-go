@@ -44,6 +44,7 @@ func (ta *testAPI) session(t *testing.T) string {
 // write that rests on it is refused when another site made it, while the
 // same write with a bearer token is not.
 func TestSessionAuth(t *testing.T) {
+	t.Parallel()
 	ta := newTestAPI(t, false)
 	cookie := ta.session(t)
 	const join = `{"for_seconds": 60}`
@@ -71,6 +72,7 @@ func TestSessionAuth(t *testing.T) {
 		{"cookie opens the webhook route", "GET", "/api/custom_plugins/1", "", []string{"Authorization", "", "Cookie", cookie}, 404},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			w := ta.do(t, tc.method, tc.path, strings.NewReader(tc.body), tc.headers...)
 			if w.Code != tc.want {
 				t.Fatalf("status %d, want %d: %s", w.Code, tc.want, w.Body)
@@ -85,47 +87,52 @@ func TestSessionAuth(t *testing.T) {
 // TestSessionAuthEnds checks that a cookie stops working after sign-out,
 // after the password changes and after it expires.
 func TestSessionAuthEnds(t *testing.T) {
-	get := func(ta *testAPI, cookie string) int {
+	t.Parallel()
+	get := func(t *testing.T, ta *testAPI, cookie string) int {
 		t.Helper()
 		return ta.do(t, "GET", "/api/v1/devices", nil, "Authorization", "", "Cookie", cookie).Code
 	}
 	t.Run("logout", func(t *testing.T) {
+		t.Parallel()
 		ta := newTestAPI(t, false)
 		cookie := ta.session(t)
 		if err := adminauth.Logout(t.Context(), ta.db, strings.TrimPrefix(cookie, adminauth.CookieName+"=")); err != nil {
 			t.Fatal(err)
 		}
-		if got := get(ta, cookie); got != http.StatusUnauthorized {
+		if got := get(t, ta, cookie); got != http.StatusUnauthorized {
 			t.Fatalf("status %d after logout, want 401", got)
 		}
 	})
 	t.Run("password change", func(t *testing.T) {
+		t.Parallel()
 		ta := newTestAPI(t, false)
 		cookie := ta.session(t)
 		if err := adminauth.SetPassword(t.Context(), ta.db, "another password!", ta.now); err != nil {
 			t.Fatal(err)
 		}
-		if got := get(ta, cookie); got != http.StatusUnauthorized {
+		if got := get(t, ta, cookie); got != http.StatusUnauthorized {
 			t.Fatalf("status %d after a password change, want 401", got)
 		}
 	})
 	t.Run("expiry", func(t *testing.T) {
+		t.Parallel()
 		ta := newTestAPI(t, false)
 		cookie := ta.session(t)
 		ta.now = ta.now.Add(adminauth.Lifetime)
-		if got := get(ta, cookie); got != http.StatusUnauthorized {
+		if got := get(t, ta, cookie); got != http.StatusUnauthorized {
 			t.Fatalf("status %d after the lifetime, want 401", got)
 		}
 	})
 	t.Run("sliding", func(t *testing.T) {
+		t.Parallel()
 		ta := newTestAPI(t, false)
 		cookie := ta.session(t)
 		ta.now = ta.now.Add(adminauth.Lifetime - time.Hour)
-		if got := get(ta, cookie); got != http.StatusOK {
+		if got := get(t, ta, cookie); got != http.StatusOK {
 			t.Fatalf("status %d just before expiry, want 200", got)
 		}
 		ta.now = ta.now.Add(adminauth.Lifetime - time.Hour)
-		if got := get(ta, cookie); got != http.StatusOK {
+		if got := get(t, ta, cookie); got != http.StatusOK {
 			t.Fatalf("status %d after a use pushed the expiry out, want 200", got)
 		}
 	})

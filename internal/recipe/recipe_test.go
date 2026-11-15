@@ -86,6 +86,7 @@ func prefixed(prefix string, files map[string]string) map[string]string {
 // project with the recipe in src/, and zips with the recipe at the top or
 // inside one directory.
 func TestInstall(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	writeDir(t, filepath.Join(src, "plain"), recipeFiles)
 	writeDir(t, filepath.Join(src, "project"), prefixed("src/", recipeFiles))
@@ -124,6 +125,7 @@ func TestInstall(t *testing.T) {
 }
 
 func TestInstallRefuses(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	writeZip(t, filepath.Join(src, "escape.zip"), map[string]string{"settings.yml": settingsYML, "full.liquid": "x", "../escape": "x"})
 	writeZip(t, filepath.Join(src, "nofull.zip"), map[string]string{"settings.yml": settingsYML})
@@ -151,6 +153,7 @@ func TestInstallRefuses(t *testing.T) {
 }
 
 func TestRefresh(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		minutes int
 		want    time.Duration
@@ -169,6 +172,7 @@ func TestRefresh(t *testing.T) {
 // .trmnlp.yml that names every field value by environment variable, so no
 // value, secret or not, is in a file or read as Liquid.
 func TestProject(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
 	p := NewProject(dir, map[string]string{"city": "{{ evil }}", "api_key": "hunter2"}, "America/Los_Angeles",
@@ -213,6 +217,7 @@ asset_overrides:
 }
 
 func TestInstanceFields(t *testing.T) {
+	t.Parallel()
 	client := openDB(t)
 	rec, err := client.Write.CreateRecipe(t.Context(), db.CreateRecipeParams{Name: "r", Source: "s", RefreshInterval: 900, InstalledAt: 1})
 	if err != nil {
@@ -251,6 +256,7 @@ func TestInstanceFields(t *testing.T) {
 }
 
 func TestUsesDevice(t *testing.T) {
+	t.Parallel()
 	// The marker split across the reader's 32 KiB chunk edge.
 	edge := strings.Repeat("x", 32<<10-5) + "trmnl.device"
 	for _, tc := range []struct {
@@ -276,6 +282,7 @@ func TestUsesDevice(t *testing.T) {
 }
 
 func TestNewDevice(t *testing.T) {
+	t.Parallel()
 	volts, rssi, rate := 3.6, int64(-75), int64(900)
 	got := NewDevice(&db.GetRenderDeviceRow{FriendlyID: "ABC123", FwVersion: "1.8.10", BatteryV: &volts, Rssi: &rssi, LastRefreshRateSent: &rate})
 	if got.FriendlyID != "ABC123" || got.FirmwareVersion != "1.8.10" || got.RefreshIntervalSeconds != 900 ||
@@ -321,6 +328,7 @@ func projectConfig(t *testing.T, p Project) string {
 // values under variables.trmnl.device, as typed YAML that a hostile value
 // cannot break out of, and that a shared project has no variables.
 func TestProjectDevice(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
 	config := func(p Project) string { return projectConfig(t, p) }
@@ -358,6 +366,7 @@ func TestProjectDevice(t *testing.T) {
 }
 
 func TestDeleteInstance(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := openDB(t)
 	rec, err := client.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "r", Source: "s", RefreshInterval: 900, InstalledAt: 1})
@@ -436,6 +445,7 @@ func TestDeleteInstance(t *testing.T) {
 // errkind.ErrInvalid, an unknown recipe with ErrNoRecipe, and that nothing is
 // stored for either.
 func TestCreateInstanceInvalid(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	client := openDB(t)
 	rec, err := client.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "Weather", Source: "s", RefreshInterval: 900, InstalledAt: 1})
@@ -485,6 +495,7 @@ func TestCreateInstanceInvalid(t *testing.T) {
 // file, records where it came from, and leaves no temporary file, also when
 // the reader fails or the zip is refused.
 func TestInstallZip(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	writeZip(t, filepath.Join(src, "r.zip"), recipeFiles)
 	writeZip(t, filepath.Join(src, "escape.zip"), map[string]string{"settings.yml": settingsYML, "full.liquid": "x", "../escape": "x"})
@@ -526,6 +537,7 @@ func TestInstallZip(t *testing.T) {
 // in place leaves no row behind, since the row and the rename share one
 // transaction.
 func TestInstallRenameFails(t *testing.T) {
+	t.Parallel()
 	src := filepath.Join(t.TempDir(), "r")
 	writeDir(t, src, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
 	client := openDB(t)
@@ -548,6 +560,7 @@ func TestInstallRenameFails(t *testing.T) {
 // or names a path both as a file and as a directory, is refused as invalid
 // input and not as an internal failure, and leaves nothing behind.
 func TestInstallZipConflictingNames(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		entries []string
@@ -557,6 +570,7 @@ func TestInstallZipConflictingNames(t *testing.T) {
 		{"directory then file", []string{"settings.yml", "full.liquid", "assets/a.png", "assets"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var buf bytes.Buffer
 			zw := zip.NewWriter(&buf)
 			for _, name := range tc.entries {
@@ -592,6 +606,7 @@ func TestInstallZipConflictingNames(t *testing.T) {
 // TestInstallZipCorruptMember checks that a zip member whose bytes do not
 // match its CRC is refused as invalid input, since the upload is damaged.
 func TestInstallZipCorruptMember(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for name, body := range map[string]string{"settings.yml": settingsYML, "full.liquid": "<div>NEEDLE-PAYLOAD</div>"} {
@@ -625,6 +640,7 @@ func TestInstallZipCorruptMember(t *testing.T) {
 // TestCopierReadVersusWrite checks that only a failure reading a zip member
 // is the upload's fault. A directory source's read error is not marked.
 func TestCopierReadVersusWrite(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("boom")
 	out, err := os.OpenRoot(t.TempDir())
 	if err != nil {
@@ -641,6 +657,7 @@ func TestCopierReadVersusWrite(t *testing.T) {
 // between the rename and the commit, is removed, so the next install does
 // not collide with it, and that a recipe with a row is kept.
 func TestSweep(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	src := filepath.Join(t.TempDir(), "r")
 	writeDir(t, src, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
@@ -672,6 +689,7 @@ func TestSweep(t *testing.T) {
 // TestSweepTemps checks that an old temporary entry is removed, and one a
 // running install may still be using is kept.
 func TestSweepTemps(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	recipes, firmwareDir := t.TempDir(), t.TempDir()
 	old, fresh := now.Add(-2*time.Hour), now.Add(-time.Minute)

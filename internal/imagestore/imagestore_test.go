@@ -35,6 +35,7 @@ func serve(t *testing.T, s *Store, path string) *httptest.ResponseRecorder {
 // for the first two hex digits of its name, that storing it again keeps the
 // name, and that it is served back unchanged.
 func TestPutAndServe(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s, err := New(dir)
 	if err != nil {
@@ -68,6 +69,7 @@ func TestPutAndServe(t *testing.T) {
 // TestServeRejects checks that only well-formed names of stored images are
 // served.
 func TestServeRejects(t *testing.T) {
+	t.Parallel()
 	s, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +96,7 @@ func TestServeRejects(t *testing.T) {
 // TestPutTouches checks that storing existing bytes again leaves the file's
 // contents alone and refreshes its time only once it is touchAfter old.
 func TestPutTouches(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s, err := New(dir)
 	if err != nil {
@@ -132,6 +135,7 @@ func TestPutTouches(t *testing.T) {
 // TestExpire checks that Expire deletes only old images that keep does not
 // name, plus old leftovers from a crashed Put, and leaves everything else.
 func TestExpire(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s, err := New(dir)
 	if err != nil {
@@ -191,6 +195,7 @@ func TestExpire(t *testing.T) {
 // filesystem snapshots from holding a copy of every rewrite, and leaves no
 // temporary file behind.
 func TestCommitKeepsExisting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s, err := New(dir)
 	if err != nil {
@@ -219,6 +224,7 @@ func TestCommitKeepsExisting(t *testing.T) {
 
 // TestAbort checks that an aborted image leaves nothing behind.
 func TestAbort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s, err := New(dir)
 	if err != nil {
@@ -258,6 +264,7 @@ func assertNoTemp(t *testing.T, dir string) {
 // file under the name, so a retry syncs again. A power loss cannot be
 // tested portably, so that the sync reaches the disk is not.
 func TestCommitSyncsDirectory(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root opens any directory, so the open cannot fail")
 	}
@@ -290,6 +297,7 @@ func TestCommitSyncsDirectory(t *testing.T) {
 // TestSyncDir checks that syncDir works on a directory and returns the error
 // for one that cannot be opened.
 func TestSyncDir(t *testing.T) {
+	t.Parallel()
 	if err := syncDir(t.TempDir()); err != nil {
 		t.Fatalf("syncDir on a directory = %v", err)
 	}

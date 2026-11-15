@@ -138,6 +138,7 @@ func (h *harness) get(t *testing.T, rawURL, agent string) (int, string, http.Hea
 // host is fetched once over HTTPS and then served from the cache, with a
 // CORS header either way.
 func TestCachesVersionedAsset(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, &net.Dialer{})
 	for range 3 {
 		code, body, hdr := h.get(t, "http://trmnl.com/css/3.4.6/plugins.css", "")
@@ -169,6 +170,7 @@ func TestCachesVersionedAsset(t *testing.T) {
 // its max-age passes, and that a stale copy is served while the origin
 // fails.
 func TestFreshnessAndStale(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, &net.Dialer{})
 	const u = "http://trmnl.com/images/plugins/weather/wi-rain.svg"
 	h.get(t, u, "")
@@ -193,6 +195,7 @@ func TestFreshnessAndStale(t *testing.T) {
 // TestGoogleFonts checks that a Google Fonts stylesheet is cached per
 // User-Agent and has its font URLs pointed at plain HTTP.
 func TestGoogleFonts(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, &net.Dialer{})
 	const u = "http://fonts.googleapis.com/css2?family=Inter"
 	for _, agent := range []string{"firefox", "firefox", "other"} {
@@ -209,6 +212,7 @@ func TestGoogleFonts(t *testing.T) {
 // TestNotCached checks that responses that must not be stored, and hosts
 // not on the list, go to the origin every time.
 func TestNotCached(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, &net.Dialer{})
 	for range 2 {
 		if code, body, _ := h.get(t, "http://trmnl.com/private", ""); code != http.StatusOK || body != "secret" {
@@ -223,6 +227,7 @@ func TestNotCached(t *testing.T) {
 // TestRefusesNonProxyRequest checks that a request not in proxy form is
 // refused rather than sent to a guessed origin.
 func TestRefusesNonProxyRequest(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, &net.Dialer{})
 	rec := httptest.NewRecorder()
 	h.proxy.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/css/3.4.6/plugins.css", http.NoBody))
@@ -234,6 +239,7 @@ func TestRefusesNonProxyRequest(t *testing.T) {
 // TestConnect checks that a CONNECT tunnel reaches an allowed origin, and
 // that the guard dialer refuses one to a private address.
 func TestConnect(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, &net.Dialer{})
 	code, body, _ := h.get(t, h.origin.URL+"/tunneled", "")
 	if code != http.StatusOK || body != "asset" || h.origin.count(strings.TrimPrefix(h.origin.URL, "https://")+"/tunneled") != 1 {
@@ -261,6 +267,7 @@ func TestConnect(t *testing.T) {
 // TestGuardedPlainHTTP checks that the guard dialer refuses a plain-HTTP
 // request to a private address too.
 func TestGuardedPlainHTTP(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	c, err := cache.New(t.TempDir())
 	if err != nil {

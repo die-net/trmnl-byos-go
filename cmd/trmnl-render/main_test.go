@@ -11,6 +11,7 @@ import (
 )
 
 func TestSuperviseDisplayExit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// exitFirst makes the fake display exit while the process runs.
@@ -21,6 +22,7 @@ func TestSuperviseDisplayExit(t *testing.T) {
 		{"process stops", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			g, gctx := errgroup.WithContext(ctx)
