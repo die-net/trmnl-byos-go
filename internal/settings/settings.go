@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -88,42 +89,35 @@ func (d *definition) read(ctx context.Context, q *db.Queries) (n int64, set bool
 	return n, true, nil, nil
 }
 
-// get returns the stored value of the setting, or its default if it has no
-// row, and whether it has one. A stored value that is not valid is an error
-// naming the key, and the default is returned with it, so a caller that must
-// go on can.
-func (d *definition) get(ctx context.Context, q *db.Queries) (n int64, set bool, err error) {
-	n, set, bad, err := d.read(ctx, q)
-	if err != nil {
-		return n, set, err
-	}
-	if bad != nil {
-		// Not ErrInvalid: the caller sent nothing wrong, the row is bad.
-		return n, set, fmt.Errorf("stored setting is not usable: %s, not %q", d.rule(), *bad)
-	}
-	return n, set, nil
-}
-
-// getKey returns the value of the setting named key, which must be defined.
+// getKey returns the value in effect for the setting named key, which must
+// be defined. It is the one reader behind RefreshInterval and
+// MinPasswordLength, and it reads a row the way List does: a stored value
+// that is not usable is logged and gives the default, so what the server
+// does is what List reports. Only a database error is an error, and the
+// default comes back with it for a caller that must go on.
 func getKey(ctx context.Context, q *db.Queries, key string) (int64, error) {
 	d, err := lookup(key)
 	if err != nil {
 		return 0, err
 	}
-	n, _, err := d.get(ctx, q)
+	n, _, bad, err := d.read(ctx, q)
+	if bad != nil {
+		slog.Warn("settings: stored value is not usable; using the default", "key", d.key, "value", *bad, "default", d.def)
+	}
 	return n, err
 }
 
-// RefreshInterval returns how long a device sleeps between wakes. If the
-// stored value is not usable it returns the default along with the error.
+// RefreshInterval returns how long a device sleeps between wakes. A stored
+// value that is not usable gives the default. If the setting cannot be read
+// it returns the default along with the error.
 func RefreshInterval(ctx context.Context, q *db.Queries) (time.Duration, error) {
 	n, err := getKey(ctx, q, KeyRefreshSeconds)
 	return time.Duration(n) * time.Second, err
 }
 
 // MinPasswordLength returns the fewest bytes a new admin password may have.
-// If the stored value is not usable it returns the default along with the
-// error.
+// A stored value that is not usable gives the default. If the setting cannot
+// be read it returns the default along with the error.
 func MinPasswordLength(ctx context.Context, q *db.Queries) (int, error) {
 	n, err := getKey(ctx, q, KeyMinPasswordLength)
 	return int(n), err
