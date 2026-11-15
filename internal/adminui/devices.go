@@ -313,7 +313,7 @@ func (s *Server) deviceFromPath(w http.ResponseWriter, r *http.Request) (db.Devi
 	case err == nil:
 		return dev, true
 	case errors.Is(err, device.ErrNoDevice):
-		s.render(w, r, http.StatusNotFound, "notfound", pageData{Nav: "devices", Heading: "Not found"})
+		s.renderNotFound(w, r, "devices", notFoundView{What: "No such device", BackHref: "/devices", BackName: "Devices"})
 	default:
 		slog.Error("admin ui: find device", "err", err)
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)

@@ -71,8 +71,8 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "device", "notfound", "stub"} {
-		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/"+name+".html"))
+	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_delete", "notfound", "stub"} {
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/"+name+".html"))
 	}
 	return s
 }
@@ -89,7 +89,16 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /devices/{id}", page(s.requireSession(s.updateDevice)))
 	mux.Handle("POST /join", page(s.requireSession(s.joinWindowForm)))
 	mux.Handle("GET /recipes", page(s.requireSession(s.stub("recipes", "Recipes"))))
-	mux.Handle("GET /playlists", page(s.requireSession(s.stub("playlists", "Playlists"))))
+	mux.Handle("GET /playlists", page(s.requireSession(s.playlists)))
+	mux.Handle("GET /playlists/{id}", page(s.requireSession(s.playlistPage)))
+	mux.Handle("POST /playlists/{id}", page(s.requireSession(s.savePlaylist)))
+	mux.Handle("POST /playlists/add-item/{id}", page(s.requireSession(s.addPlaylistItem)))
+	mux.Handle("GET /playlists/items/{id}", page(s.requireSession(s.itemPage)))
+	mux.Handle("POST /playlists/items/{id}", page(s.requireSession(s.saveItem)))
+	mux.Handle("GET /playlists/items/{id}/delete", page(s.requireSession(s.confirmDelete)))
+	mux.Handle("POST /playlists/items/{id}/move", page(s.requireSession(s.itemAction(s.moveItem))))
+	mux.Handle("POST /playlists/items/{id}/hidden", page(s.requireSession(s.itemAction(s.hideItem))))
+	mux.Handle("POST /playlists/items/{id}/delete", page(s.requireSession(s.itemAction(s.deleteItem))))
 	mux.Handle("GET /firmware", page(s.requireSession(s.stub("firmware", "Firmware"))))
 	mux.Handle("GET /static/", static())
 }
@@ -161,6 +170,15 @@ type pageData struct {
 	Join    joinView
 	// Detail is the device the device page shows.
 	Detail *deviceDetail
+	// Playlists is what the playlists page lists, PlaylistEdit the playlist
+	// its page shows, and ItemEdit the item its page shows.
+	Playlists    []playlistView
+	PlaylistEdit *playlistEdit
+	ItemEdit     *itemEdit
+	// Delete is the removal the confirm page asks about.
+	Delete *deleteView
+	// NotFound says what the not-found page could not find.
+	NotFound notFoundView
 }
 
 // render sends the page called name with the status.

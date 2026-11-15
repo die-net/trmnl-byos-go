@@ -82,8 +82,17 @@ JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 ORDER BY playlist.name, playlist_item.position;
 
+-- name: GetPlaylistItemView :one
+-- One item with its playlist's name and the instance in its first slot.
+SELECT sqlc.embed(playlist_item), playlist.name AS playlist_name, plugin_instance.name AS instance_name
+FROM playlist_item
+JOIN playlist ON playlist.id = playlist_item.playlist_id
+JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
+JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
+WHERE playlist_item.id = ?;
+
 -- name: ListPlaylistDevices :many
-SELECT playlist.name AS playlist, device.friendly_id, playlist_device.priority
+SELECT playlist.name AS playlist, device.friendly_id, device.name AS device_name, playlist_device.priority
 FROM playlist_device
 JOIN playlist ON playlist.id = playlist_device.playlist_id
 JOIN device ON device.id = playlist_device.device_id

@@ -1,0 +1,32 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<a class="back" href="/playlists"><span aria-hidden="true">←</span> Playlists</a>
+<div class="page-head">
+<h1>{{.Heading}}</h1>
+</div>{{end}}
+{{define "content"}}{{with .PlaylistEdit}}{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
+<div class="detail-layout">
+<section class="panel" aria-labelledby="schedule-title">
+<h2 id="schedule-title">Schedule</h2>
+<form method="post" action="{{.Action}}">
+{{template "schedule-fields" .Schedule}}
+<button class="btn btn-primary" type="submit">Save</button>
+</form>
+</section>
+<section class="panel" aria-labelledby="add-title">
+<h2 id="add-title">Add an item</h2>
+{{if .Instances}}<form method="post" action="{{.AddAction}}">
+<div class="field">
+<label for="instance">Instance</label>
+<select id="instance" name="instance">
+{{range .Instances}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+</div>
+<div class="field">
+<label for="add_duration">Duration in seconds</label>
+<input id="add_duration" name="duration" type="text" inputmode="numeric" autocomplete="off" value="{{.Add.Duration}}">
+<p class="hint">0 shows the item until a button press. Otherwise at least {{.MinSeconds}}.</p>
+</div>
+<button class="btn btn-primary" type="submit">Add</button>
+</form>{{else}}<p class="rel">There are no instances to add. Create one with the <code>trmnl-byos</code> command or the JSON API.</p>{{end}}
+</section>
+</div>{{end}}{{end}}

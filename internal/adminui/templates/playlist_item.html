@@ -1,0 +1,19 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<a class="back" href="/playlists"><span aria-hidden="true">←</span> Playlists</a>
+<div class="page-head">
+<h1>{{.Heading}}</h1>
+</div>{{end}}
+{{define "content"}}{{with .ItemEdit}}<section class="panel form-panel" aria-labelledby="item-title">
+<h2 id="item-title">Item in {{.Playlist}}</h2>
+{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
+<form method="post" action="{{.Action}}">
+<div class="field">
+<label for="duration">Duration in seconds</label>
+<input id="duration" name="duration" type="text" inputmode="numeric" autocomplete="off" value="{{.Form.Duration}}">
+<p class="hint">0 shows the item until a button press. Otherwise at least {{.MinSeconds}}.</p>
+</div>
+<label class="check"><input type="checkbox" name="hidden" value="1"{{if .Form.Hidden}} checked{{end}}><span>Hidden</span></label>
+{{template "schedule-fields" .Form.Schedule}}
+<button class="btn btn-primary" type="submit">Save</button>
+</form>
+</section>{{end}}{{end}}

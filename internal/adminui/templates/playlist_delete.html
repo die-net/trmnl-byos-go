@@ -1,0 +1,9 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "content"}}{{with .Delete}}<section class="panel form-panel" aria-labelledby="remove-title">
+<h2 id="remove-title">Remove {{.Instance}} from {{.Playlist}}?</h2>
+<p class="rel">The instance stays. Only its place in this playlist goes.</p>
+<form method="post" action="{{.Action}}">
+<button class="btn btn-primary btn-danger-solid" type="submit">Remove</button>
+</form>
+<p class="more"><a class="btn btn-secondary" href="{{.Cancel}}">Cancel</a></p>
+</section>{{end}}{{end}}

@@ -153,6 +153,43 @@ func (q *Queries) GetPlaylistItem(ctx context.Context, id int64) (PlaylistItem, 
 	return i, err
 }
 
+const getPlaylistItemView = `-- name: GetPlaylistItemView :one
+SELECT playlist_item.id, playlist_item.playlist_id, playlist_item.position, playlist_item.layout, playlist_item.duration, playlist_item.hidden, playlist_item.days, playlist_item.window_start, playlist_item.window_end, playlist_item.starts_at, playlist_item.ends_at, playlist.name AS playlist_name, plugin_instance.name AS instance_name
+FROM playlist_item
+JOIN playlist ON playlist.id = playlist_item.playlist_id
+JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
+JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
+WHERE playlist_item.id = ?
+`
+
+type GetPlaylistItemViewRow struct {
+	PlaylistItem PlaylistItem `json:"playlist_item"`
+	PlaylistName string       `json:"playlist_name"`
+	InstanceName string       `json:"instance_name"`
+}
+
+// One item with its playlist's name and the instance in its first slot.
+func (q *Queries) GetPlaylistItemView(ctx context.Context, id int64) (GetPlaylistItemViewRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlaylistItemView, id)
+	var i GetPlaylistItemViewRow
+	err := row.Scan(
+		&i.PlaylistItem.ID,
+		&i.PlaylistItem.PlaylistID,
+		&i.PlaylistItem.Position,
+		&i.PlaylistItem.Layout,
+		&i.PlaylistItem.Duration,
+		&i.PlaylistItem.Hidden,
+		&i.PlaylistItem.Days,
+		&i.PlaylistItem.WindowStart,
+		&i.PlaylistItem.WindowEnd,
+		&i.PlaylistItem.StartsAt,
+		&i.PlaylistItem.EndsAt,
+		&i.PlaylistName,
+		&i.InstanceName,
+	)
+	return i, err
+}
+
 const linkPlaylistDevice = `-- name: LinkPlaylistDevice :exec
 INSERT INTO playlist_device (device_id, playlist_id, priority)
 VALUES (?, ?, ?)
@@ -279,7 +316,7 @@ func (q *Queries) ListInstanceItems(ctx context.Context, instanceID int64) ([]in
 }
 
 const listPlaylistDevices = `-- name: ListPlaylistDevices :many
-SELECT playlist.name AS playlist, device.friendly_id, playlist_device.priority
+SELECT playlist.name AS playlist, device.friendly_id, device.name AS device_name, playlist_device.priority
 FROM playlist_device
 JOIN playlist ON playlist.id = playlist_device.playlist_id
 JOIN device ON device.id = playlist_device.device_id
@@ -289,6 +326,7 @@ ORDER BY playlist.name, device.friendly_id
 type ListPlaylistDevicesRow struct {
 	Playlist   string `json:"playlist"`
 	FriendlyID string `json:"friendly_id"`
+	DeviceName string `json:"device_name"`
 	Priority   int64  `json:"priority"`
 }
 
@@ -301,7 +339,12 @@ func (q *Queries) ListPlaylistDevices(ctx context.Context) ([]ListPlaylistDevice
 	items := []ListPlaylistDevicesRow{}
 	for rows.Next() {
 		var i ListPlaylistDevicesRow
-		if err := rows.Scan(&i.Playlist, &i.FriendlyID, &i.Priority); err != nil {
+		if err := rows.Scan(
+			&i.Playlist,
+			&i.FriendlyID,
+			&i.DeviceName,
+			&i.Priority,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
