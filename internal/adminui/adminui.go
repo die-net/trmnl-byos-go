@@ -43,6 +43,8 @@ type Config struct {
 type Server struct {
 	db  *db.Client
 	now func() time.Time
+	// zone is the time zone times are shown in: the server's.
+	zone *time.Location
 	// secureURL is whether PublicURL is https.
 	secureURL bool
 	// cop refuses a cross-origin request that is not safe.
@@ -55,6 +57,7 @@ func New(client *db.Client, cfg Config) *Server {
 	s := &Server{
 		db:    client,
 		now:   time.Now,
+		zone:  time.Local,
 		cop:   http.NewCrossOriginProtection(),
 		pages: map[string]*template.Template{},
 	}
@@ -64,8 +67,8 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "stub"} {
-		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/"+name+".html"))
+	for _, name := range []string{"devices", "device", "notfound", "stub"} {
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/"+name+".html"))
 	}
 	return s
 }
@@ -78,6 +81,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /logout", page(s.cop.Handler(http.HandlerFunc(s.logout))))
 	mux.Handle("GET /{$}", page(s.requireSession(home)))
 	mux.Handle("GET /devices", page(s.requireSession(s.devices)))
+	mux.Handle("GET /devices/{id}", page(s.requireSession(s.deviceDetail)))
+	mux.Handle("POST /devices/{id}", page(s.requireSession(s.updateDevice)))
+	mux.Handle("POST /join", page(s.requireSession(s.joinWindowForm)))
 	mux.Handle("GET /recipes", page(s.requireSession(s.stub("recipes", "Recipes"))))
 	mux.Handle("GET /playlists", page(s.requireSession(s.stub("playlists", "Playlists"))))
 	mux.Handle("GET /firmware", page(s.requireSession(s.stub("firmware", "Firmware"))))
@@ -139,14 +145,18 @@ func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
 
 // pageData is what the templates are given.
 type pageData struct {
-	// Error is a message to show above the form, or "".
+	// Error is a message to show above the form or list, or "".
 	Error string
 	// Nav is the nav destination the page belongs to, such as "devices".
 	Nav string
 	// Heading is the page's title and its h1.
 	Heading string
-	// Devices is what the devices page lists.
+	// Devices is what the devices page lists, and Join the state of the
+	// join window it shows.
 	Devices []deviceView
+	Join    joinView
+	// Detail is the device the device page shows.
+	Detail *deviceDetail
 }
 
 // render sends the page called name with the status.
@@ -171,15 +181,25 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, http.StatusOK, "login", pageData{})
 }
 
-func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+// parseForm reads a posted form of at most maxFormBody bytes. If it cannot,
+// it calls fail with a status and a message to show, and returns false.
+func parseForm(w http.ResponseWriter, r *http.Request, fail func(status int, msg string)) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
-	if err := r.ParseForm(); err != nil {
-		status, msg := http.StatusBadRequest, "The form could not be read."
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			status, msg = http.StatusRequestEntityTooLarge, fmt.Sprintf("The form is over %d bytes.", tooBig.Limit)
-		}
-		s.render(w, r, status, "login", pageData{Error: msg})
+	err := r.ParseForm()
+	if err == nil {
+		return true
+	}
+	status, msg := http.StatusBadRequest, "The form could not be read."
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		status, msg = http.StatusRequestEntityTooLarge, fmt.Sprintf("The form is over %d bytes.", tooBig.Limit)
+	}
+	fail(status, msg)
+	return false
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if !parseForm(w, r, func(status int, msg string) { s.render(w, r, status, "login", pageData{Error: msg}) }) {
 		return
 	}
 	token, err := adminauth.Login(r.Context(), s.db, r.PostForm.Get("password"), s.now())

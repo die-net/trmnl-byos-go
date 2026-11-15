@@ -78,7 +78,7 @@ func TestDevicesBadges(t *testing.T) {
 			}
 			body := w.Body.String()
 			for _, want := range []string{
-				"<h2>Kitchen</h2>",
+				`<h2><a class="device-link" href="/devices/ABC123">Kitchen</a></h2>`,
 				`<span class="badge ` + tc.class + `">` + tc.badge + `</span>`,
 				">" + tc.lastSeen + "<",
 			} {
@@ -108,15 +108,15 @@ func TestDevicesNameFallbackAndEscaping(t *testing.T) {
 	if strings.Contains(body, "<script>") {
 		t.Error("a device name was not escaped")
 	}
-	for _, want := range []string{"&lt;script&gt;alert(1)&lt;/script&gt;", "<h2>XYZ789</h2>", `<p class="detail">ABC123</p>`} {
+	for _, want := range []string{"&lt;script&gt;alert(1)&lt;/script&gt;", `<h2><a class="device-link" href="/devices/XYZ789">XYZ789</a></h2>`, `<p class="detail">ABC123</p>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}
 	}
 	// A device with no name is headed by its friendly ID, which the line
 	// under the heading then leaves out.
-	if n := strings.Count(body, "XYZ789"); n != 1 {
-		t.Errorf("the friendly ID of an unnamed device appears %d times, want 1", n)
+	if n := strings.Count(body, ">XYZ789<"); n != 1 {
+		t.Errorf("the friendly ID of an unnamed device is shown %d times, want 1", n)
 	}
 }
 
@@ -124,7 +124,7 @@ func TestDevicesEmpty(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	body := tu.do(t, "GET", "/devices", "", "Cookie", cookieHeader(c)).Body.String()
-	for _, want := range []string{"<h2>No devices yet</h2>", "<code>trmnl-byos join</code>"} {
+	for _, want := range []string{"<h2>No devices yet</h2>", "Open for 10 minutes"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("empty page lacks %q", want)
 		}

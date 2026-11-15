@@ -183,3 +183,13 @@ func DeleteItem(ctx context.Context, client *db.Client, id int64) error {
 	}
 	return nil
 }
+
+// ListDeviceItems returns the items of the playlist a device shows, in
+// order, with the name of each item's instance.
+func ListDeviceItems(ctx context.Context, q *db.Queries, deviceID int64) ([]db.ListDeviceItemsRow, error) {
+	items, err := q.ListDeviceItems(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("list device items: %w", err)
+	}
+	return items, nil
+}

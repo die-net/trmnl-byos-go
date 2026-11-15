@@ -16,6 +16,9 @@ import (
 
 const testPassword = "correct horse battery"
 
+// testZone is the zone the tests show times in, which no machine runs in.
+var testZone = time.FixedZone("TST", 5*3600+1800)
+
 // testUI is a server on a temp database with the admin password set.
 type testUI struct {
 	srv *Server
@@ -34,6 +37,7 @@ func newTestUI(t *testing.T, cfg Config, setPassword bool) *testUI {
 	tu := &testUI{db: client, mux: http.NewServeMux(), now: time.Unix(1_000_000, 0)}
 	tu.srv = New(client, cfg)
 	tu.srv.now = func() time.Time { return tu.now }
+	tu.srv.zone = testZone
 	tu.srv.Register(tu.mux)
 	if setPassword {
 		if err := adminauth.SetPassword(t.Context(), client, testPassword, tu.now); err != nil {

@@ -1,0 +1,1 @@
+{{define "screen"}}{{if .Image}}<div class="screen"><img src="/images/{{.Image}}.png" alt="Current screen of {{.Name}}"{{if .Width}} width="{{.Width}}" height="{{.Height}}"{{end}}{{if .Lazy}} loading="lazy"{{end}}></div>{{else}}<div class="screen screen-empty">No screen yet</div>{{end}}{{end}}

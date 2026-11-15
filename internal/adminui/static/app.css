@@ -20,6 +20,10 @@
   --warn-soft: #fdebc8;
   --neutral: #4d5848;
   --neutral-soft: #e9ede4;
+  /* A screen preview sits on paper, light in both modes, so a transparent
+     or missing edge never shows the dark page through. */
+  --paper: #f5f5f0;
+  --paper-ink: #5f6459;
 
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
   --font-mono: ui-monospace, monospace;
@@ -57,6 +61,8 @@
     --warn-soft: #3d2e0f;
     --neutral: #b4c0ab;
     --neutral-soft: #262d21;
+    --paper: #ebebe5;
+    --paper-ink: #5f6459;
   }
 }
 
@@ -78,6 +84,8 @@
   --warn-soft: #3d2e0f;
   --neutral: #b4c0ab;
   --neutral-soft: #262d21;
+  --paper: #ebebe5;
+  --paper-ink: #5f6459;
 }
 
 /* Base. */
@@ -150,7 +158,8 @@ code {
   font-weight: 600;
 }
 
-.field input {
+.field input,
+.field select {
   display: block;
   width: 100%;
   min-height: var(--tap);
@@ -161,6 +170,35 @@ code {
   border-radius: 8px;
   font: inherit;
   font-size: 1rem;
+}
+
+.field input::placeholder {
+  color: var(--muted);
+}
+
+.hint {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+/* A checkbox in a label, which is the whole tap target. */
+.check {
+  display: flex;
+  min-height: var(--tap);
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 /* Buttons. */
@@ -185,7 +223,18 @@ code {
   border-color: var(--accent);
 }
 
-.card .btn {
+.btn-secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.btn-secondary:hover {
+  background: var(--accent-soft);
+}
+
+.card .btn,
+.panel .btn {
   width: 100%;
 }
 
@@ -350,6 +399,7 @@ h2 {
 }
 
 .device {
+  position: relative;
   min-width: 0;
   padding: var(--space-5);
   background: var(--surface);
@@ -394,6 +444,186 @@ h2 {
 .facts dd {
   margin: 0;
   font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* A long value, such as a MAC or a date, takes the full row. */
+.facts .wide {
+  grid-column: 1 / -1;
+}
+
+/* A device card is one link: the name's link covers the whole card. The
+   time stays above it so its tooltip shows. */
+.device {
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.device:hover {
+  border-color: var(--accent);
+}
+
+.device:active {
+  background: var(--accent-soft);
+}
+
+.device:hover .device-link {
+  text-decoration: underline;
+}
+
+.device-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.device-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+}
+
+.device-link:focus-visible {
+  outline: none;
+}
+
+.device-link:focus-visible::after {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.device time {
+  position: relative;
+}
+
+/* A screen preview keeps the panel's aspect ratio through the width and
+   height attributes, and never grows past its own size or its container. */
+.screen {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-4);
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.screen img {
+  display: block;
+  flex: 0 1 auto;
+  max-width: 100%;
+  height: auto;
+}
+
+.screen-empty {
+  align-items: center;
+  aspect-ratio: 5 / 3;
+  color: var(--paper-ink);
+  font-size: 0.875rem;
+}
+
+/* The join window control above the list. */
+.notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.notice p {
+  margin: 0;
+}
+
+/* The device page. */
+.back {
+  display: inline-flex;
+  min-height: var(--tap);
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: calc(var(--space-2) * -1);
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.back:hover {
+  color: var(--text);
+}
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.page-head h1 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.detail-main,
+.detail-side {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.detail-main .screen {
+  margin-bottom: 0;
+}
+
+.panel {
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.panel h2 {
+  margin-bottom: var(--space-4);
+}
+
+.panel .facts {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.rel {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.playlist {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.playlist li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.playlist-name {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -456,10 +686,20 @@ h2 {
   h1 {
     font-size: 1.75rem;
   }
+
+  .detail-layout {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: var(--space-5);
+  }
+
+  .detail-main .facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nav a {
+  .nav a,
+  .device {
     transition: none;
   }
 }
