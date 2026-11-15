@@ -55,7 +55,7 @@ jobs:
     steps:
       # The head commit, so line numbers match the pull request's diff.
       # Full history, for git diff, log and blame against the base.
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -70,7 +70,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          src="origin/$DEFAULT_BRANCH:.github/claude-review/review.md"
+          src="refs/remotes/origin/$DEFAULT_BRANCH:.github/claude-review/review.md"
           # Only before the pull request that adds the prompt has merged.
           if ! git cat-file -e "$src" 2>/dev/null; then
             echo "::warning::No review prompt on $DEFAULT_BRANCH yet, so no review."
@@ -130,23 +130,44 @@ jobs:
             --jq '.data.repository.pullRequest.reviewThreads.nodes[]
               | select(.isResolved | not)
               | {path, line, isOutdated, comments: [.comments.nodes[] | {author: .author.login, body}]}' \
-            | jq -s . > "$dir/threads.json"
+            | jq -s . > "$dir/threads-all.json"
+
+          # Anyone who can read the repository can comment, so keep only
+          # comments by people who can write to it, and by this workflow's
+          # own bot, which posted the earlier findings. A thread left with no
+          # comments is dropped.
+          trusted='["github-actions"]'
+          for login in $(jq -r '[.[].comments[].author | select(. != null)] | unique | .[]' "$dir/threads-all.json"); do
+            [[ "$login" =~ ^[A-Za-z0-9-]+$ ]] || continue
+            perm=$(gh api "repos/$OWNER/$NAME/collaborators/$login/permission" --jq .permission 2>/dev/null) || continue
+            if [ "$perm" = admin ] || [ "$perm" = write ]; then
+              trusted=$(jq -c --arg l "$login" '. + [$l]' <<<"$trusted")
+            fi
+          done
+          jq --argjson ok "$trusted" '
+            map(.comments |= map(select(.author as $a | $ok | index($a))))
+            | map(select(.comments | length > 0))
+          ' "$dir/threads-all.json" > "$dir/threads.json"
+          rm "$dir/threads-all.json"
 
       - id: go
         if: steps.prompt.outputs.found == 'true'
-        uses: actions/setup-go@v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
       # Compiles the packages and test binaries with both SQLite drivers, so
-      # the tests Claude runs start from a warm build cache. A build failure
-      # here is for the review to find, so it does not stop the job.
+      # the tests Claude runs start from a warm build cache. -exec true hands
+      # each test binary to true instead of running it, so no code from the
+      # pull request runs here, not even an init function. A build failure
+      # is for the review to find, so it does not stop the job.
       - name: Warm the build cache
         if: steps.prompt.outputs.found == 'true'
         continue-on-error: true
         run: |
-          go test -count=1 -run '^$' ./...
-          CGO_ENABLED=0 go test -count=1 -run '^$' ./...
+          go vet ./...
+          go test -run '^$' -exec true ./...
+          CGO_ENABLED=0 go test -run '^$' -exec true ./...
 
       # github_token makes the action use this job's read-only token rather
       # than ask for the Claude App's, which can write. No inline comment
@@ -156,11 +177,14 @@ jobs:
       #
       # Opus runs the main loop; the prompt picks a model for each subagent.
       # --max-turns bounds the main loop only, which takes about 15 turns.
-      # Manual permission mode runs only the commands listed.
+      # --max-budget-usd bounds the whole run, subagents included, by Claude
+      # Code's own cost estimate, which it keeps on a subscription token
+      # too. Trial runs came to $2 to $4.30, and spend can pass the cap a
+      # little. Manual permission mode runs only the commands listed.
       - name: Review
         id: claude
         if: steps.prompt.outputs.found == 'true'
-        uses: anthropics/claude-code-action@v1.0.276
+        uses: anthropics/claude-code-action@f3b070c88125d33dbae5653df5f143101d4ea9dc # v1.0.276
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -169,6 +193,7 @@ jobs:
           claude_args: >-
             --model opus
             --max-turns 60
+            --max-budget-usd 10
             --permission-mode default
             --add-dir ${{ runner.temp }}/review
             --allowedTools
@@ -191,7 +216,7 @@ jobs:
           printf '%s\n' "$RESULT" > "$RUNNER_TEMP/findings.json"
 
       - if: steps.save.outcome == 'success'
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: review-findings
           path: ${{ runner.temp }}/findings.json
@@ -215,7 +240,7 @@ jobs:
       # requests, under the Issues permission.
       issues: write
     steps:
-      - uses: actions/download-artifact@v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: review-findings
           path: ${{ runner.temp }}/findings
@@ -227,12 +252,18 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          f="$RUNNER_TEMP/findings/findings.json"
+          raw="$RUNNER_TEMP/findings/findings.json"
+          f="$RUNNER_TEMP/findings.json"
           # The same shape as the review's --json-schema, checked again here
           # because the file passed through a job that ran untrusted code.
-          # A path may not be absolute or step out of the repository.
-          if ! jq -e '
+          # The file is read as one array of every JSON value in it, which
+          # must hold exactly one, so a second value cannot slip past the
+          # check: jq -e alone answers for the last value only. Everything
+          # after reads that one checked value. A path may not be absolute
+          # or step out of the repository.
+          if ! jq -es '
             def int: type == "number" and . == floor;
+            length == 1 and (.[0] |
             type == "object"
             and (keys - ["open_findings", "comments"] | length == 0)
             and (.open_findings | int and . >= 0)
@@ -247,11 +278,12 @@ jobs:
               and (if has("start_line") then (.start_line | int and . >= 1) and .start_line < .line else true end)
               and (.side == "RIGHT" or .side == "LEFT")
               and (.body | type == "string" and length >= 1 and length <= 8000)
-              and (.checked == "running" or .checked == "reading"))
-          ' "$f" >/dev/null; then
+              and (.checked == "running" or .checked == "reading")))
+          ' "$raw" >/dev/null; then
             echo "::error::The findings file does not match the schema."
             exit 1
           fi
+          jq -cs '.[0]' "$raw" > "$f"
 
           # Each comment is built as JSON by jq and sent on stdin. An @ before
           # a name gets a zero-width space after it, so a comment cannot
@@ -265,7 +297,7 @@ jobs:
           done < <(jq -c --arg head "$HEAD" '
             .comments[]
             | {path, line, side, commit_id: $head,
-               body: ((.body | gsub("@(?<c>[A-Za-z0-9])"; "@​\(.c)"))
+               body: ((.body | gsub("@(?<c>[A-Za-z0-9])"; "@\u200b\(.c)"))
                       + "\n\n"
                       + (if .checked == "running" then "_Confirmed by running code._" else "_Found by reading only._" end))}
               + (if .start_line then {start_line: .start_line, start_side: .side} else {} end)
