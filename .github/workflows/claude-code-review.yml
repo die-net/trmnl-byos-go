@@ -38,13 +38,17 @@ jobs:
       pull-requests: read
       id-token: write
     env:
-      # Keeps the OAuth and GitHub tokens out of the environment of the
-      # commands Claude runs, such as go test on the pull request's code.
+      # Keeps the OAuth token out of the environment of the commands Claude
+      # runs, such as go test on the pull request's code. GitHub tokens stay.
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
+      # Subagents run in the foreground, so the main loop waits for every
+      # reviewer and validator. In the background, the main loop ends its
+      # turn to wait, and --json-schema then makes it answer before they
+      # report.
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
       # A cold build of SQLite's C code can take longer than Claude's
       # default two-minute command timeout.
       BASH_DEFAULT_TIMEOUT_MS: '600000'
-      BASH_MAX_TIMEOUT_MS: '600000'
     outputs:
       result: ${{ steps.claude.outputs.structured_output }}
     steps:
