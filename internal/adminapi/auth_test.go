@@ -1,18 +1,36 @@
 package adminapi
 
 import (
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/argon2"
+
 	"github.com/die-net/trmnl-byos-go/internal/adminauth"
+	"github.com/die-net/trmnl-byos-go/internal/db"
 )
+
+// cheapHash returns password as an argon2id PHC string at 64 KiB and one
+// pass. adminauth.SetPassword always hashes at the production cost, which
+// would make each test spend most of its time hashing. A login checks a
+// password at the cost the stored hash names, so this keeps logins cheap too.
+func cheapHash(password string) string {
+	salt := []byte("test salt, fixed")
+	key := argon2.IDKey([]byte(password), salt, 1, 64, 1, 32)
+	enc := base64.RawStdEncoding
+	return fmt.Sprintf("$argon2id$v=%d$m=64,t=1,p=1$%s$%s", argon2.Version, enc.EncodeToString(salt), enc.EncodeToString(key))
+}
 
 // session signs the admin in and returns the Cookie header value.
 func (ta *testAPI) session(t *testing.T) string {
 	t.Helper()
-	if err := adminauth.SetPassword(t.Context(), ta.db, "correct horse battery", ta.now); err != nil {
+	// The setting adminauth keeps the hash in.
+	err := ta.db.Write.SetSetting(t.Context(), db.SetSettingParams{Key: "admin_password_hash", Value: cheapHash("correct horse battery"), UpdatedAt: ta.now.Unix()})
+	if err != nil {
 		t.Fatal(err)
 	}
 	tok, err := adminauth.Login(t.Context(), ta.db, "correct horse battery", ta.now)
