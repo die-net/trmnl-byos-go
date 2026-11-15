@@ -70,24 +70,38 @@ func (d *definition) rule() string {
 	return fmt.Sprintf("%s must be a whole number from %d to %d", d.key, d.min, d.max)
 }
 
+// read returns the value in effect for the setting, whether it has a row,
+// and, if the row is not a whole number in bounds, its text. A bad row gives
+// the default. Only a database error is an error.
+func (d *definition) read(ctx context.Context, q *db.Queries) (n int64, set bool, bad *string, err error) {
+	v, err := q.GetSetting(ctx, d.key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return d.def, false, nil, nil
+	}
+	if err != nil {
+		return d.def, false, nil, fmt.Errorf("get setting %s: %w", d.key, err)
+	}
+	n, ok := d.parse(v)
+	if !ok {
+		return d.def, true, &v, nil
+	}
+	return n, true, nil, nil
+}
+
 // get returns the stored value of the setting, or its default if it has no
 // row, and whether it has one. A stored value that is not valid is an error
 // naming the key, and the default is returned with it, so a caller that must
 // go on can.
 func (d *definition) get(ctx context.Context, q *db.Queries) (n int64, set bool, err error) {
-	v, err := q.GetSetting(ctx, d.key)
-	if errors.Is(err, sql.ErrNoRows) {
-		return d.def, false, nil
-	}
+	n, set, bad, err := d.read(ctx, q)
 	if err != nil {
-		return d.def, false, fmt.Errorf("get setting %s: %w", d.key, err)
+		return n, set, err
 	}
-	n, ok := d.parse(v)
-	if !ok {
+	if bad != nil {
 		// Not ErrInvalid: the caller sent nothing wrong, the row is bad.
-		return d.def, true, fmt.Errorf("stored setting is not usable: %s, not %q", d.rule(), v)
+		return n, set, fmt.Errorf("stored setting is not usable: %s, not %q", d.rule(), *bad)
 	}
-	return n, true, nil
+	return n, set, nil
 }
 
 // getKey returns the value of the setting named key, which must be defined.
@@ -126,21 +140,26 @@ type Setting struct {
 	Default int64
 	// Set is whether the setting has a row.
 	Set bool
+	// Bad is the text of the row if it is not a whole number in bounds,
+	// and nil otherwise. It is a pointer because the text can be empty.
+	// Value is then Default, and Set is true.
+	Bad *string
 	// Min and Max bound the value.
 	Min, Max int64
 }
 
 // List returns every setting with the value in effect, in a fixed order. A
-// stored value that is not valid is an error naming its key.
+// stored value that is not valid is not an error: the setting has Bad set
+// and the default in effect. Only a database error fails.
 func List(ctx context.Context, q *db.Queries) ([]Setting, error) {
 	out := make([]Setting, 0, len(definitions))
 	for i := range definitions {
 		d := &definitions[i]
-		v, set, err := d.get(ctx, q)
+		v, set, bad, err := d.read(ctx, q)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, Setting{Key: d.key, Value: v, Default: d.def, Set: set, Min: d.min, Max: d.max})
+		out = append(out, Setting{Key: d.key, Value: v, Default: d.def, Set: set, Bad: bad, Min: d.min, Max: d.max})
 	}
 	return out, nil
 }

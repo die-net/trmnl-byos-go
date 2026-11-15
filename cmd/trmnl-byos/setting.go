@@ -41,11 +41,17 @@ func settingList(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	for _, r := range rows {
-		isDefault := "yes"
-		if r.Set {
+		isDefault, note := "yes", ""
+		switch {
+		case r.Bad != nil:
+			// The default is in effect, which is not the same as the
+			// setting having no row.
+			isDefault = "bad"
+			note = fmt.Sprintf("\tstored value %q is not usable, using the default; fix it with: trmnl-byos setting set %s VALUE, or setting reset %s", *r.Bad, r.Key, r.Key)
+		case r.Set:
 			isDefault = "no"
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%d\t%d\t%s\n", r.Key, r.Value, r.Default, isDefault); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%d\t%d\t%s%s\n", r.Key, r.Value, r.Default, isDefault, note); err != nil {
 			return err
 		}
 	}

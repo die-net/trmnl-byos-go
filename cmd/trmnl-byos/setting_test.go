@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
@@ -54,6 +55,42 @@ func TestSetting(t *testing.T) {
 	}
 	if rows := list(); !same(rows["refresh_seconds"], "900", "900", "yes") {
 		t.Fatalf("after reset: %v", rows)
+	}
+}
+
+func TestSettingBadRow(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	client, err := openDB(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.Write.SetSetting(t.Context(), db.SetSettingParams{Key: "refresh_seconds", Value: "abc", UpdatedAt: 1})
+	_ = client.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := runSetting(t, "list", "-data", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want a header and one line per setting: %q", out)
+	}
+	for _, want := range []string{"refresh_seconds", "900", "bad", `stored value "abc" is not usable, using the default`, "trmnl-byos setting set refresh_seconds VALUE", "setting reset refresh_seconds"} {
+		if !strings.Contains(lines[1], want) {
+			t.Errorf("line %q lacks %q", lines[1], want)
+		}
+	}
+	if strings.Contains(lines[2], "not usable") {
+		t.Errorf("the good setting has a note: %q", lines[2])
+	}
+	if _, err := runSetting(t, "reset", "-data", dir, "refresh_seconds"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runSetting(t, "list", "-data", dir); err != nil || strings.Contains(out, "not usable") || strings.Contains(out, "bad") {
+		t.Errorf("list after reset: %q, %v", out, err)
 	}
 }
 

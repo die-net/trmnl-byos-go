@@ -72,6 +72,9 @@ type settingView struct {
 	CanReset bool
 	// Error is why a save of this setting was refused, or "".
 	Error string
+	// Bad says the stored value is not usable, so the default is in
+	// effect, or is "". It is shown only when Error is "".
+	Bad string
 }
 
 // newSettingView returns the view of a setting.
@@ -84,6 +87,9 @@ func newSettingView(st *settings.Setting) settingView {
 	v := settingView{
 		Key: st.Key, Label: label, Help: text.help, Unit: text.unit,
 		Value: strconv.FormatInt(st.Value, 10), Min: st.Min, Max: st.Max, CanReset: st.Set,
+	}
+	if st.Bad != nil {
+		v.Bad = `The stored value "` + *st.Bad + `" is not usable, so the default is in effect. Save a value or reset to the default.`
 	}
 	if text.seconds && st.Value >= 60 {
 		v.Words = spanText(st.Value)

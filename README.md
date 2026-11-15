@@ -138,7 +138,7 @@ trmnl-byos setting set refresh_seconds 600
 trmnl-byos setting reset refresh_seconds
 ```
 
-`list` shows each value, its default, and whether it is the default. `reset` goes back to the default. The API has `GET` and `PATCH /api/v1/settings`: `curl -H "Authorization: Bearer $TOKEN" -X PATCH -d '{"refresh_seconds": 600}' http://localhost:8080/api/v1/settings`. A field left out of a `PATCH` is kept, and a bad one changes nothing.
+`list` shows each value, its default, and whether it is the default. A stored value that is not usable shows as `bad`, with a note, and the default is used until you set or reset it. `reset` goes back to the default. The API has `GET` and `PATCH /api/v1/settings`: `curl -H "Authorization: Bearer $TOKEN" -X PATCH -d '{"refresh_seconds": 600}' http://localhost:8080/api/v1/settings`. A field left out of a `PATCH` is kept, and a bad one changes nothing.
 
 ### Pushing data to a recipe
 
