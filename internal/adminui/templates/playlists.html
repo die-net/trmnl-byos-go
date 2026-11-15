@@ -1,4 +1,8 @@
 {{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<div class="page-head">
+<h1>{{.Heading}}</h1>
+<a class="btn btn-secondary" href="#new">New playlist</a>
+</div>{{end}}
 {{define "content"}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 {{if .Playlists}}<ul class="stack">
 {{range .Playlists}}<li class="panel" id="playlist-{{.ID}}">
@@ -8,7 +12,7 @@
 </div>
 <dl class="facts">
 <div class="wide"><dt>Schedule</dt><dd>{{.Schedule}}</dd></div>
-<div class="wide"><dt>Devices</dt><dd>{{if .Devices}}{{range $i, $d := .Devices}}{{if $i}}, {{end}}<a href="{{$d.Href}}">{{$d.Name}}</a>{{end}}{{else}}None{{end}}</dd></div>
+<div class="wide"><dt>Devices</dt><dd>{{if .Devices}}{{range $i, $d := .Devices}}{{if $i}}, {{end}}<a href="{{$d.Href}}">{{$d.Name}}</a>{{end}}{{else}}None. No device shows this playlist.{{end}}</dd></div>
 </dl>
 {{if .Items}}<ol class="items">
 {{range .Items}}<li class="item">
@@ -29,5 +33,16 @@
 </li>
 {{end}}</ul>{{else}}<div class="empty">
 <h2>No playlists yet</h2>
-<p>Add an item to a device with the <code>trmnl-byos</code> command or the JSON API, and its playlist shows here.</p>
-</div>{{end}}{{end}}
+<p>Make one with the form below.</p>
+</div>{{end}}
+<section class="panel form-panel" id="new" aria-labelledby="new-title">
+<h2 id="new-title">New playlist</h2>
+<form method="post" action="/playlists#new">
+{{if .NewPlaylist.Error}}<p class="error" role="alert">{{.NewPlaylist.Error}}</p>{{end}}
+<div class="field">
+<label for="new_name">Name</label>
+<input id="new_name" name="name" type="text" maxlength="64" autocomplete="off" required value="{{.NewPlaylist.Name}}">
+</div>
+<button class="btn btn-primary" type="submit">Create</button>
+</form>
+</section>{{end}}

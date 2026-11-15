@@ -1,9 +1,9 @@
 {{define "title"}}{{.Heading}}{{end}}
-{{define "content"}}{{with .Delete}}<section class="panel form-panel" aria-labelledby="remove-title">
-<h2 id="remove-title">Remove {{.Instance}} from {{.Playlist}}?</h2>
-<p class="rel">The instance stays. Only its place in this playlist goes.</p>
+{{define "content"}}{{with .PlaylistDelete}}<section class="panel form-panel" aria-labelledby="delete-title">
+<h2 id="delete-title">Delete {{.Name}}?</h2>
+<p class="rel">{{.Summary}}</p>
 <form method="post" action="{{.Action}}">
-<button class="btn btn-primary btn-danger-solid" type="submit">Remove</button>
+<button class="btn btn-primary btn-danger-solid" type="submit">Delete playlist</button>
 </form>
-<p class="more"><a class="btn btn-secondary" href="{{.Cancel}}">Cancel</a></p>
+<p class="more"><a class="btn btn-secondary" href="{{.Cancel}}">Keep playlist</a></p>
 </section>{{end}}{{end}}

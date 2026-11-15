@@ -6,9 +6,13 @@
 {{define "content"}}{{with .PlaylistEdit}}{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
 <div class="detail-layout">
 <section class="panel" aria-labelledby="schedule-title">
-<h2 id="schedule-title">Schedule</h2>
+<h2 id="schedule-title">Name and schedule</h2>
 <form method="post" action="{{.Action}}">
-{{template "schedule-fields" .Schedule}}
+<div class="field">
+<label for="name">Name</label>
+<input id="name" name="name" type="text" maxlength="64" autocomplete="off" required value="{{.Form.Name}}">
+</div>
+{{template "schedule-fields" .Form.Schedule}}
 <button class="btn btn-primary" type="submit">Save</button>
 </form>
 </section>
@@ -29,4 +33,29 @@
 <button class="btn btn-primary" type="submit">Add</button>
 </form>{{else}}<p class="rel">There are no instances to add. Create one with the <code>trmnl-byos</code> command or the JSON API.</p>{{end}}
 </section>
-</div>{{end}}{{end}}
+<section class="panel" id="devices" aria-labelledby="devices-title">
+<h2 id="devices-title">Devices</h2>
+{{if .Devices}}<ul class="items">
+{{range .Devices}}<li class="item">
+<div class="item-main">
+<a class="item-name" href="{{.Href}}">{{.Name}}</a>
+{{if .Note}}<span class="rel">{{.Note}}</span>{{end}}
+</div>
+<div class="item-actions">
+<form method="post" action="{{$.PlaylistEdit.UnlinkAction}}"><input type="hidden" name="device" value="{{.ID}}"><button class="btn btn-secondary btn-danger" type="submit" aria-label="Unlink {{.Name}}">Unlink</button></form>
+</div>
+</li>
+{{end}}</ul>{{else}}<p class="rel">No device shows this playlist.</p>{{end}}
+{{if .Unlinked}}<form method="post" action="{{.LinkAction}}">
+<div class="field">
+<label for="link_device">Link a device</label>
+<select id="link_device" name="device">
+{{range .Unlinked}}<option value="{{.ID}}">{{.Label}}</option>
+{{end}}</select>
+<p class="hint">It goes last in the device's order. Change the order on the device's page.</p>
+</div>
+<button class="btn btn-primary" type="submit">Link</button>
+</form>{{else if .NoDevices}}<p class="rel">No devices have registered yet.</p>{{else}}<p class="rel">Every device is linked.</p>{{end}}
+</section>
+</div>
+<p class="more"><a class="btn btn-secondary btn-danger" href="{{.DeleteHref}}">Delete playlist</a></p>{{end}}{{end}}

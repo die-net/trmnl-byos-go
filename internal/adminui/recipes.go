@@ -158,7 +158,7 @@ func (s *Server) renderRecipes(w http.ResponseWriter, r *http.Request, status in
 		serverError(w, r, "list recipes", err)
 		return
 	}
-	s.render(w, r, status, "recipes", pageData{
+	s.render(w, r, status, "recipes", &pageData{
 		Nav: "recipes", Heading: "Recipes", UploadError: msg, Recipes: views,
 		UploadLimit: strconv.FormatInt(recipe.MaxRecipeBytes>>20, 10) + " MB",
 	})
@@ -286,7 +286,7 @@ func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int
 	for _, p := range pals {
 		e.Palettes = append(e.Palettes, paletteOption{ID: p.ID, Label: p.Name, Selected: p.ID == form.Palette})
 	}
-	s.render(w, r, status, "recipe", pageData{Nav: "recipes", Heading: rec.Name, Error: msg, RecipeEdit: e})
+	s.render(w, r, status, "recipe", &pageData{Nav: "recipes", Heading: rec.Name, Error: msg, RecipeEdit: e})
 }
 
 // addInstance creates an instance of a recipe from the form's name and
@@ -345,7 +345,7 @@ func (s *Server) renderInstanceDelete(w http.ResponseWriter, r *http.Request, st
 	for _, p := range rows {
 		d.Playlists = append(d.Playlists, playlistLink(p.PlaylistID, p.PlaylistName))
 	}
-	s.render(w, r, status, "instance_delete", pageData{Nav: "recipes", Heading: "Remove instance", InstanceDelete: d})
+	s.render(w, r, status, "instance_delete", &pageData{Nav: "recipes", Heading: "Remove instance", InstanceDelete: d})
 }
 
 // confirmRemoveInstance asks whether to remove an instance. It changes

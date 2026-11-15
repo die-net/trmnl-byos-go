@@ -240,7 +240,7 @@ func (s *Server) renderFirmware(w http.ResponseWriter, r *http.Request, status i
 	for i := range entries {
 		views[i] = s.firmwareViewOf(&entries[i])
 	}
-	s.render(w, r, status, "firmware", pageData{
+	s.render(w, r, status, "firmware", &pageData{
 		Nav: "firmware", Heading: "Firmware", UploadError: msg, UploadForm: form, Firmware: views,
 		FirmwareModels: slices.Sorted(maps.Keys(firmware.Models)), UploadLimit: firmware.ByteSize(firmware.MaxUploadBytes()),
 	})
@@ -433,7 +433,7 @@ func (s *Server) renderBuild(w http.ResponseWriter, r *http.Request, status int,
 			b.Canaries = append(b.Canaries, canaryOption{Value: o.FriendlyID, Label: label, Selected: o.FriendlyID == canary})
 		}
 	}
-	s.render(w, r, status, "firmware_build", pageData{Nav: "firmware", Heading: e.FwModel + " " + e.Version, Error: msg, Build: b})
+	s.render(w, r, status, "firmware_build", &pageData{Nav: "firmware", Heading: e.FwModel + " " + e.Version, Error: msg, Build: b})
 }
 
 // deviceOfferViewOf describes a device's standing for a build. It shows
@@ -493,7 +493,7 @@ func (s *Server) startRollout(w http.ResponseWriter, r *http.Request) {
 // renderCancel sends the confirm page for canceling a build's rollout,
 // which has no Cancel button when active is false.
 func (s *Server) renderCancel(w http.ResponseWriter, r *http.Request, status int, e *firmware.Entry, active bool) {
-	s.render(w, r, status, "firmware_cancel", pageData{Nav: "firmware", Heading: "Cancel rollout", Cancel: &cancelView{
+	s.render(w, r, status, "firmware_cancel", &pageData{Nav: "firmware", Heading: "Cancel rollout", Cancel: &cancelView{
 		Name: e.FwModel + " " + e.Version, Active: active, Action: buildHref(e.ID) + "/cancel", Keep: catalogHref(e.ID),
 	}})
 }

@@ -28,6 +28,18 @@ func (q *Queries) AppendPlaylistDevice(ctx context.Context, arg AppendPlaylistDe
 	return err
 }
 
+const countPlaylistItems = `-- name: CountPlaylistItems :one
+SELECT COUNT(*) FROM playlist_item WHERE playlist_id = ?
+`
+
+// How many items a playlist has.
+func (q *Queries) CountPlaylistItems(ctx context.Context, playlistID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPlaylistItems, playlistID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createPlaylist = `-- name: CreatePlaylist :one
 INSERT INTO playlist (name) VALUES (?) RETURNING id, name, days, window_start, window_end, starts_at, ends_at
 `
@@ -336,6 +348,45 @@ func (q *Queries) ListDevicePlaylistIDs(ctx context.Context, deviceID int64) ([]
 			return nil, err
 		}
 		items = append(items, playlist_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDevicePlaylists = `-- name: ListDevicePlaylists :many
+SELECT playlist.id, playlist.name, playlist.days, playlist.window_start, playlist.window_end, playlist.starts_at, playlist.ends_at FROM playlist_device
+JOIN playlist ON playlist.id = playlist_device.playlist_id
+WHERE playlist_device.device_id = ?
+ORDER BY playlist_device.priority
+`
+
+// The playlists a device is linked to, in the order they are tried.
+func (q *Queries) ListDevicePlaylists(ctx context.Context, deviceID int64) ([]Playlist, error) {
+	rows, err := q.db.QueryContext(ctx, listDevicePlaylists, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Playlist{}
+	for rows.Next() {
+		var i Playlist
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Days,
+			&i.WindowStart,
+			&i.WindowEnd,
+			&i.StartsAt,
+			&i.EndsAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
