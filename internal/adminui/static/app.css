@@ -370,7 +370,7 @@ code {
   left: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -828,6 +828,15 @@ a.btn {
 
 .form-panel {
   max-width: 32rem;
+}
+
+.reset-form {
+  margin-top: var(--space-3);
+}
+
+/* The setting's key, between its heading and its help. */
+.setting-key {
+  margin-bottom: var(--space-2);
 }
 
 .stack + .form-panel,

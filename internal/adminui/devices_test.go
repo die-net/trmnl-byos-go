@@ -144,7 +144,7 @@ func TestNavCurrent(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	c := tu.signIn(t)
 	current := regexp.MustCompile(`<a href="(/[a-z]+)" aria-current="page">`)
-	for _, path := range []string{"/devices", "/recipes", "/playlists", "/firmware"} {
+	for _, path := range []string{"/devices", "/recipes", "/playlists", "/firmware", "/settings"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			w := tu.do(t, "GET", path, "", "Cookie", cookieHeader(c))
