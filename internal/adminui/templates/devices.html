@@ -1,0 +1,19 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "content"}}{{if .Devices}}<ul class="grid">
+{{range .Devices}}<li class="device">
+<div class="device-head">
+<h2>{{.Name}}</h2>
+<span class="badge {{.BadgeClass}}">{{.Badge}}</span>
+</div>
+{{if .Detail}}<p class="detail">{{.Detail}}</p>{{end}}
+<dl class="facts">
+<div><dt>Last seen</dt><dd>{{if .LastSeenISO}}<time datetime="{{.LastSeenISO}}" title="{{.LastSeenTitle}}">{{.LastSeenText}}</time>{{else}}{{.LastSeenText}}{{end}}</dd></div>
+<div><dt>Battery</dt><dd>{{.Battery}}</dd></div>
+<div><dt>Wi-Fi signal</dt><dd>{{.RSSI}}</dd></div>
+<div><dt>Firmware</dt><dd>{{.Firmware}}</dd></div>
+</dl>
+</li>
+{{end}}</ul>{{else}}<div class="empty">
+<h2>No devices yet</h2>
+<p>Open the join window with <code>trmnl-byos join</code>, then set up the device.</p>
+</div>{{end}}{{end}}

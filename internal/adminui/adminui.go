@@ -63,8 +63,9 @@ func New(client *db.Client, cfg Config) *Server {
 	}
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
-	for _, name := range []string{"login", "home"} {
-		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+name+".html"))
+	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
+	for _, name := range []string{"devices", "stub"} {
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/"+name+".html"))
 	}
 	return s
 }
@@ -75,7 +76,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /login", page(http.HandlerFunc(s.loginForm)))
 	mux.Handle("POST /login", page(s.cop.Handler(http.HandlerFunc(s.login))))
 	mux.Handle("POST /logout", page(s.cop.Handler(http.HandlerFunc(s.logout))))
-	mux.Handle("GET /{$}", page(s.requireSession(s.home)))
+	mux.Handle("GET /{$}", page(s.requireSession(home)))
+	mux.Handle("GET /devices", page(s.requireSession(s.devices)))
+	mux.Handle("GET /recipes", page(s.requireSession(s.stub("recipes", "Recipes"))))
+	mux.Handle("GET /playlists", page(s.requireSession(s.stub("playlists", "Playlists"))))
+	mux.Handle("GET /firmware", page(s.requireSession(s.stub("firmware", "Firmware"))))
 	mux.Handle("GET /static/", static())
 }
 
@@ -136,6 +141,12 @@ func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
 type pageData struct {
 	// Error is a message to show above the form, or "".
 	Error string
+	// Nav is the nav destination the page belongs to, such as "devices".
+	Nav string
+	// Heading is the page's title and its h1.
+	Heading string
+	// Devices is what the devices page lists.
+	Devices []deviceView
 }
 
 // render sends the page called name with the status.
@@ -196,6 +207,14 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-func (s *Server) home(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, http.StatusOK, "home", pageData{})
+// home sends the admin to the first page.
+func home(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/devices", http.StatusSeeOther)
+}
+
+// stub serves a page that is not built yet.
+func (s *Server) stub(nav, heading string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.render(w, r, http.StatusOK, "stub", pageData{Nav: nav, Heading: heading})
+	}
 }

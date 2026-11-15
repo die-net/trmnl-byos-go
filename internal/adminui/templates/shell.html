@@ -1,0 +1,17 @@
+{{define "body"}}<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+<div class="topbar-inner">
+<span class="brand">TRMNL</span>
+<nav class="nav" aria-label="Main">
+<a href="/devices"{{if eq .Nav "devices"}} aria-current="page"{{end}}>{{template "icon-devices"}}<span>Devices</span></a>
+<a href="/recipes"{{if eq .Nav "recipes"}} aria-current="page"{{end}}>{{template "icon-recipes"}}<span>Recipes</span></a>
+<a href="/playlists"{{if eq .Nav "playlists"}} aria-current="page"{{end}}>{{template "icon-playlists"}}<span>Playlists</span></a>
+<a href="/firmware"{{if eq .Nav "firmware"}} aria-current="page"{{end}}>{{template "icon-firmware"}}<span>Firmware</span></a>
+</nav>
+<form class="signout" method="post" action="/logout"><button class="btn-quiet" type="submit">Sign out</button></form>
+</div>
+</header>
+<main id="main" class="page">
+<h1>{{.Heading}}</h1>
+{{template "content" .}}
+</main>{{end}}
