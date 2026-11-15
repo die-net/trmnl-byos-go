@@ -80,19 +80,31 @@ func sourceText(source string) (shown, title string) {
 }
 
 // recipeViews describes every recipe with its instances and the playlists
-// that show them, from three list queries however many there are.
+// that show them, from three list queries however many there are, read in
+// one snapshot.
 func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
-	recipes, err := s.db.Read.ListRecipes(ctx)
+	// One snapshot, so every instance's recipe and every playlist link's
+	// instance is among the rows read.
+	var (
+		recipes     []db.Recipe
+		insts       []db.ListInstancesRow
+		inPlaylists []db.ListInstancePlaylistsRow
+	)
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if recipes, err = q.ListRecipes(ctx); err != nil {
+			return fmt.Errorf("list recipes: %w", err)
+		}
+		if insts, err = q.ListInstances(ctx); err != nil {
+			return fmt.Errorf("list instances: %w", err)
+		}
+		if inPlaylists, err = q.ListInstancePlaylists(ctx); err != nil {
+			return fmt.Errorf("list instance playlists: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list recipes: %w", err)
-	}
-	insts, err := s.db.Read.ListInstances(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list instances: %w", err)
-	}
-	inPlaylists, err := s.db.Read.ListInstancePlaylists(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list instance playlists: %w", err)
+		return nil, err
 	}
 	out := make([]recipeView, len(recipes))
 	byID := make(map[int64]*recipeView, len(recipes))
@@ -106,18 +118,14 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 		}
 		byID[r.ID] = &out[i]
 	}
-	// The three reads are not one snapshot, so a row may name a recipe or
-	// instance made after the first, and it is skipped.
 	shown := make(map[int64][]linkView)
 	for _, p := range inPlaylists {
 		shown[p.InstanceID] = append(shown[p.InstanceID], playlistLink(p.PlaylistID, p.PlaylistName))
 	}
 	for i := range insts {
 		inst := &insts[i].PluginInstance
+		// The snapshot has the recipe of every instance in it.
 		rv := byID[inst.RecipeID]
-		if rv == nil {
-			continue
-		}
 		v := recipeInstanceView{ID: inst.ID, Name: inst.Name, Palette: devicePalette, Playlists: shown[inst.ID], DeleteHref: instanceHref(inst.ID) + "/delete"}
 		if inst.Palette != "" {
 			// A palette the registry no longer has shows as its ID.
