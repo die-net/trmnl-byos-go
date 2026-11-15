@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
@@ -115,9 +116,16 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 // renderSettings sends the settings page with the status. msg is shown at
 // the top. If refused is not "", it is the key of a setting whose save was
 // refused as not a whole number in its bounds: its panel says so, with the
-// bounds the settings package reports, and its input shows typed.
+// bounds the settings package reports, and its input shows typed. The
+// settings are read in one snapshot, so two changed together are never shown
+// half changed.
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status int, msg, refused, typed string) {
-	list, err := settings.List(r.Context(), s.db.Read)
+	var list []settings.Setting
+	err := s.db.ReadTx(r.Context(), func(q *db.Queries) error {
+		var err error
+		list, err = settings.List(r.Context(), q)
+		return err
+	})
 	if err != nil {
 		serverError(w, r, "list settings", err)
 		return
