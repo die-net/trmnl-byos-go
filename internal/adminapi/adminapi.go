@@ -104,6 +104,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"POST /api/custom_plugins/{id}", handle(http.StatusOK, s.pushData)},
 		{"GET /api/v1/renders", handle(http.StatusOK, s.listRenders)},
 		{"GET /api/v1/renders/{id}", handle(http.StatusOK, s.getRender)},
+		{"GET /api/v1/renders/{id}/wait", handle(http.StatusOK, s.waitRender)},
 		{"/api/v1/", func(w http.ResponseWriter, _ *http.Request) {
 			writeError(w, http.StatusNotFound, "no such route")
 		}},
