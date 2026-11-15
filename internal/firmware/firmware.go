@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -197,28 +198,33 @@ func List(ctx context.Context, q *db.Queries) ([]Entry, error) {
 	}
 	out := make([]Entry, len(rows))
 	for i := range rows {
-		r := &rows[i]
-		e := Entry{Firmware: r.Firmware}
-		if r.RolloutState != nil {
-			e.Stage = *r.RolloutState
-			e.Canary = deref(r.Canary)
-			e.StartedAt = derefInt(r.RolloutStartedAt)
-			e.CanaryVersion = deref(r.CanaryVersion)
-			e.CanaryLastOfferedAt = r.CanaryLastOfferedAt
-			if e.Stage == stateActive {
-				switch {
-				case canaryReported(&r.Firmware, deref(r.CanaryModel), e.CanaryVersion):
-					e.Stage = "open"
-				case r.CanaryOffers >= MaxOffers:
-					e.Stage = "stalled"
-				default:
-					e.Stage = "canary"
-				}
-			}
-		}
-		out[i] = e
+		out[i] = newEntry(&rows[i])
 	}
 	return out, nil
+}
+
+// newEntry returns the build of a catalog row with the stage of its rollout.
+func newEntry(r *db.ListFirmwareRow) Entry {
+	e := Entry{Firmware: r.Firmware}
+	if r.RolloutState == nil {
+		return e
+	}
+	e.Stage = *r.RolloutState
+	e.Canary = deref(r.Canary)
+	e.StartedAt = derefInt(r.RolloutStartedAt)
+	e.CanaryVersion = deref(r.CanaryVersion)
+	e.CanaryLastOfferedAt = r.CanaryLastOfferedAt
+	if e.Stage == stateActive {
+		switch {
+		case canaryReported(&r.Firmware, deref(r.CanaryModel), e.CanaryVersion):
+			e.Stage = "open"
+		case r.CanaryOffers >= MaxOffers:
+			e.Stage = "stalled"
+		default:
+			e.Stage = "canary"
+		}
+	}
+	return e
 }
 
 func deref(s *string) string {
@@ -251,33 +257,141 @@ func canaryReported(fw *db.Firmware, canaryModel, canaryVersion string) bool {
 	return err == nil && got.Compare(want) >= 0
 }
 
+// Reason is why a device is not offered a build, as a stable code. The
+// zero value means it is offered.
+type Reason string
+
+// The reasons a device is not offered a build. The first six come from the
+// device and the build, and the rest from the build's rollout and file.
+const (
+	// ReasonUpdatesOff means updates are off for the device.
+	ReasonUpdatesOff Reason = "updates_off"
+	// ReasonPinned means the device is pinned to a version.
+	ReasonPinned Reason = "pinned"
+	// ReasonWrongModel means the build is not for the device's model: the
+	// model is not in Models, differs from the build's, has another chip,
+	// or the build is over its app partition.
+	ReasonWrongModel Reason = "wrong_model"
+	// ReasonBadVersion means the device's version is not dotted numbers.
+	ReasonBadVersion Reason = "bad_version"
+	// ReasonOldFirmware means the device's firmware is older than the first
+	// whose Model header is trusted.
+	ReasonOldFirmware Reason = "old_firmware"
+	// ReasonNotNewer means the device is on the build's version or a newer
+	// one, or the build's version does not parse.
+	ReasonNotNewer Reason = "not_newer"
+	// ReasonBadBuild means the build's SHA-256 is not 64 lowercase hex
+	// digits, so it names no file.
+	ReasonBadBuild Reason = "bad_build"
+	// ReasonNoRollout means the build was never rolled out.
+	ReasonNoRollout Reason = "no_rollout"
+	// ReasonCanceled means the build's rollout was canceled.
+	ReasonCanceled Reason = "canceled"
+	// ReasonStalled means the canary was offered the build MaxOffers times
+	// and does not report its version, so no device is offered it.
+	ReasonStalled Reason = "stalled"
+	// ReasonWaitingForCanary means the canary has not reported the build's
+	// version yet, and the device is not the canary.
+	ReasonWaitingForCanary Reason = "waiting_for_canary"
+	// ReasonCapReached means the device was offered the build MaxOffers
+	// times.
+	ReasonCapReached Reason = "cap_reached"
+	// ReasonFileMissing means the build's file is not in the firmware
+	// directory at the recorded size.
+	ReasonFileMissing Reason = "file_missing"
+)
+
 // notEligible returns why a device of the given model and version, with
-// the given policy, is not offered the build, or "" when it is. It is the
-// device half of an offer, and what Rollout checks of a canary so that a
-// rollout is never started that its canary can never take.
-func notEligible(dev *db.Device, model, version string, fw *db.Firmware) string {
-	if dev.UpdatesEnabled == 0 {
-		return "updates are off for the device"
+// the given policy, is not offered the build, and a sentence saying so, or
+// "" and "" when it is. It is the device half of an offer, and what
+// StartRollout checks of a canary so that a rollout is never started that
+// its canary can never take.
+func notEligible(dev *db.Device, model, version string, fw *db.Firmware) (Reason, string) {
+	if reason, why := notUpdatable(dev, model); reason != "" {
+		return reason, why
 	}
-	if dev.FwPin != "" {
-		return "the device is pinned to " + dev.FwPin
-	}
-	m, ok := Models[model]
-	if !ok || model != fw.FwModel || m.Chip.Name != fw.Chip || fw.Bytes > m.MaxBytes {
-		return "the build is not for the device's model, " + model
+	if m := Models[model]; model != fw.FwModel || m.Chip.Name != fw.Chip || fw.Bytes > m.MaxBytes {
+		return ReasonWrongModel, "the build is not for the device's model, " + model
 	}
 	have, err := ParseVersion(version)
 	if err != nil {
-		return "the device's firmware version " + version + " is not dotted numbers"
+		return ReasonBadVersion, "the device's firmware version " + version + " is not dotted numbers"
 	}
 	if have.Compare(minReportedVersion) < 0 {
-		return "the device's firmware " + version + " is older than " + minReportedVersion.String() + ", whose Model header may name another board"
+		return ReasonOldFirmware, "the device's firmware " + version + " is older than " + minReportedVersion.String() + ", whose Model header may name another board"
 	}
 	want, err := ParseVersion(fw.Version)
 	if err != nil || want.Compare(have) <= 0 {
-		return "the build's version " + fw.Version + " is not newer than the device's " + version
+		return ReasonNotNewer, "the build's version " + fw.Version + " is not newer than the device's " + version
 	}
-	return ""
+	return "", ""
+}
+
+// notUpdatable returns why a device of the given model is offered no build
+// at all, and a sentence saying so, or "" and "" when some build could be
+// offered to it. It is the part of notEligible that does not depend on the
+// build, which offerable checks before it reads any.
+func notUpdatable(dev *db.Device, model string) (Reason, string) {
+	if dev.UpdatesEnabled == 0 {
+		return ReasonUpdatesOff, "updates are off for the device"
+	}
+	if dev.FwPin != "" {
+		return ReasonPinned, "the device is pinned to " + dev.FwPin
+	}
+	if _, ok := Models[model]; !ok {
+		return ReasonWrongModel, "the build is not for the device's model, " + model
+	}
+	return "", ""
+}
+
+// rollout is what the rollout half of an offer decides from: the state of
+// a build's rollout and its canary.
+type rollout struct {
+	// state is "" for no rollout, stateActive, or "canceled".
+	state string
+	// canaryID is the canary device's ID, and canaryModel and
+	// canaryVersion are what it last reported.
+	canaryID      int64
+	canaryModel   string
+	canaryVersion string
+	canaryOffers  int64
+}
+
+// rolloutOf returns the rollout of a catalog row.
+func rolloutOf(r *db.ListFirmwareRow) rollout {
+	return rollout{
+		state: deref(r.RolloutState), canaryID: derefInt(r.CanaryID), canaryModel: deref(r.CanaryModel),
+		canaryVersion: deref(r.CanaryVersion), canaryOffers: r.CanaryOffers,
+	}
+}
+
+// notOpen returns why the build, which a device has been offered the given
+// number of times, is not offered to the device by its rollout, and a
+// sentence saying so, or "" and "" when it is. It is the rollout half of an
+// offer, which Offer and the per-device listing share with the device half.
+func (r *rollout) notOpen(deviceID int64, fw *db.Firmware, offers int64) (Reason, string) {
+	if !ValidSHA(fw.Sha256) {
+		return ReasonBadBuild, "the build's SHA-256 is not 64 lowercase hex digits"
+	}
+	switch r.state {
+	case "":
+		return ReasonNoRollout, "the build was never rolled out"
+	case stateActive:
+	default:
+		return ReasonCanceled, "the build's rollout was canceled"
+	}
+	if !canaryReported(fw, r.canaryModel, r.canaryVersion) {
+		if r.canaryOffers >= MaxOffers {
+			return ReasonStalled, "the canary was offered the build " + strconv.Itoa(MaxOffers) + " times and does not report its version"
+		}
+		if deviceID != r.canaryID {
+			return ReasonWaitingForCanary, "the canary has not reported the build's version yet"
+		}
+	}
+	if offers >= MaxOffers {
+		return ReasonCapReached, "the device was offered the build " + strconv.Itoa(MaxOffers) + " times"
+	}
+	return "", ""
 }
 
 // StartRollout offers the build with the given ID to the device named by
@@ -297,7 +411,7 @@ func StartRollout(ctx context.Context, client *db.Client, id int64, canary strin
 		if err != nil {
 			return err
 		}
-		if why := notEligible(&dev, dev.FwModel, dev.FwVersion, &fw); why != "" {
+		if reason, why := notEligible(&dev, dev.FwModel, dev.FwVersion, &fw); reason != "" {
 			return fmt.Errorf("%w: %s cannot be the canary: %s", errkind.ErrInvalid, dev.FriendlyID, why)
 		}
 		if err := q.ResetFirmwareOffers(ctx, db.ResetFirmwareOffersParams{DeviceID: dev.ID, FirmwareID: id}); err != nil {
@@ -345,16 +459,15 @@ func getFirmware(ctx context.Context, q *db.Queries, id int64) (db.Firmware, err
 
 // Get returns the build with the given ID and its rollout.
 func Get(ctx context.Context, q *db.Queries, id int64) (Entry, error) {
-	all, err := List(ctx, q)
+	row, err := q.GetFirmwareEntry(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Entry{}, fmt.Errorf("%w: %d", ErrNoFirmware, id)
+	}
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("get firmware: %w", err)
 	}
-	for i := range all {
-		if all[i].ID == id {
-			return all[i], nil
-		}
-	}
-	return Entry{}, fmt.Errorf("%w: %d", ErrNoFirmware, id)
+	r := db.ListFirmwareRow(row)
+	return newEntry(&r), nil
 }
 
 // Policy is a change to a device's firmware policy. A nil field is left as
@@ -405,9 +518,10 @@ func SetPolicy(ctx context.Context, client *db.Client, name string, p Policy) (d
 // model and version are what the device reported on this request. dev
 // supplies the device's policy. The build must be for exactly model, in an
 // active rollout, newer than version, with its file in dir, and the device
-// must be eligible (see notEligible). It must also be open to the device:
-// the device is the rollout's canary, or the canary has reported the
-// build's version. Of several builds that qualify the newest is offered.
+// must be eligible (see notEligible). It must also be open to the device
+// (see rollout.notOpen): the device is the rollout's canary, or the canary
+// has reported the build's version, and it was offered the build fewer than
+// MaxOffers times. Of several builds that qualify the newest is offered.
 // Offer counts nothing.
 func Offer(ctx context.Context, q *db.Queries, dir string, dev *db.Device, model, version string) (*db.Firmware, error) {
 	cands, err := offerable(ctx, q, dev, model, version)
@@ -427,10 +541,11 @@ func Offer(ctx context.Context, q *db.Queries, dir string, dev *db.Device, model
 // OfferAndRecord share it, so that a decision made inside a write
 // transaction makes no filesystem calls.
 func offerable(ctx context.Context, q *db.Queries, dev *db.Device, model, version string) ([]*db.Firmware, error) {
-	if _, ok := Models[model]; !ok || dev.UpdatesEnabled == 0 || dev.FwPin != "" {
+	// Most devices have updates off, so most wakes stop here without a query.
+	if reason, _ := notUpdatable(dev, model); reason != "" {
 		return nil, nil
 	}
-	rows, err := q.ListActiveFirmware(ctx, model)
+	rows, err := q.ListActiveFirmware(ctx, db.ListActiveFirmwareParams{DeviceID: dev.ID, FwModel: model})
 	if err != nil {
 		return nil, fmt.Errorf("list active firmware: %w", err)
 	}
@@ -442,21 +557,15 @@ func offerable(ctx context.Context, q *db.Queries, dev *db.Device, model, versio
 	for i := range rows {
 		r := &rows[i]
 		fw := &r.Firmware
-		if notEligible(dev, model, version, fw) != "" {
+		if reason, _ := notEligible(dev, model, version, fw); reason != "" {
 			continue
 		}
-		offers, err := q.GetFirmwareOffers(ctx, db.GetFirmwareOffersParams{DeviceID: dev.ID, FirmwareID: fw.ID})
-		if err != nil {
-			return nil, fmt.Errorf("count offers: %w", err)
-		}
-		if offers >= MaxOffers {
-			continue
-		}
-		if r.CanaryDeviceID != dev.ID && !canaryReported(fw, r.CanaryModel, r.CanaryVersion) {
+		ro := rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers}
+		if reason, _ := ro.notOpen(dev.ID, fw, r.Offers); reason != "" {
 			continue
 		}
 		v, err := ParseVersion(fw.Version)
-		if err != nil || !ValidSHA(fw.Sha256) {
+		if err != nil {
 			continue
 		}
 		cands = append(cands, candidate{fw, v})
@@ -471,6 +580,9 @@ func offerable(ctx context.Context, q *db.Queries, dev *db.Device, model, versio
 
 // onDisk reports whether the build's file is in dir, at the recorded size.
 func onDisk(dir string, fw *db.Firmware) bool {
+	if !ValidSHA(fw.Sha256) {
+		return false
+	}
 	fi, err := os.Stat(Path(dir, fw.Sha256))
 	return err == nil && fi.Mode().IsRegular() && fi.Size() == fw.Bytes
 }
@@ -556,4 +668,77 @@ func FileName(sha string) string { return sha + ".bin" }
 func SHAFromName(name string) (string, bool) {
 	sha, ok := strings.CutSuffix(name, ".bin")
 	return sha, ok && ValidSHA(sha)
+}
+
+// DeviceOffer is one device's standing for one build.
+type DeviceOffer struct {
+	DeviceID   int64
+	FriendlyID string
+	Name       string
+	// Model and Version are what the device last reported.
+	Model   string
+	Version string
+	// Canary is whether the device is this build's rollout canary.
+	Canary bool
+	// Offers is how many times the device has been offered the build.
+	Offers int64
+	// LastOfferedAt is when the device was last offered the build, in Unix
+	// seconds, or 0 for never.
+	LastOfferedAt int64
+	// Reason is why the device would not be offered the build now, or ""
+	// when it would.
+	Reason Reason
+	// Why is the sentence for Reason, or "" when the device is offered the
+	// build.
+	Why string
+	// CanBeCanary is whether StartRollout would accept the device as the
+	// build's canary now.
+	CanBeCanary bool
+}
+
+// DeviceOffers returns, for each device whose last reported model is the
+// build's, ordered by friendly ID, whether /api/display would offer it the
+// build now, and if not why. It makes the decision Offer makes, from the
+// same two halves, on the model and version the device last reported. Offer
+// decides on the headers of the wake itself, which are the same values
+// unless a wake leaves one out: /api/display then keeps the stored value but
+// offers nothing, so a device listed as offered is not offered on such a
+// wake. The listing never changes what is offered. It takes one query for the
+// build, one for the devices and one stat of the file, however many
+// devices there are. It wraps ErrNoFirmware for an unknown build.
+func DeviceOffers(ctx context.Context, q *db.Queries, dir string, firmwareID int64) ([]DeviceOffer, error) {
+	row, err := q.GetFirmwareEntry(ctx, firmwareID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %d", ErrNoFirmware, firmwareID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get firmware: %w", err)
+	}
+	entry := db.ListFirmwareRow(row)
+	fw := &entry.Firmware
+	ro := rolloutOf(&entry)
+	devs, err := q.ListFirmwareDevices(ctx, db.ListFirmwareDevicesParams{FirmwareID: firmwareID, FwModel: fw.FwModel})
+	if err != nil {
+		return nil, fmt.Errorf("list firmware devices: %w", err)
+	}
+	fileOK := onDisk(dir, fw)
+	out := make([]DeviceOffer, len(devs))
+	for i := range devs {
+		d := &devs[i]
+		o := DeviceOffer{
+			DeviceID: d.Device.ID, FriendlyID: d.Device.FriendlyID, Name: d.Device.Name,
+			Model: d.Device.FwModel, Version: d.Device.FwVersion, Canary: d.Device.ID == ro.canaryID,
+			Offers: d.Offers, LastOfferedAt: d.LastOfferedAt,
+		}
+		o.Reason, o.Why = notEligible(&d.Device, d.Device.FwModel, d.Device.FwVersion, fw)
+		o.CanBeCanary = o.Reason == ""
+		if o.Reason == "" {
+			o.Reason, o.Why = ro.notOpen(d.Device.ID, fw, d.Offers)
+		}
+		if o.Reason == "" && !fileOK {
+			o.Reason, o.Why = ReasonFileMissing, "the build's file is missing or is not the size that was added"
+		}
+		out[i] = o
+	}
+	return out, nil
 }
