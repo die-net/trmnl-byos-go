@@ -375,11 +375,17 @@ func (c *copier) fromDir(dir string) error {
 // holding its shallowest settings.yml.
 func (c *copier) fromZip(file string) error {
 	zr, err := zip.OpenReader(file)
-	if errors.Is(err, zip.ErrFormat) {
-		return errkind.Wrap(errkind.ErrInvalid, "the file is not a zip archive", err)
-	}
-	if err != nil {
+	var pathErr *fs.PathError
+	switch {
+	case errors.As(err, &pathErr):
+		// Opening the file or reading its size failed, which is the
+		// server's side.
 		return fmt.Errorf("open recipe zip: %w", err)
+	case err != nil:
+		// Anything else is about the file's contents. It is not only
+		// zip.ErrFormat: a directory that runs off the end of the file is a
+		// bare io.ErrUnexpectedEOF.
+		return errkind.Wrap(errkind.ErrInvalid, "the file is not a zip archive", err)
 	}
 	defer zr.Close()
 	top, depth := "", -1

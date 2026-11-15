@@ -148,7 +148,7 @@ func (s *Server) recipes(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderRecipes(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	views, err := s.recipeViews(r.Context())
 	if err != nil {
-		serverError(w, "list recipes", err)
+		serverError(w, r, "list recipes", err)
 		return
 	}
 	s.render(w, r, status, "recipes", pageData{
@@ -229,7 +229,7 @@ func (s *Server) uploadRecipe(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderRecipes(w, r, http.StatusBadRequest, invalidText(err))
 	default:
-		serverError(w, "install recipe", err)
+		serverError(w, r, "install recipe", err)
 	}
 }
 
@@ -306,7 +306,7 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, invalidText(err))
 	default:
-		serverError(w, "add instance", err)
+		serverError(w, r, "add instance", err)
 	}
 }
 
@@ -331,7 +331,7 @@ func (s *Server) instanceFromPath(w http.ResponseWriter, r *http.Request) (db.Pl
 func (s *Server) renderInstanceDelete(w http.ResponseWriter, r *http.Request, status int, inst *db.PluginInstance) {
 	rows, err := s.db.Read.ListPlaylistsOfInstance(r.Context(), inst.ID)
 	if err != nil {
-		serverError(w, "list instance playlists", err)
+		serverError(w, r, "list instance playlists", err)
 		return
 	}
 	d := &instanceDeleteView{
@@ -373,6 +373,6 @@ func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
 		// shows the playlists instead.
 		s.renderInstanceDelete(w, r, http.StatusConflict, &inst)
 	default:
-		serverError(w, "remove instance", err)
+		serverError(w, r, "remove instance", err)
 	}
 }
