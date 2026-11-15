@@ -312,7 +312,10 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	case errors.As(err, &fieldErrs):
 		// A recipe with a required field can't get an instance from this form
 		// until it has a settings form.
-		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err)+" Set the recipe's fields with `trmnl-byos instance set` or the API until the settings form is built.")
+		// The refused create made no instance, so the hint is a command that
+		// makes one with its fields.
+		hint := fmt.Sprintf(" Until this form can set fields, make the instance with trmnl-byos instance add -recipe %d -field KEY=VALUE, or with POST /api/v1/instances.", rec.ID)
+		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err)+hint)
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err))
 	default:

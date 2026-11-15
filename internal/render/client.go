@@ -27,7 +27,9 @@ type Client struct {
 // matching ErrBuildFailed. A job that is too big to send, or that the shim
 // refuses with a 400, returns an error matching ErrRejected. A renderer that
 // cannot be reached or does not answer with a result returns an error
-// matching ErrUnavailable.
+// matching ErrUnavailable. A project that writeProject cannot write, such as
+// a recipe whose files are gone, returns writeProject's error, which matches
+// none of these: the fault is in the project, not the renderer.
 func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writer) error,
 	png func(layout string, r io.Reader) error,
 ) (string, error) {
@@ -42,8 +44,11 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		return "", fmt.Errorf("%w: the job is %d bytes, over the limit of %d", ErrRejected, len(enc), maxJobBytes)
 	}
 	pr, pw := io.Pipe()
+	written := make(chan error, 1)
 	go func() {
-		pw.CloseWithError(writeRequest(pw, enc, writeProject))
+		err := writeRequest(bodyWriter{pw}, enc, writeProject)
+		written <- err
+		pw.CloseWithError(err)
 	}()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.URL, "/")+"/build", pr)
 	if err != nil {
@@ -54,6 +59,10 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		_ = pr.CloseWithError(err)
+		// Closing the reader ends the writer's next write, so it is done.
+		if werr := <-written; werr != nil && !errors.Is(werr, errBody) {
+			return "", fmt.Errorf("write project: %w", werr)
+		}
 		return "", fmt.Errorf("render request: %w: %w", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
@@ -99,6 +108,22 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		return log.String(), fmt.Errorf("render result has %d of %d layouts", got, len(Layouts))
 	}
 	return log.String(), nil
+}
+
+// errBody marks an error writing the request body, which means the
+// renderer stopped reading it, so it can be told from an error reading the
+// project.
+var errBody = errors.New("write request body")
+
+// bodyWriter is the request body, with each write's error marked errBody.
+type bodyWriter struct{ w io.Writer }
+
+func (b bodyWriter) Write(p []byte) (int, error) {
+	n, err := b.w.Write(p)
+	if err != nil {
+		err = fmt.Errorf("%w: %w", errBody, err)
+	}
+	return n, err
 }
 
 // writeRequest writes the request tar: the encoded job, then the project.

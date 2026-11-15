@@ -253,6 +253,35 @@ func TestUnavailable(t *testing.T) {
 	}
 }
 
+// TestProjectUnwritable checks that a project that cannot be written, as
+// when a recipe's files are gone, returns the project's error, which is not
+// ErrUnavailable, so the build counts toward its backoff like any failed
+// build and its error does not blame the renderer. A renderer that stops
+// reading the body is still ErrUnavailable.
+func TestProjectUnwritable(t *testing.T) {
+	t.Parallel()
+	shim := newShimServer(t, time.Second)
+	missing := filepath.Join(t.TempDir(), "gone")
+	_, err := shim.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"},
+		func(tw *tar.Writer) error { return AddDir(tw, missing, "src/") },
+		collect(map[string]string{}))
+	if err == nil || errors.Is(err, ErrUnavailable) || errors.Is(err, ErrRejected) || !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing project: err %v", err)
+	}
+
+	hangUp := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(hangUp.Close)
+	c := &Client{URL: hangUp.URL, HTTP: hangUp.Client()}
+	big := func(tw *tar.Writer) error {
+		return AddFile(tw, "src/big", 8<<20, bytes.NewReader(make([]byte, 8<<20)))
+	}
+	if _, err := c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, big, collect(map[string]string{})); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("renderer hung up: err %v", err)
+	}
+}
+
 // TestJobSize checks that a job is encoded without HTML escaping, which the
 // shim reads the same, that EnvSize is the size of what is sent, and that a
 // job over the limit is refused by the client before anything is sent, as

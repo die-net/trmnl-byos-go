@@ -144,7 +144,7 @@ func (s *Scheduler) RenderNext(ctx context.Context) (built bool, err error) {
 		return false, err
 	}
 	t := targets[0]
-	recorded, err := s.render(ctx, t)
+	recorded, err := s.render(ctx, t.target, t.seen)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, ctx.Err()
@@ -166,6 +166,18 @@ type candidate struct {
 	wanted []time.Time
 }
 
+// job is a target that is due, with what the scan saw of its instance.
+type job struct {
+	target
+	// seen is the instance's version when the scan found the target due. A
+	// failed build records it for what the build did not get to read, so a
+	// target whose build fails early is not due again by the same change.
+	seen version
+	// by is when the target is first wanted, the zero time if no wake
+	// waits for it.
+	by time.Time
+}
+
 // version is what a build reads of an instance that can change under it,
 // each as a time that rises with every change.
 type version struct {
@@ -179,7 +191,7 @@ type version struct {
 // dueTargets returns the targets that are due now. Those wanted by a wake
 // come first, soonest first. The rest keep their fixed order. It reads every
 // render row once, not one row per candidate.
-func (s *Scheduler) dueTargets(ctx context.Context) ([]target, error) {
+func (s *Scheduler) dueTargets(ctx context.Context) ([]job, error) {
 	cands, err := s.candidates(ctx)
 	if err != nil {
 		return nil, err
@@ -201,17 +213,13 @@ func (s *Scheduler) dueTargets(ctx context.Context) ([]target, error) {
 		}
 	}
 	now := s.now()
-	type dueTarget struct {
-		target
-		by time.Time
-	}
-	var list []dueTarget
+	var list []job
 	for _, c := range cands {
 		if ok, by := due(c.target, renders[renderKey{c.instance, c.device, int64(c.width), int64(c.height), c.palette}], c.wanted, c.woken, c.read, now); ok {
-			list = append(list, dueTarget{c.target, by})
+			list = append(list, job{target: c.target, seen: c.read, by: by})
 		}
 	}
-	slices.SortStableFunc(list, func(a, b dueTarget) int {
+	slices.SortStableFunc(list, func(a, b job) int {
 		switch {
 		case a.by.IsZero() && b.by.IsZero():
 			return 0
@@ -222,11 +230,7 @@ func (s *Scheduler) dueTargets(ctx context.Context) ([]target, error) {
 		}
 		return a.by.Compare(b.by)
 	})
-	out := make([]target, len(list))
-	for i := range list {
-		out[i] = list[i].target
-	}
-	return out, nil
+	return list, nil
 }
 
 // renderKey is the columns that identify a render row, as a target has them.
@@ -498,14 +502,15 @@ type stored struct {
 	size int64
 }
 
-// render builds t and records the outcome. recorded is whether a success or
-// a failure was written, so that err is the build's failure when recorded,
-// and a failure to write otherwise.
-func (s *Scheduler) render(ctx context.Context, t target) (recorded bool, err error) {
+// render builds t and records the outcome. seen is the instance's version
+// when the scan found t due. recorded is whether a success or a failure was
+// written, so that err is the build's failure when recorded, and a failure
+// to write otherwise.
+func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorded bool, err error) {
 	start := s.now()
 	bctx, cancel := context.WithTimeout(ctx, s.buildTimeout)
 	defer cancel()
-	images, log, read, err := s.build(bctx, t)
+	images, log, read, err := s.build(bctx, t, seen)
 	took := s.now().Sub(start)
 	slog.Info("render", "instance", t.instance, "device", t.device, "width", t.width, "height", t.height, "palette", t.palette,
 		"seconds", took.Seconds(), "err", err)
@@ -568,9 +573,13 @@ func (s *Scheduler) render(ctx context.Context, t target) (recorded bool, err er
 
 // build sends t's project to the renderer and stores the images it returns.
 // It also returns what it read of the instance, which the render records. A
-// build that fails before it reads the instance, or its data, returns 0 for
-// what it did not read.
-func (s *Scheduler) build(ctx context.Context, t target) (images map[string]stored, log string, read version, err error) {
+// build that fails before it reads the instance, or its data, returns what
+// the scan saw, seen, for what it did not read. A failure then records the
+// version it was due for, so a change makes a failing target due once, and
+// it otherwise waits for its backoff, wherever the build failed. Recording 0
+// instead would make a target whose settings ever changed due on every scan.
+func (s *Scheduler) build(ctx context.Context, t target, seen version) (images map[string]stored, log string, read version, err error) {
+	read = seen
 	if t.broken != "" {
 		return nil, "", read, errors.New(t.broken)
 	}
@@ -585,13 +594,16 @@ func (s *Scheduler) build(ctx context.Context, t target) (images map[string]stor
 	}
 	proj := recipe.NewProject(recipe.Dir(s.cfg.RecipesDir, inst.RecipeID), fields, s.cfg.Zone.String(), s.cfg.AssetHosts)
 	data, err := s.cfg.DB.Read.GetInstanceData(ctx, t.instance)
-	if err == nil {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		read.data = 0
+	case err != nil:
+		return nil, "", read, fmt.Errorf("get instance data: %w", err)
+	default:
 		read.data = data.UpdatedAt
 		if proj, err = proj.WithData(data.Data); err != nil {
 			return nil, "", read, fmt.Errorf("instance %d data: %w", t.instance, err)
 		}
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return nil, "", read, fmt.Errorf("get instance data: %w", err)
 	}
 	if t.device != 0 {
 		row, err := s.cfg.DB.Read.GetRenderDevice(ctx, t.device)

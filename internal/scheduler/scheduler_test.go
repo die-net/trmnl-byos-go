@@ -1527,6 +1527,53 @@ func TestSettingsChangeAfterFailure(t *testing.T) {
 	}
 }
 
+// TestBrokenTargetAfterSettingsChange checks that a target whose build fails
+// before it reads the instance, here because its recipe directory is gone,
+// is recorded once with the settings_at the scan saw, and then waits for
+// its backoff, though its instance's settings once changed. Recording 0 for
+// the settings the build did not read made such a target due on every scan.
+func TestBrokenTargetAfterSettingsChange(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.setToken(t, "swordfish")
+	changed := h.now.Unix()
+	// Gone before the first scan, so the target is broken: its recipe
+	// cannot be scanned, and the build fails before it reads the instance.
+	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	h.drain(t)
+	r := h.render(t)
+	if r.Error == "" || r.Failures != 1 || r.SettingsAt != changed || r.AttemptedAt != h.now.Unix() {
+		t.Fatalf("after the first failure: %+v, want one failure that saw settings_at %d", r, changed)
+	}
+	h.now = h.now.Add(db.RenderRetryAfter - time.Second)
+	h.drain(t)
+	if r := h.render(t); r.Failures != 1 {
+		t.Fatalf("retried before the backoff: %+v", r)
+	}
+}
+
+// TestRecipeGoneAfterScan checks that a recipe whose files go after the
+// scheduler scanned it, so its build fails writing the project, is recorded
+// as a failed build that counts toward the backoff, with a reason that does
+// not blame the renderer.
+func TestRecipeGoneAfterScan(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.renderDue(t, 1)
+	h.now = h.now.Add(time.Minute)
+	h.setToken(t, "swordfish")
+	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1)); err != nil {
+		t.Fatal(err)
+	}
+	h.drain(t)
+	if r := h.render(t); r.Failures != 1 || !strings.Contains(r.Error, "write project") || strings.Contains(r.Error, "unavailable") {
+		t.Fatalf("after the recipe went: %+v", r)
+	}
+}
+
 // TestRejectedJobCounts checks that a job the renderer refuses, either
 // because the shim answers 400 or because the client will not send it for
 // its size, is recorded as a failed build that counts toward the backoff,

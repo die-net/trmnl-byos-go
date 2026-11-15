@@ -5,7 +5,7 @@
 //	trmnl-byos devices    list registered devices
 //	trmnl-byos calibrate  show a device the gray calibration screen
 //	trmnl-byos recipe     install and list recipes
-//	trmnl-byos instance   create and list plugin instances
+//	trmnl-byos instance   create, list, change and remove plugin instances
 //	trmnl-byos playlist   edit what devices show
 //	trmnl-byos token      create and remove API tokens
 //	trmnl-byos password   set the admin password for the web UI
@@ -53,7 +53,7 @@ commands:
   devices    list registered devices
   calibrate  show a device the gray calibration screen
   recipe     install and list recipes: add, list
-  instance   create and list plugin instances: add, list
+  instance   create, list, change and remove plugin instances: add, list, set, remove
   playlist   edit what devices show: add, remove, list, move, set, schedule, create, rename, delete, link, unlink, order
   token      create and remove API tokens: add, list, remove
   password   set the admin password for the web UI
