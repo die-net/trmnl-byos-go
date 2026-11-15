@@ -1299,6 +1299,7 @@ func TestFormShowableValues(t *testing.T) {
 		{"a carriage return in a one-line field", map[string]Value{"city": {One: "Zurich\rNorth"}}, map[string]string{"city": "must be one line"}},
 		{"a line break in a password", map[string]Value{"token": {One: "hunter2\n2"}}, map[string]string{"token": "must be one line"}},
 		{"a line break in a multi-line field", map[string]Value{"notes": {One: "line one\nline two"}}, nil},
+		{"a CR LF or a lone CR in a multi-line field", map[string]Value{"notes": {One: "one\r\ntwo\rthree"}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1330,6 +1331,20 @@ func TestFormShowableValues(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a multi-line field stores CR LF and a lone CR as LF", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}, "notes": {One: "one\r\ntwo\rthree"}}}, now)
+		if err != nil || inst.FieldValues != `{"city":"Zurich","notes":"one\ntwo\nthree"}` {
+			t.Fatalf("create: %s, %v", inst.FieldValues, err)
+		}
+		// What a browser posts back for the same text is no change.
+		got, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"notes": {One: "one\r\ntwo\r\nthree"}}}, now.Add(time.Minute))
+		if err != nil || got.FieldValues != inst.FieldValues || got.SettingsAt != inst.SettingsAt {
+			t.Errorf("update: %s, settings_at %d (was %d), %v", got.FieldValues, got.SettingsAt, inst.SettingsAt, err)
+		}
+	})
 
 	t.Run("a multi-select is stored in option order", func(t *testing.T) {
 		t.Parallel()

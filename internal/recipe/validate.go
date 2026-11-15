@@ -143,9 +143,15 @@ func (f *Field) check(v Value, sealed bool) (Value, string) {
 		}
 	default:
 		// A one-line input cannot show a line break, so a form saving the
-		// value back would change it.
-		if (input == "text" || input == "password") && strings.ContainsAny(v.One, "\r\n") {
-			return v, "must be one line"
+		// value back would change it. A textarea shows every line break as
+		// LF and posts it as CR LF, so CR LF and a lone CR are stored as LF.
+		switch input {
+		case "text", "password":
+			if strings.ContainsAny(v.One, "\r\n") {
+				return v, "must be one line"
+			}
+		case "textarea":
+			v.One = lineBreaks.Replace(v.One)
 		}
 		if msg := f.checkText(v.One); msg != "" || !sealed {
 			return v, msg
@@ -181,6 +187,9 @@ func (f *Field) checkNumber(s string) string {
 	return ""
 }
 
+// lineBreaks turns CR LF and a lone CR into LF.
+var lineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
 // numberSyntax is the grammar of a number an HTML number input shows back
 // as written: an optional minus, digits, an optional fraction with digits on
 // both sides of the point, and an optional exponent. ParseFloat also takes
@@ -189,11 +198,13 @@ func (f *Field) checkNumber(s string) string {
 var numberSyntax = regexp.MustCompile(`^-?\d+(\.\d+)?([eE][+-]?\d+)?$`)
 
 // inOptionOrder returns the chosen values in the order of the field's
-// options. Every value is one of them.
+// options, each once. Every value is one of them. Two options may share a
+// value, as Red and red do once lowercased, and the value is then stored
+// once, at its first option.
 func (f *Field) inOptionOrder(chosen []string) []string {
 	out := make([]string, 0, len(chosen))
 	for _, o := range f.Options {
-		if slices.Contains(chosen, o.Value) {
+		if slices.Contains(chosen, o.Value) && !slices.Contains(out, o.Value) {
 			out = append(out, o.Value)
 		}
 	}
