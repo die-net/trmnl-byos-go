@@ -145,9 +145,18 @@ func (v *Value) UnmarshalJSON(b []byte) error {
 		}
 		*v = Value{One: one}
 	case len(b) > 0 && b[0] == '[':
-		many := []string{}
-		if err := json.Unmarshal(b, &many); err != nil {
+		// A null element decodes into a string as "", so the elements are
+		// pointers, and a nil one is refused.
+		var items []*string
+		if err := json.Unmarshal(b, &items); err != nil {
 			return refused
+		}
+		many := make([]string, len(items))
+		for i, item := range items {
+			if item == nil {
+				return refused
+			}
+			many[i] = *item
 		}
 		*v = Value{Many: many}
 	default:

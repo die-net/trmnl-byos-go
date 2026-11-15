@@ -43,10 +43,15 @@ type InstanceUpdate struct {
 	Name *string
 	// Palette is the new palette, or "" for the device's own.
 	Palette *string
-	// Values are the custom field values to change by keyname. A key with
-	// an empty value clears that field, secret or not, and a key left out
-	// is kept.
+	// Values are the custom field values to change by keyname. A key left
+	// out is kept. An empty value clears a plain field. For a password
+	// field it is ignored, so the stored secret is kept: a form that leaves
+	// a secret blank cannot wipe it. A secret is cleared with Clear.
 	Values map[string]Value
+	// Clear is the keynames of the fields to clear, secret or not. A
+	// required field cannot be cleared, and a key in both Clear and Values
+	// is refused.
+	Clear []string
 }
 
 // readFields returns the custom fields of the recipe with the given ID. It
@@ -100,7 +105,7 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 	if len(secret) > 0 && key == nil {
 		return db.PluginInstance{}, secrets.ErrNoKey
 	}
-	if err := checkEnvSize(plain, secret, 0); err != nil {
+	if err := checkEnvSize(plain, secret); err != nil {
 		return db.PluginInstance{}, err
 	}
 	if p.Name, err = CleanInstanceName(p.Name); err != nil {
@@ -131,7 +136,7 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		}
 		// The sealed value is bound to the instance ID, so it can be made
 		// only once the row has one.
-		if inst.SecretValues, err = sealSecrets(key, inst.ID, secret); err != nil {
+		if inst.SecretValues, err = sealSecrets(key, &inst, secret); err != nil {
 			return err
 		}
 		if err := q.SetInstanceSecrets(ctx, db.SetInstanceSecretsParams{SecretValues: inst.SecretValues, ID: inst.ID}); err != nil {
@@ -148,17 +153,23 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 // UpdateInstance changes a plugin instance, and returns it as it is after.
 // The values are checked as CreateInstance checks them, except that a
 // required field is checked only when the update clears it: the ones it
-// leaves out had values when the instance was made, and may not be openable
-// without the key. The read, merge and write run in one transaction, and a
-// refused update changes nothing.
+// leaves out had values when the instance was made. The read, merge and
+// write run in one transaction, and a refused update changes nothing.
 //
-// The stored secrets are opened, which needs key, only when the update
-// touches a password field, and are then sealed again. Stored secrets that
-// do not open with key, as after a key change, make such an update fail with
-// an error wrapping errkind.ErrInvalid. Only a change to a field value or a
-// secret raises the instance's settings_at, which makes its renders stale.
+// A keyname lives in exactly one of the plain field values and the sealed
+// secrets: writing a value puts it in the store its field's type says now,
+// and removes it from the other, and clearing removes it from both. The
+// stored secrets cannot be told apart without opening them, so they are
+// opened, which needs key, whenever the update changes any value and the
+// instance has sealed secrets, and are sealed again only when they changed.
+// An update of only the name or palette never opens them. Stored secrets that
+// do not open with key, as after a key change, make an update that has to open
+// them fail with an error wrapping errkind.ErrInvalid. Only a change to a
+// field value or a secret raises the instance's settings_at, which makes its
+// renders stale.
 //
-// It returns ErrNoInstance for an unknown ID, and the errors of
+// It returns ErrNoInstance for an unknown ID, secrets.ErrNoKey when the
+// secrets have to be opened or sealed and key is nil, and the errors of
 // CreateInstance for the rest.
 func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, recipesDir string, id int64, u InstanceUpdate, now time.Time) (db.PluginInstance, error) {
 	if u.Palette != nil {
@@ -186,17 +197,20 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 	if err != nil {
 		return db.PluginInstance{}, err
 	}
-	values, err := checkValues(fields, u.Values, false)
+	byName := fieldsByName(fields)
+	merged, both := changes(byName, u)
+	values, err := checkValues(fields, merged, false)
+	if len(both) > 0 {
+		bad := FieldErrors{}
+		var fe FieldErrors
+		if errors.As(err, &fe) {
+			maps.Copy(bad, fe)
+		}
+		maps.Copy(bad, both)
+		return db.PluginInstance{}, bad
+	}
 	if err != nil {
 		return db.PluginInstance{}, err
-	}
-	byName := fieldsByName(fields)
-	touchesSecret := false
-	for k := range values {
-		touchesSecret = touchesSecret || byName[k].Secret()
-	}
-	if touchesSecret && key == nil {
-		return db.PluginInstance{}, secrets.ErrNoKey
 	}
 	var out db.PluginInstance
 	err = client.InTx(ctx, func(q *db.Queries) error {
@@ -207,7 +221,13 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		if err != nil {
 			return fmt.Errorf("get instance: %w", err)
 		}
-		plain, secret, err := decodeFields(&cur, key, touchesSecret)
+		// Sealed secrets are opened to know which names are inside, and a
+		// secret is sealed, so either needs the key.
+		open := len(values) > 0 && (len(cur.SecretValues) > 0 || touchesSecret(byName, values))
+		if open && key == nil {
+			return secrets.ErrNoKey
+		}
+		plain, secret, err := decodeFields(&cur, key, open)
 		if errors.Is(err, errUnreadable) {
 			// The error is not shown: it comes from the sealed value.
 			return fmt.Errorf("%w: the instance's stored secret fields cannot be opened with the secrets key, so they cannot be changed", errkind.ErrInvalid)
@@ -217,12 +237,10 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		}
 		oldPlain, oldSecret := maps.Clone(plain), maps.Clone(secret)
 		setValues(byName, plain, secret, values)
-		unopened := 0
-		if !touchesSecret {
-			unopened = len(cur.SecretValues)
-		}
-		if err := checkEnvSize(plain, secret, unopened); err != nil {
-			return err
+		if len(values) > 0 {
+			if err := checkEnvSize(plain, secret); err != nil {
+				return err
+			}
 		}
 		arg := db.UpdateInstanceParams{
 			ID: id, Name: cur.Name, Palette: cur.Palette, SecretValues: cur.SecretValues, SettingsAt: cur.SettingsAt,
@@ -243,7 +261,7 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		plainChanged := !maps.EqualFunc(oldPlain, plain, Value.equal)
 		secretChanged := !maps.Equal(oldSecret, secret)
 		if secretChanged {
-			if arg.SecretValues, err = sealSecrets(key, id, secret); err != nil {
+			if arg.SecretValues, err = sealSecrets(key, &cur, secret); err != nil {
 				return err
 			}
 		}
@@ -268,18 +286,55 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 	return out, nil
 }
 
+// changes returns the values of an update to check and apply, with each
+// keyname in Clear as an empty value, and a FieldErrors for the keys that are
+// in both. An empty value for a password field is left out, since it means
+// keep.
+func changes(byName map[string]*Field, u InstanceUpdate) (map[string]Value, FieldErrors) {
+	out := make(map[string]Value, len(u.Values)+len(u.Clear))
+	for k, v := range u.Values {
+		if f := byName[k]; f != nil && f.Secret() && v.Empty() {
+			continue
+		}
+		out[k] = v
+	}
+	var both FieldErrors
+	for _, k := range u.Clear {
+		if _, ok := u.Values[k]; ok {
+			if both == nil {
+				both = FieldErrors{}
+			}
+			both[k] = "is both set and cleared"
+			continue
+		}
+		out[k] = Value{}
+	}
+	return out, both
+}
+
+// touchesSecret reports whether values has a password field.
+func touchesSecret(byName map[string]*Field, values map[string]Value) bool {
+	for k := range values {
+		if byName[k].Secret() {
+			return true
+		}
+	}
+	return false
+}
+
 // setValues applies checked values to an instance's plain and secret field
-// values: a password field's goes to secret, any other to plain, and an
-// empty value removes the field.
+// values: a password field's goes to secret, any other to plain, and in both
+// cases the key is removed from the other store, so a field whose type has
+// changed since it was set has one value. An empty value removes the key from
+// both.
 func setValues(byName map[string]*Field, plain map[string]Value, secret map[string]string, values map[string]Value) {
 	for k, v := range values {
+		delete(plain, k)
+		delete(secret, k)
 		switch {
-		case byName[k].Secret() && v.Empty():
-			delete(secret, k)
+		case v.Empty():
 		case byName[k].Secret():
 			secret[k] = v.One
-		case v.Empty():
-			delete(plain, k)
 		default:
 			plain[k] = v
 		}
@@ -309,13 +364,9 @@ func CleanInstanceName(name string) (string, error) {
 
 // checkEnvSize returns a FieldErrors, for the field with the most bytes, if
 // the field values do not fit in a render job. They travel in its Env, built
-// by envFor as the scheduler builds it, with the secret values in hand
-// counted exactly. Sealed secrets that were not opened, since the key is not
-// needed to change a plain field, count as their sealed length: it is at
-// least the size of their JSON with no escaping, apart from the length of
-// the names and of control characters, and the client refuses a job that
-// still comes out too big, as a failed build.
-func checkEnvSize(plain map[string]Value, secret map[string]string, sealed int) error {
+// by envFor as the scheduler builds it. A job over the limit is also refused
+// by the client, as a failed build.
+func checkEnvSize(plain map[string]Value, secret map[string]string) error {
 	all := make(map[string]Value, len(plain)+len(secret))
 	maps.Copy(all, plain)
 	for k, v := range secret {
@@ -326,7 +377,7 @@ func checkEnvSize(plain map[string]Value, secret map[string]string, sealed int) 
 	if err != nil {
 		return err
 	}
-	if size+sealed <= render.MaxEnvBytes {
+	if size <= render.MaxEnvBytes {
 		return nil
 	}
 	largest, most := "", -1
@@ -335,18 +386,21 @@ func checkEnvSize(plain map[string]Value, secret map[string]string, sealed int) 
 			largest, most = k, n
 		}
 	}
-	return FieldErrors{largest: fmt.Sprintf("the field values come to %d KB, over the %d KB limit", (size+sealed+1023)/1024, render.MaxEnvBytes/1024)}
+	return FieldErrors{largest: fmt.Sprintf("the field values come to %d KB, over the %d KB limit", (size+1023)/1024, render.MaxEnvBytes/1024)}
 }
 
 // secretAD is the associated data an instance's secrets are sealed with, so
-// a sealed value copied to another instance does not open.
-func secretAD(id int64) []byte {
-	return []byte("plugin_instance:" + strconv.FormatInt(id, 10))
+// a sealed value copied to another instance does not open. It has the
+// recipe and the creation time as well as the ID, since an ID is reused once
+// its instance is deleted, and the sealed value of the deleted one must not
+// open under the next.
+func secretAD(inst *db.PluginInstance) []byte {
+	return []byte("plugin_instance:" + strconv.FormatInt(inst.ID, 10) + ":" + strconv.FormatInt(inst.RecipeID, 10) + ":" + strconv.FormatInt(inst.CreatedAt, 10))
 }
 
-// sealSecrets returns the secrets sealed for the instance with the ID, or
+// sealSecrets returns the secrets sealed for the instance, or
 // nil for none, which the database keeps as NULL.
-func sealSecrets(key *secrets.Key, id int64, secret map[string]string) ([]byte, error) {
+func sealSecrets(key *secrets.Key, inst *db.PluginInstance, secret map[string]string) ([]byte, error) {
 	if len(secret) == 0 {
 		return nil, nil
 	}
@@ -354,7 +408,7 @@ func sealSecrets(key *secrets.Key, id int64, secret map[string]string) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("encode secrets: %w", err)
 	}
-	sealed, err := key.Seal(plain, secretAD(id))
+	sealed, err := key.Seal(plain, secretAD(inst))
 	if err != nil {
 		return nil, fmt.Errorf("seal secrets: %w", err)
 	}
@@ -377,7 +431,7 @@ func decodeFields(inst *db.PluginInstance, key *secrets.Key, open bool) (plain m
 	if !open || len(inst.SecretValues) == 0 {
 		return plain, map[string]string{}, nil
 	}
-	opened, err := key.Open(inst.SecretValues, secretAD(inst.ID))
+	opened, err := key.Open(inst.SecretValues, secretAD(inst))
 	if err != nil {
 		return plain, nil, fmt.Errorf("%w: %w", errUnreadable, err)
 	}

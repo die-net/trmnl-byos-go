@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"errors"
 	"maps"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -240,15 +241,24 @@ func TestUpdateInstance(t *testing.T) {
 			desc: "a secret changes", update: InstanceUpdate{Values: map[string]Value{"token": {One: "swordfish"}}}, key: "a",
 			fields: initial, secret: map[string]string{"token": "swordfish"}, settingsAt: settingsAt,
 		},
-		{desc: "a secret clears", update: InstanceUpdate{Values: map[string]Value{"token": {}}}, key: "a", fields: initial, secret: map[string]string{}, settingsAt: settingsAt},
+		{desc: "a secret clears with Clear", update: InstanceUpdate{Clear: []string{"token"}}, key: "a", fields: initial, secret: map[string]string{}, settingsAt: settingsAt},
+		{desc: "an empty password keeps the secret", update: InstanceUpdate{Values: map[string]Value{"token": {}, "other": {One: "   "}}}, key: "a"},
+		{desc: "an empty password with no key is ignored", update: InstanceUpdate{Values: map[string]Value{"token": {}}}, key: ""},
 		{
-			desc: "a secret kept with no key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "",
-			fields: map[string]Value{"city": {One: "Bern"}, "tags": {Many: []string{"a", "b"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+			desc: "a plain field clears with Clear", update: InstanceUpdate{Clear: []string{"tags"}}, key: "a",
+			fields: map[string]Value{"city": {One: "Zurich"}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
 		},
 		{
-			desc: "a secret kept under another key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "b",
-			fields: map[string]Value{"city": {One: "Bern"}, "tags": {Many: []string{"a", "b"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+			desc: "a key in both Values and Clear", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}, "days": {One: "0"}}, Clear: []string{"city", "tags"}}, key: "a",
+			wantErr: errkind.ErrInvalid, wantFields: []string{"city", "days"},
 		},
+		{desc: "Clear of a required field", update: InstanceUpdate{Clear: []string{"city"}}, key: "a", wantErr: errkind.ErrInvalid, wantFields: []string{"city"}},
+		{desc: "Clear of an unknown field", update: InstanceUpdate{Clear: []string{"nope"}}, key: "a", wantErr: errkind.ErrInvalid, wantFields: []string{"nope"}},
+		{desc: "a rename with no key opens nothing", update: InstanceUpdate{Name: ptr("Home"), Palette: ptr("bw")}, key: "", name: "Home", palette: "bw"},
+		{desc: "a rename under another key opens nothing", update: InstanceUpdate{Name: ptr("Home")}, key: "b", name: "Home"},
+		{desc: "a plain change must open the sealed secrets, and has no key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "", wantErr: secrets.ErrNoKey},
+		{desc: "a plain clear has no key", update: InstanceUpdate{Clear: []string{"tags"}}, key: "", wantErr: secrets.ErrNoKey},
+		{desc: "a plain change under another key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "b", wantErr: errkind.ErrInvalid},
 		{desc: "a secret changed with no key", update: InstanceUpdate{Values: map[string]Value{"token": {One: "swordfish"}}}, key: "", wantErr: secrets.ErrNoKey},
 		{desc: "a secret changed under another key", update: InstanceUpdate{Values: map[string]Value{"token": {One: "swordfish"}}}, key: "b", wantErr: errkind.ErrInvalid},
 	} {
@@ -435,21 +445,35 @@ func TestUpdateTwoSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A plain field changes with both secrets set and no key.
-	got, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, now)
-	if err != nil || !bytes.Equal(got.SecretValues, inst.SecretValues) {
-		t.Fatalf("a plain update with no key: %v; sealed bytes changed: %v", err, !bytes.Equal(got.SecretValues, inst.SecretValues))
+	// A rename needs no key, and leaves the sealed bytes as they were.
+	got, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Name: ptr("Home")}, now)
+	if err != nil || !bytes.Equal(got.SecretValues, inst.SecretValues) || got.Name != "Home" {
+		t.Fatalf("a rename with no key: %v; sealed bytes changed: %v", err, !bytes.Equal(got.SecretValues, inst.SecretValues))
+	}
+	// A plain field cannot be changed with no key: the secrets must be opened.
+	if _, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, now); !errors.Is(err, secrets.ErrNoKey) {
+		t.Fatalf("a plain update with no key: %v", err)
+	}
+	// With the key, an update that changes no secret seals nothing again.
+	same, err := UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}, "token": {One: "hunter2"}}}, now)
+	if err != nil || !bytes.Equal(same.SecretValues, inst.SecretValues) {
+		t.Fatalf("an update that changes no secret: %v; sealed bytes changed: %v", err, !bytes.Equal(same.SecretValues, inst.SecretValues))
+	}
+	// An empty password is kept, not cleared.
+	if got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"token": {}}}, now); err != nil || !bytes.Equal(got.SecretValues, inst.SecretValues) {
+		t.Fatalf("an empty password: %v", err)
 	}
 	for _, tc := range []struct {
 		name   string
-		update map[string]Value
+		update InstanceUpdate
 		want   map[string]Value
 	}{
-		{"clear one", map[string]Value{"token": {}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "swordfish"}}},
-		{"change the other", map[string]Value{"other": {One: "trout-fish"}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "trout-fish"}}},
-		{"set one back", map[string]Value{"token": {One: "hunter3"}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "trout-fish"}, "token": {One: "hunter3"}}},
+		{"an empty value keeps both", InstanceUpdate{Values: map[string]Value{"token": {}, "other": {}}}, map[string]Value{"city": {One: "Bern"}, "token": {One: "hunter2"}, "other": {One: "swordfish"}}},
+		{"clear one", InstanceUpdate{Clear: []string{"token"}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "swordfish"}}},
+		{"change the other", InstanceUpdate{Values: map[string]Value{"other": {One: "trout-fish"}}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "trout-fish"}}},
+		{"set one back", InstanceUpdate{Values: map[string]Value{"token": {One: "hunter3"}}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "trout-fish"}, "token": {One: "hunter3"}}},
 	} {
-		got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: tc.update}, now)
+		got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, tc.update, now)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -508,8 +532,7 @@ func TestInstanceValuesTooBig(t *testing.T) {
 		values  map[string]Value
 		wantErr string
 	}{
-		{"fits with the sealed secret", nil, map[string]Value{"notes": {One: strings.Repeat("n", 20000)}}, ""},
-		{"too big with the sealed secret, and no key", nil, map[string]Value{"notes": {One: strings.Repeat("n", 40000)}}, "notes"},
+		{"fits with the secret", key, map[string]Value{"notes": {One: strings.Repeat("n", 20000)}}, ""},
 		{"too big with the secret opened", key, map[string]Value{"notes": {One: strings.Repeat("n", 40000)}}, "notes"},
 		{"a secret too big", key, map[string]Value{"token": {One: strings.Repeat("s", 70000)}}, "token"},
 	} {
@@ -571,5 +594,136 @@ func TestInstanceNames(t *testing.T) {
 	}
 	if got, err := f.client.Read.GetInstance(ctx, inst.ID); err != nil || got.Name != "Home" {
 		t.Errorf("a refused name changed the instance: %q, %v", got.Name, err)
+	}
+}
+
+// retype rewrites the installed settings.yml so that the field keyname has
+// the type, as a changed recipe would.
+func retype(t *testing.T, f fixture, keyname, from, to string) {
+	t.Helper()
+	root, err := os.OpenRoot(Dir(f.recipesDir, f.recipe.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	b, err := root.ReadFile("settings.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := "- keyname: " + keyname + "\n  field_type: " + from
+	if !strings.Contains(string(b), old) {
+		t.Fatalf("settings.yml has no %q", old)
+	}
+	if err := root.WriteFile("settings.yml", []byte(strings.Replace(string(b), old, "- keyname: "+keyname+"\n  field_type: "+to, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestUpdateOneStorePerKey checks that a key lives in one of the plain
+// values and the sealed secrets: when a field's type changes between password
+// and plain, setting it moves the value to the store of the new type and
+// removes the old one, and clearing removes it from both, so no stale copy
+// is left to be shown or to override the new one.
+func TestUpdateOneStorePerKey(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	key := testKey(t, keyA)
+	now := time.Unix(5000, 0)
+	for _, tc := range []struct {
+		name         string
+		field        string
+		from, to     string
+		initial      Value
+		update       InstanceUpdate
+		wantFields   map[string]Value // by InstanceFields, with the secrets in it
+		wantPlain    map[string]Value // the plain store
+		wantSecretOf []string         // PublicFields' secret names
+	}{
+		{
+			"password to string, set", "token", "password", "string",
+			Value{One: "hunter2"},
+			InstanceUpdate{Values: map[string]Value{"token": {One: "visible"}}},
+			map[string]Value{"city": {One: "Zurich"}, "token": {One: "visible"}},
+			map[string]Value{"city": {One: "Zurich"}, "token": {One: "visible"}},
+			[]string{},
+		},
+		{
+			"password to string, clear", "token", "password", "string",
+			Value{One: "hunter2"},
+			InstanceUpdate{Clear: []string{"token"}},
+			map[string]Value{"city": {One: "Zurich"}},
+			map[string]Value{"city": {One: "Zurich"}},
+			[]string{},
+		},
+		{
+			"string to password, set", "notes", "code", "password",
+			Value{One: "plaintext"},
+			InstanceUpdate{Values: map[string]Value{"notes": {One: "sealedvalue"}}},
+			map[string]Value{"city": {One: "Zurich"}, "notes": {One: "sealedvalue"}},
+			map[string]Value{"city": {One: "Zurich"}},
+			[]string{"notes"},
+		},
+		{
+			"string to password, clear", "notes", "code", "password",
+			Value{One: "plaintext"},
+			InstanceUpdate{Clear: []string{"notes"}},
+			map[string]Value{"city": {One: "Zurich"}},
+			map[string]Value{"city": {One: "Zurich"}},
+			[]string{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			inst, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}, tc.field: tc.initial}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retype(t, f, tc.field, tc.from, tc.to)
+			got, err := UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, tc.update, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			all, _, err := InstanceFields(&got, key)
+			if err != nil || !maps.EqualFunc(all, tc.wantFields, Value.equal) {
+				t.Errorf("InstanceFields = %v, %v; want %v", all, err, tc.wantFields)
+			}
+			public, names, err := PublicFields(&got, key)
+			if err != nil || !maps.EqualFunc(public, tc.wantPlain, Value.equal) || !slices.Equal(names, tc.wantSecretOf) {
+				t.Errorf("PublicFields = %v, %v, %v; want %v, %v", public, names, err, tc.wantPlain, tc.wantSecretOf)
+			}
+			if got.SettingsAt != now.Unix() {
+				t.Errorf("settings_at = %d, want %d", got.SettingsAt, now.Unix())
+			}
+		})
+	}
+}
+
+// TestSecretsDoNotOpenUnderAReusedID checks that the sealed secrets of a
+// deleted instance do not open under a new one that is given its ID, which
+// SQLite does for the highest ID.
+func TestSecretsDoNotOpenUnderAReusedID(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	values := map[string]Value{"city": {One: "Zurich"}, "token": {One: "hunter2"}}
+	first, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: values}, time.Unix(1000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteInstance(ctx, f.client, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Bern"}}}, time.Unix(2000, 0))
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("the ID was not reused: %d, %d, %v", first.ID, second.ID, err)
+	}
+	second.SecretValues = first.SecretValues
+	if _, _, err := InstanceFields(&second, key); err == nil {
+		t.Error("the deleted instance's secrets opened under the new one with its ID")
+	}
+	if _, _, err := InstanceFields(&first, key); err != nil {
+		t.Errorf("the instance's own secrets do not open: %v", err)
 	}
 }

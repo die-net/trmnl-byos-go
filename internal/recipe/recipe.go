@@ -40,6 +40,10 @@ const (
 	// an uploaded zip.
 	MaxRecipeBytes = 8 << 20
 	maxRecipeFiles = 1000
+	// MaxSettingsBytes bounds a recipe's settings.yml, which is read into a
+	// tree that takes about 125 bytes of memory for each byte of the file.
+	// A real one is a few KB. A larger file is refused, not cut short.
+	MaxSettingsBytes = 256 << 10
 )
 
 // Errors that say why a request is refused, each of an errkind kind and
@@ -304,7 +308,11 @@ func removeOlder(dir, pattern string, cutoff time.Time) error {
 	return nil
 }
 
-// ReadSettings reads the settings.yml of the recipe in dir. A recipe whose
+// ReadSettings reads the settings.yml of the recipe in dir, which may be at
+// most MaxSettingsBytes. It is parsed on every call, with no cache: with the
+// cap that costs KB in practice and tens of MB at the worst, on admin routes,
+// and a cache keyed by recipe ID would need invalidating once a recipe can be
+// replaced or deleted, since IDs are reused. A recipe whose
 // custom fields cannot be understood, such as one with two of the same
 // keyname, is an error that wraps errkind.ErrInvalid.
 func ReadSettings(dir string) (Settings, error) {
@@ -318,13 +326,18 @@ func ReadSettings(dir string) (Settings, error) {
 		return Settings{}, fmt.Errorf("open settings.yml: %w", err)
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err != nil {
+		return Settings{}, fmt.Errorf("stat settings.yml: %w", err)
+	} else if info.Size() > MaxSettingsBytes {
+		return Settings{}, errkind.New(errkind.ErrInvalid, "the recipe's settings.yml is over 256 KB")
+	}
 	// Decoded to a tree first, so that an alias is refused before any
 	// unmarshaler runs. yaml.v3 resolves an alias by calling the unmarshaler
 	// again for what it names, and its own limit on aliases cannot see the
 	// work an unmarshaler does, so a few thousand aliases of one anchored
 	// field would cost gigabytes.
 	var doc yaml.Node
-	if err := yaml.NewDecoder(io.LimitReader(f, MaxRecipeBytes)).Decode(&doc); err != nil {
+	if err := yaml.NewDecoder(io.LimitReader(f, MaxSettingsBytes)).Decode(&doc); err != nil {
 		if errors.Is(err, io.EOF) {
 			return Settings{}, errkind.Wrap(errkind.ErrInvalid, "the recipe's settings.yml is empty", err)
 		}

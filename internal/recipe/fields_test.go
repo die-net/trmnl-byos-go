@@ -158,6 +158,8 @@ func TestValueJSON(t *testing.T) {
 		{`7`, Value{}, false},
 		{`true`, Value{}, false},
 		{`[1]`, Value{}, false},
+		{`["a",null]`, Value{}, false},
+		{`[null]`, Value{}, false},
 		{`{"a":"b"}`, Value{}, false},
 	} {
 		var got Value
@@ -260,5 +262,43 @@ func TestReadSettingsAliases(t *testing.T) {
 	got, err := readFieldsYAML(t, "name: x\ncustom_fields:\n- &a {keyname: a}\n")
 	if err != nil || len(got) != 1 {
 		t.Errorf("an unused anchor: %+v, %v", got, err)
+	}
+}
+
+// TestSettingsTooBig checks that a settings.yml over MaxSettingsBytes is
+// refused as invalid, by a read and at install, however it is built, and
+// that one at the cap is read.
+func TestSettingsTooBig(t *testing.T) {
+	t.Parallel()
+	head := "name: x\ncustom_fields:\n- keyname: a\n  field_type: select\n  options: ["
+	pad := func(n int) string { return head + strings.Repeat("a,", (n-len(head))/2) + "z]\n" }
+	if _, err := readFieldsYAML(t, pad(MaxSettingsBytes-8)); err != nil {
+		t.Errorf("a file at the cap: %v", err)
+	}
+	for name, doc := range map[string]string{
+		"a long option list": pad(300 << 10),
+		"a junk key":         "name: x\njunk: [" + strings.Repeat("a,", 150<<10) + "z]\n",
+		"comments":           "name: x\n" + strings.Repeat("# padding\n", 40000),
+	} {
+		_, err := readFieldsYAML(t, doc)
+		if !errors.Is(err, errkind.ErrInvalid) || !strings.Contains(err.Error(), "over 256 KB") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	// A recipe with such a file is not installed.
+	src := t.TempDir()
+	writeDir(t, src, map[string]string{"settings.yml": pad(300 << 10), "full.liquid": "x"})
+	recipes := filepath.Join(t.TempDir(), "recipes")
+	client := openDB(t)
+	if _, err := Install(t.Context(), client, recipes, src, time.Now()); !errors.Is(err, errkind.ErrInvalid) {
+		t.Errorf("install: %v", err)
+	}
+	zipPath := filepath.Join(t.TempDir(), "r.zip")
+	writeZip(t, zipPath, map[string]string{"settings.yml": pad(300 << 10), "full.liquid": "x"})
+	if _, err := Install(t.Context(), client, recipes, zipPath, time.Now()); !errors.Is(err, errkind.ErrInvalid) {
+		t.Errorf("install of a zip: %v", err)
+	}
+	if rows, err := client.Read.ListRecipes(t.Context()); err != nil || len(rows) != 0 {
+		t.Errorf("recipes recorded: %v, %v", rows, err)
 	}
 }

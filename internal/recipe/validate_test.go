@@ -75,10 +75,10 @@ func TestCheckValues(t *testing.T) {
 		{"NaN is not a number", map[string]Value{"free": {One: "NaN"}}, false, map[string]string{"free": "must be a number"}},
 		{"infinity is not a number", map[string]Value{"free": {One: "Inf"}}, false, map[string]string{"free": "must be a number"}},
 		{"select ok", map[string]Value{"sel": {One: "a"}}, false, nil},
-		{"select by label", map[string]Value{"sel": {One: "A"}}, false, map[string]string{"sel": `"A" is not one of the options`}},
+		{"select by label", map[string]Value{"sel": {One: "A"}}, false, map[string]string{"sel": "is not one of the options"}},
 		{"multi ok", map[string]Value{"multi": {Many: []string{"a", "b"}}}, false, nil},
-		{"multi one bad", map[string]Value{"multi": {Many: []string{"a", "c"}}}, false, map[string]string{"multi": `"c" is not one of the options`}},
-		{"multi with a choice twice", map[string]Value{"multi": {Many: []string{"a", "b", "a"}}}, false, map[string]string{"multi": `"a" is chosen twice`}},
+		{"multi one bad", map[string]Value{"multi": {Many: []string{"a", "c"}}}, false, map[string]string{"multi": "is not one of the options"}},
+		{"multi with a choice twice", map[string]Value{"multi": {Many: []string{"a", "b", "a"}}}, false, map[string]string{"multi": "chooses an option twice"}},
 		{"multi given a string", map[string]Value{"multi": {One: "b"}}, false, nil},
 		{"bool ok", map[string]Value{"bool": {One: "false"}}, false, nil},
 		{"bool bad", map[string]Value{"bool": {One: "yes"}}, false, map[string]string{"bool": `must be "true" or "false"`}},
@@ -96,6 +96,9 @@ func TestCheckValues(t *testing.T) {
 		{"white space is not a value on create", map[string]Value{"must": {One: " \t "}}, true, map[string]string{"must": "is required"}},
 		{"white space clears, so cannot clear a required field", map[string]Value{"must": {One: "  "}}, false, map[string]string{"must": "is required"}},
 		{"white space clears an optional field", map[string]Value{"str": {One: "  "}}, false, nil},
+		{"NUL in a string", map[string]Value{"str": {One: "a\x00b"}}, false, map[string]string{"str": "contains a NUL byte"}},
+		{"NUL in a password", map[string]Value{"sealed": {One: "abcdef\x00"}}, false, map[string]string{"sealed": "contains a NUL byte"}},
+		{"NUL in a list", map[string]Value{"multi": {Many: []string{"a", "\x00"}}}, false, map[string]string{"multi": "contains a NUL byte"}},
 		{"required given on create", map[string]Value{"must": must}, true, nil},
 		{"required not checked when left out of an update", map[string]Value{"str": {One: "a"}}, false, nil},
 		{"required cleared by an update", map[string]Value{"must": {Many: []string{}}}, false, map[string]string{"must": "is required"}},
@@ -149,5 +152,32 @@ func TestCheckValuesNormalizes(t *testing.T) {
 	}
 	if _, err := checkValues(fields, map[string]Value{"multi": {One: "z"}}, false); err == nil || !strings.Contains(err.Error(), "multi: ") {
 		t.Errorf("a bad single choice: %v", err)
+	}
+}
+
+// TestMessagesDoNotEchoValues checks that no message of a bad value repeats
+// the value, since one may be a secret put in the wrong field.
+func TestMessagesDoNotEchoValues(t *testing.T) {
+	t.Parallel()
+	one := 1.0
+	fields := []Field{
+		{Keyname: "sel", Type: "select", Options: []Option{{"A", "a"}}},
+		{Keyname: "multi", Type: "select", Multiple: true, Options: []Option{{"A", "a"}}},
+		{Keyname: "num", Type: "number", Min: &one},
+		{Keyname: "bool", Type: "boolean"},
+		{Keyname: "date", Type: "date"},
+		{Keyname: "time", Type: "time"},
+		{Keyname: "str", Type: "string", MaxLength: 3},
+		{Keyname: "pw", Type: "password"},
+		{Keyname: "bio", Type: "author_bio"},
+	}
+	const secret = "hunter2-secret\x00"
+	for _, f := range fields {
+		for _, v := range []Value{{One: secret}, {Many: []string{secret, secret}}} {
+			_, err := checkValues(fields, map[string]Value{f.Keyname: v}, false)
+			if err == nil || strings.Contains(err.Error(), "hunter2") {
+				t.Errorf("%s with %v: %v", f.Keyname, v, err)
+			}
+		}
 	}
 }
