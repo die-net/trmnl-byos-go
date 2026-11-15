@@ -1,49 +1,82 @@
 name: go-test
 on:
   pull_request:
+  # A pull request can restore only its own caches and main's, so main
+  # must run to save caches the next pull request can use.
+  push:
+    branches: [main]
   schedule:
     - cron: '49 4 20 * *'
 
 permissions:
   contents: read
 
+# Each job builds with different settings, and builds with CGO off or with
+# -race share no compiled packages with the default build. So each job
+# keeps its own cache, named by its flavor, rather than setup-go's, whose
+# key is only the Go version and go.sum. A key is saved once and never
+# updated, so it changes with go.mod, which picks every module version and
+# so decides the slow part: the dependencies and SQLite's C code.
+
 jobs:
   test:
+    name: test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        go: ['1.26', '1.27']
-        cgo: ['0', '1']
-
+        include:
+          # The oldest Go supported, with both SQLite drivers.
+          - go: '1.26'
+            cgo: '0 1'
+            flavor: cgo01
+          # CGO on with Go 1.27 runs in the race job.
+          - go: '1.27'
+            cgo: '0'
+            flavor: cgo0
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - id: go
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
+          cache: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ matrix.flavor }}-${{ hashFiles('go.mod') }}
       - name: Test
         env:
-          CGO_ENABLED: ${{ matrix.cgo }}
-        run: go test -count=1 ./...
+          CGO_MODES: ${{ matrix.cgo }}
+        run: |
+          for cgo in $CGO_MODES; do
+            echo "::group::CGO_ENABLED=$cgo"
+            CGO_ENABLED=$cgo go test -count=1 ./...
+            echo "::endgroup::"
+          done
+      # Go 1.27, the newest, so the standard library it checks is current.
+      - name: Check for known vulnerabilities
+        if: matrix.go == '1.27'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   race:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - id: go
+        uses: actions/setup-go@v7
         with:
           go-version: '1.27'
+          cache: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-race-${{ hashFiles('go.mod') }}
       - name: Test with the race detector
         env:
           CGO_ENABLED: '1'
         run: go test -race -count=1 ./...
-
-  govulncheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-      - name: Check for known vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
