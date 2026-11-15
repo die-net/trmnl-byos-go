@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -623,6 +624,109 @@ func TestPlaylists(t *testing.T) {
 	ta.call(t, "DELETE", "/api/v1/playlists/items/"+strconv.FormatInt(a.ID, 10), "", 204, nil)
 	ta.wantError(t, "DELETE", "/api/v1/playlists/items/"+strconv.FormatInt(a.ID, 10), "", 404, "no such playlist item")
 	ta.wantError(t, "DELETE", "/api/v1/playlists/items/x", "", 404, "no such playlist item")
+}
+
+// TestPatchPlaylists checks the schedule, hidden flag, duration and position
+// of items and the schedule of playlists: what a successful PATCH answers and
+// stores, and that a refused one, whatever else it asked for, changes nothing.
+func TestPatchPlaylists(t *testing.T) {
+	ta := newTestAPI(t, false)
+	rec := ta.addRecipe(t)
+	var inst instanceJSON
+	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "Home"}`, 201, &inst)
+	instID := strconv.FormatInt(inst.ID, 10)
+	var items [3]addItemResponse
+	for i := range items {
+		ta.call(t, "POST", "/api/v1/playlists/items", `{"playlist": "kitchen", "instance_id": `+instID+`}`, 201, &items[i])
+	}
+	path := func(i int) string { return "/api/v1/playlists/items/" + strconv.FormatInt(items[i].ID, 10) }
+	list := func() playlistJSON {
+		t.Helper()
+		var lists []playlistJSON
+		ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
+		if len(lists) != 1 {
+			t.Fatalf("playlists %+v", lists)
+		}
+		return lists[0]
+	}
+
+	// A new playlist and item are unrestricted.
+	pl := list()
+	always := scheduleJSON{Days: []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}, WindowStart: "00:00", WindowEnd: "00:00"}
+	if pl.ID == 0 || !reflect.DeepEqual(pl.Schedule, always) || pl.Items[0].Hidden || !reflect.DeepEqual(pl.Items[0].Schedule, always) {
+		t.Fatalf("new playlist %+v", pl)
+	}
+
+	// Everything at once.
+	var got playlistItemJSON
+	ta.call(t, "PATCH", path(0), `{"position": 2, "duration_seconds": 1200, "hidden": true,
+		"schedule": {"days": ["mon", "fri"], "window_start": "22:00", "window_end": "06:30", "starts_at": 100, "ends_at": 200}}`, 200, &got)
+	want := scheduleJSON{Days: []string{"mon", "fri"}, WindowStart: "22:00", WindowEnd: "06:30", StartsAt: 100, EndsAt: 200}
+	if got.ID != items[0].ID || got.Position != 2 || got.DurationSeconds != 1200 || !got.Hidden || !reflect.DeepEqual(got.Schedule, want) {
+		t.Fatalf("patched item %+v", got)
+	}
+	pl = list()
+	if len(pl.Items) != 3 || pl.Items[0].ID != items[1].ID || pl.Items[1].ID != items[2].ID || pl.Items[2].ID != items[0].ID {
+		t.Fatalf("order after the move: %+v", pl.Items)
+	}
+	for i, it := range pl.Items {
+		if it.Position != int64(i) {
+			t.Errorf("item %d has position %d", it.ID, it.Position)
+		}
+	}
+	// Left out fields are unchanged, and a schedule replaces the old one.
+	ta.call(t, "PATCH", path(0), `{"hidden": false}`, 200, &got)
+	if got.Hidden || got.Position != 2 || got.DurationSeconds != 1200 || !reflect.DeepEqual(got.Schedule, want) {
+		t.Errorf("after a partial patch %+v", got)
+	}
+	ta.call(t, "PATCH", path(0), `{"schedule": {"days": ["sat"]}}`, 200, &got)
+	if wantSat := (scheduleJSON{Days: []string{"sat"}, WindowStart: "00:00", WindowEnd: "00:00"}); !reflect.DeepEqual(got.Schedule, wantSat) || got.DurationSeconds != 1200 {
+		t.Errorf("after replacing the schedule %+v", got)
+	}
+	ta.call(t, "PATCH", path(0), `{}`, 200, &got)
+
+	// The playlist's schedule.
+	plPath := "/api/v1/playlists/" + strconv.FormatInt(pl.ID, 10)
+	var gotPl playlistJSON
+	ta.call(t, "PATCH", plPath, `{"schedule": {"days": ["sat", "sun"], "window_start": "08:00", "window_end": "20:00", "ends_at": 5000}}`, 200, &gotPl)
+	wantPl := scheduleJSON{Days: []string{"sun", "sat"}, WindowStart: "08:00", WindowEnd: "20:00", EndsAt: 5000}
+	if gotPl.ID != pl.ID || !reflect.DeepEqual(gotPl.Schedule, wantPl) || len(gotPl.Items) != 3 {
+		t.Fatalf("patched playlist %+v", gotPl)
+	}
+
+	// A request that is refused changes nothing, including its valid parts.
+	before := list()
+	for _, tc := range []struct {
+		name, path, body string
+		status           int
+		contains         string
+	}{
+		{"unknown day", path(1), `{"hidden": true, "position": 0, "schedule": {"days": ["monday"]}}`, 400, "not a weekday"},
+		{"no days", path(1), `{"hidden": true, "schedule": {"days": []}}`, 400, "at least one weekday"},
+		{"bad window", path(1), `{"hidden": true, "schedule": {"window_start": "25:00"}}`, 400, "HH:MM"},
+		{"bad window end", path(1), `{"hidden": true, "schedule": {"window_end": "9am"}}`, 400, "HH:MM"},
+		{"backwards range", path(1), `{"hidden": true, "schedule": {"starts_at": 20, "ends_at": 10}}`, 400, "starts_at must be before"},
+		{"negative start", path(1), `{"hidden": true, "schedule": {"starts_at": -1}}`, 400, "cannot be negative"},
+		{"position past the end", path(1), `{"hidden": true, "duration_seconds": 1800, "position": 3}`, 400, "position 3"},
+		{"negative position", path(1), `{"hidden": true, "position": -1}`, 400, "position -1"},
+		{"too short", path(1), `{"hidden": true, "position": 0, "duration_seconds": 10}`, 400, "under"},
+		{"negative duration", path(1), `{"hidden": true, "duration_seconds": -5}`, 400, "seconds"},
+		{"unknown field", path(1), `{"hidden": true, "visible": true}`, 400, "unknown field"},
+		{"hidden is not a bool", path(1), `{"hidden": "yes"}`, 400, "bad request body"},
+		{"empty body", path(1), ``, 400, "bad request body"},
+		{"unknown item", "/api/v1/playlists/items/999", `{"hidden": true}`, 404, "no such playlist item"},
+		{"malformed item", "/api/v1/playlists/items/x", `{"hidden": true}`, 404, "no such playlist item"},
+		{"playlist unknown day", plPath, `{"schedule": {"days": ["someday"]}}`, 400, "not a weekday"},
+		{"playlist bad range", plPath, `{"schedule": {"starts_at": 9, "ends_at": 9}}`, 400, "starts_at must be before"},
+		{"playlist unknown field", plPath, `{"name": "other"}`, 400, "unknown field"},
+		{"unknown playlist", "/api/v1/playlists/999", `{"schedule": {}}`, 404, "no such playlist"},
+		{"malformed playlist", "/api/v1/playlists/x", `{"schedule": {}}`, 404, "no such playlist"},
+	} {
+		ta.wantError(t, "PATCH", tc.path, tc.body, tc.status, tc.contains)
+		if after := list(); !reflect.DeepEqual(after, before) {
+			t.Errorf("%s changed the playlist:\nbefore %+v\nafter  %+v", tc.name, before, after)
+		}
+	}
 }
 
 func TestRenders(t *testing.T) {

@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -8,11 +9,67 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 )
 
+// scheduleJSON is when a playlist or an item is active, as playlist.Schedule
+// has it. A request that leaves out a field gets its default: every day, all
+// day and no date limit.
+type scheduleJSON struct {
+	// Days are lowercase three-letter weekday names in week order, from
+	// "sun".
+	Days []string `json:"days"`
+	// WindowStart and WindowEnd are the time of day as HH:MM. Equal means
+	// all day, and an end before the start wraps past midnight.
+	WindowStart string `json:"window_start"`
+	WindowEnd   string `json:"window_end"`
+	// StartsAt and EndsAt are Unix seconds, 0 for unbounded.
+	StartsAt int64 `json:"starts_at"`
+	EndsAt   int64 `json:"ends_at"`
+}
+
+// newScheduleJSON describes a schedule.
+func newScheduleJSON(s playlist.Schedule) scheduleJSON {
+	return scheduleJSON{
+		Days:        playlist.DayNames(s.Days),
+		WindowStart: playlist.FormatClock(s.WindowStart),
+		WindowEnd:   playlist.FormatClock(s.WindowEnd),
+		StartsAt:    s.StartsAt,
+		EndsAt:      s.EndsAt,
+	}
+}
+
+// edit returns the edit that replaces a schedule with this one. It is
+// refused as invalid input if a day or time cannot be read, and the
+// schedule itself is checked where it is applied.
+func (j scheduleJSON) edit() (*playlist.ScheduleEdit, error) {
+	days := int64(playlist.AllDays)
+	if j.Days != nil {
+		var err error
+		if days, err = playlist.DaysFromNames(j.Days); err != nil {
+			return nil, err
+		}
+	}
+	var start, end int64
+	var err error
+	if j.WindowStart != "" {
+		if start, err = playlist.ParseClock(j.WindowStart); err != nil {
+			return nil, err
+		}
+	}
+	if j.WindowEnd != "" {
+		if end, err = playlist.ParseClock(j.WindowEnd); err != nil {
+			return nil, err
+		}
+	}
+	e := playlist.Schedule{Days: days, WindowStart: start, WindowEnd: end, StartsAt: j.StartsAt, EndsAt: j.EndsAt}.Full()
+	return &e, nil
+}
+
 // playlistJSON is a playlist, the devices that show it, and its items.
 type playlistJSON struct {
-	Name    string               `json:"name"`
-	Devices []playlistDeviceJSON `json:"devices"`
-	Items   []playlistItemJSON   `json:"items"`
+	ID       int64                `json:"id"`
+	Name     string               `json:"name"`
+	Schedule scheduleJSON         `json:"schedule"`
+	Devices  []playlistDeviceJSON `json:"devices"`
+	Items    []playlistItemJSON   `json:"items"`
 }
 
 // playlistDeviceJSON is a device linked to a playlist. The device shows the
@@ -24,16 +81,24 @@ type playlistDeviceJSON struct {
 
 // playlistItemJSON is one item of a playlist, in position order.
 type playlistItemJSON struct {
-	ID       int64 `json:"id"`
+	ID int64 `json:"id"`
+	// Position is the item's index in its playlist, from 0.
 	Position int64 `json:"position"`
 	// DurationSeconds is how long the item shows, 0 until a button press.
-	DurationSeconds int64  `json:"duration_seconds"`
-	InstanceID      int64  `json:"instance_id"`
-	InstanceName    string `json:"instance_name"`
+	DurationSeconds int64 `json:"duration_seconds"`
+	// Hidden items are never shown.
+	Hidden       bool         `json:"hidden"`
+	Schedule     scheduleJSON `json:"schedule"`
+	InstanceID   int64        `json:"instance_id"`
+	InstanceName string       `json:"instance_name"`
 }
 
 func (s *Server) listPlaylists(_ http.ResponseWriter, r *http.Request) ([]playlistJSON, error) {
-	ctx := r.Context()
+	return s.playlistsJSON(r.Context())
+}
+
+// playlistsJSON describes every playlist, with its devices and items.
+func (s *Server) playlistsJSON(ctx context.Context) ([]playlistJSON, error) {
 	lists, err := s.db.Read.ListPlaylists(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list playlists: %w", err)
@@ -49,7 +114,8 @@ func (s *Server) listPlaylists(_ http.ResponseWriter, r *http.Request) ([]playli
 	out := make([]playlistJSON, 0, len(lists))
 	byName := make(map[string]*playlistJSON, len(lists))
 	for _, l := range lists {
-		out = append(out, playlistJSON{Name: l.Name, Devices: []playlistDeviceJSON{}, Items: []playlistItemJSON{}})
+		sched := playlist.Schedule{Days: l.Days, WindowStart: l.WindowStart, WindowEnd: l.WindowEnd, StartsAt: l.StartsAt, EndsAt: l.EndsAt}
+		out = append(out, playlistJSON{ID: l.ID, Name: l.Name, Schedule: newScheduleJSON(sched), Devices: []playlistDeviceJSON{}, Items: []playlistItemJSON{}})
 	}
 	for i := range out {
 		byName[out[i].Name] = &out[i]
@@ -60,8 +126,10 @@ func (s *Server) listPlaylists(_ http.ResponseWriter, r *http.Request) ([]playli
 	}
 	for _, it := range items {
 		p := byName[it.Playlist]
+		sched := playlist.Schedule{Days: it.Days, WindowStart: it.WindowStart, WindowEnd: it.WindowEnd, StartsAt: it.StartsAt, EndsAt: it.EndsAt}
 		p.Items = append(p.Items, playlistItemJSON{
-			ID: it.ID, Position: it.Position, DurationSeconds: it.Duration, InstanceID: it.InstanceID, InstanceName: it.InstanceName,
+			ID: it.ID, Position: it.Position, DurationSeconds: it.Duration, Hidden: it.Hidden != 0, Schedule: newScheduleJSON(sched),
+			InstanceID: it.InstanceID, InstanceName: it.InstanceName,
 		})
 	}
 	return out, nil
@@ -122,4 +190,92 @@ func (s *Server) deletePlaylistItem(r *http.Request) error {
 		return err
 	}
 	return playlist.DeleteItem(r.Context(), s.db, id)
+}
+
+// patchPlaylistRequest is the body of a playlist update request.
+type patchPlaylistRequest struct {
+	// Schedule replaces the playlist's schedule.
+	Schedule *scheduleJSON `json:"schedule"`
+}
+
+func (s *Server) patchPlaylist(w http.ResponseWriter, r *http.Request) (playlistJSON, error) {
+	id, err := pathID(r, playlist.ErrNoPlaylist)
+	if err != nil {
+		return playlistJSON{}, err
+	}
+	var req patchPlaylistRequest
+	if err := decode(w, r, &req, false); err != nil {
+		return playlistJSON{}, err
+	}
+	var edit playlist.ScheduleEdit
+	if req.Schedule != nil {
+		e, err := req.Schedule.edit()
+		if err != nil {
+			return playlistJSON{}, err
+		}
+		edit = *e
+	}
+	if err := playlist.SetPlaylistSchedule(r.Context(), s.db, id, edit); err != nil {
+		return playlistJSON{}, err
+	}
+	lists, err := s.playlistsJSON(r.Context())
+	if err != nil {
+		return playlistJSON{}, err
+	}
+	for i := range lists {
+		if lists[i].ID == id {
+			return lists[i], nil
+		}
+	}
+	return playlistJSON{}, fmt.Errorf("%w: %d", playlist.ErrNoPlaylist, id)
+}
+
+// patchItemRequest is the body of a playlist item update request. A field
+// that is left out leaves that part of the item as it is.
+type patchItemRequest struct {
+	// Position is the item's new index in its playlist.
+	Position *int64 `json:"position"`
+	// DurationSeconds is how long the item shows, 0 until a button press.
+	DurationSeconds *int64        `json:"duration_seconds"`
+	Hidden          *bool         `json:"hidden"`
+	Schedule        *scheduleJSON `json:"schedule"`
+}
+
+func (s *Server) patchPlaylistItem(w http.ResponseWriter, r *http.Request) (playlistItemJSON, error) {
+	id, err := pathID(r, playlist.ErrNoItem)
+	if err != nil {
+		return playlistItemJSON{}, err
+	}
+	var req patchItemRequest
+	if err := decode(w, r, &req, false); err != nil {
+		return playlistItemJSON{}, err
+	}
+	u := playlist.ItemUpdate{Position: req.Position, Hidden: req.Hidden}
+	if req.DurationSeconds != nil {
+		d, err := duration(*req.DurationSeconds)
+		if err != nil {
+			return playlistItemJSON{}, err
+		}
+		u.Duration = &d
+	}
+	if req.Schedule != nil {
+		if u.Schedule, err = req.Schedule.edit(); err != nil {
+			return playlistItemJSON{}, err
+		}
+	}
+	if err := playlist.UpdateItem(r.Context(), s.db, id, u); err != nil {
+		return playlistItemJSON{}, err
+	}
+	lists, err := s.playlistsJSON(r.Context())
+	if err != nil {
+		return playlistItemJSON{}, err
+	}
+	for i := range lists {
+		for j := range lists[i].Items {
+			if lists[i].Items[j].ID == id {
+				return lists[i].Items[j], nil
+			}
+		}
+	}
+	return playlistItemJSON{}, fmt.Errorf("%w: %d", playlist.ErrNoItem, id)
 }

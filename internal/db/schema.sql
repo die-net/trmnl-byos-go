@@ -120,13 +120,28 @@ CREATE TABLE IF NOT EXISTS plugin_instance (
 );
 
 -- playlist is a list of items that devices rotate through.
+--
+-- days, window_start, window_end, starts_at and ends_at are its schedule, and
+-- playlist_item has the same five columns for an item. days is a bitmask of
+-- weekdays, bit 0 Sunday to bit 6 Saturday, and 127 is every day.
+-- window_start and window_end are minutes after local midnight, 0 to 1439. Equal
+-- means all day, and an end before the start wraps past midnight and belongs
+-- to the day it starts on. starts_at and ends_at are Unix seconds, 0 for
+-- unbounded, and the schedule is active in [starts_at, ends_at). The default
+-- is always active.
 CREATE TABLE IF NOT EXISTS playlist (
   id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE
+  name TEXT NOT NULL UNIQUE,
+  days INTEGER NOT NULL DEFAULT 127,
+  window_start INTEGER NOT NULL DEFAULT 0,
+  window_end INTEGER NOT NULL DEFAULT 0,
+  starts_at INTEGER NOT NULL DEFAULT 0,
+  ends_at INTEGER NOT NULL DEFAULT 0
 );
 
--- playlist_device links a device to its playlists. The one with the lowest
--- priority is the one it shows.
+-- playlist_device links a device to its playlists. A device shows the first
+-- one, by lowest priority and then playlist ID, that is scheduled now and
+-- has an item to show.
 CREATE TABLE IF NOT EXISTS playlist_device (
   device_id INTEGER NOT NULL REFERENCES device (id) ON DELETE CASCADE,
   playlist_id INTEGER NOT NULL REFERENCES playlist (id) ON DELETE CASCADE,
@@ -136,7 +151,9 @@ CREATE TABLE IF NOT EXISTS playlist_device (
 
 CREATE INDEX IF NOT EXISTS playlist_device_playlist ON playlist_device (playlist_id);
 
--- playlist_item is one screen in a playlist. Items show in position order.
+-- playlist_item is one screen in a playlist. Items show in position order,
+-- and position is the item's index in its playlist, 0 to n-1 with no gaps.
+-- A hidden item is never shown, and its renders are not kept.
 CREATE TABLE IF NOT EXISTS playlist_item (
   id INTEGER PRIMARY KEY,
   playlist_id INTEGER NOT NULL REFERENCES playlist (id) ON DELETE CASCADE,
@@ -147,6 +164,12 @@ CREATE TABLE IF NOT EXISTS playlist_item (
   -- duration is how long the item shows, in seconds. 0 shows it until a
   -- button press.
   duration INTEGER NOT NULL DEFAULT 0,
+  hidden INTEGER NOT NULL DEFAULT 0,
+  days INTEGER NOT NULL DEFAULT 127,
+  window_start INTEGER NOT NULL DEFAULT 0,
+  window_end INTEGER NOT NULL DEFAULT 0,
+  starts_at INTEGER NOT NULL DEFAULT 0,
+  ends_at INTEGER NOT NULL DEFAULT 0,
   UNIQUE (playlist_id, position)
 );
 
