@@ -282,6 +282,12 @@ func itemDuration(seconds int64) string {
 	if seconds <= 0 {
 		return "Until a button press"
 	}
+	return spanText(seconds)
+}
+
+// spanText describes a number of seconds as hours, minutes and seconds,
+// such as "1 h 30 min".
+func spanText(seconds int64) string {
 	d := time.Duration(seconds) * time.Second
 	var parts []string
 	if h := d / time.Hour; h > 0 {
@@ -313,7 +319,7 @@ func (s *Server) deviceFromPath(w http.ResponseWriter, r *http.Request) (db.Devi
 	case err == nil:
 		return dev, true
 	case errors.Is(err, device.ErrNoDevice):
-		s.renderNotFound(w, r, "devices", notFoundView{What: "No such device", BackHref: "/devices", BackName: "Devices"})
+		s.renderNotFound(w, r, notFoundView{Nav: "devices", What: "No such device", BackHref: "/devices", BackName: "Devices"})
 	default:
 		slog.Error("admin ui: find device", "err", err)
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)

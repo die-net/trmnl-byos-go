@@ -1,0 +1,581 @@
+package adminui
+
+import (
+	"archive/zip"
+	"bytes"
+	"fmt"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/die-net/trmnl-byos-go/internal/adminauth"
+	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/playlist"
+	"github.com/die-net/trmnl-byos-go/internal/recipe"
+)
+
+// newRecipesUI returns a test server that installs recipes into its own
+// temp directory, which it also returns.
+func newRecipesUI(t *testing.T) (*testUI, string) {
+	t.Helper()
+	dir := t.TempDir()
+	return newTestUI(t, Config{RecipesDir: dir}, true), dir
+}
+
+// addRecipe records a recipe, which has refreshed every 15 minutes since
+// 3 Jan 2026 04:30 in testZone, and returns it.
+func addRecipe(t *testing.T, tu *testUI, name string) db.Recipe {
+	t.Helper()
+	r, err := tu.db.Write.CreateRecipe(t.Context(), db.CreateRecipeParams{
+		Name: name, Source: "/src/" + name, RefreshInterval: 900, InstalledAt: time.Date(2026, 1, 2, 23, 0, 0, 0, time.UTC).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// newInstance creates an instance of the recipe with the palette.
+func newInstance(t *testing.T, tu *testUI, recipeID int64, name, palette string) db.PluginInstance {
+	t.Helper()
+	inst, err := recipe.CreateInstance(t.Context(), tu.db, nil, recipe.InstanceParams{RecipeID: recipeID, Name: name, Palette: palette}, tu.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inst
+}
+
+// listInstances returns every instance.
+func listInstances(t *testing.T, tu *testUI) []db.ListInstancesRow {
+	t.Helper()
+	rows, err := tu.db.Read.ListInstances(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// listRecipes returns every recipe.
+func listRecipes(t *testing.T, tu *testUI) []db.Recipe {
+	t.Helper()
+	rows, err := tu.db.Read.ListRecipes(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// testZip returns a recipe zip file whose settings.yml has the name.
+func testZip(t *testing.T, name string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for file, content := range map[string]string{
+		"settings.yml": "name: " + name + "\nrefresh_interval: 20\n",
+		"full.liquid":  "<div>hello</div>\n",
+	} {
+		w, err := zw.Create(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// formPart is one part of a multipart body. A part with a filename is a
+// file, and one with Empty set is how a browser sends a file field that
+// has no file chosen.
+type formPart struct {
+	field, filename, content string
+	empty                    bool
+}
+
+// multipartBody returns a multipart/form-data body of the parts and its
+// Content-Type.
+func multipartBody(t *testing.T, parts ...formPart) (body, contentType string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for _, p := range parts {
+		var err error
+		var w interface{ Write([]byte) (int, error) }
+		switch {
+		case p.empty:
+			w, err = mw.CreatePart(map[string][]string{"Content-Disposition": {fmt.Sprintf(`form-data; name=%q; filename=""`, p.field)}, "Content-Type": {"application/octet-stream"}})
+		case p.filename != "":
+			w, err = mw.CreateFormFile(p.field, p.filename)
+		default:
+			w, err = mw.CreateFormField(p.field)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(p.content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String(), mw.FormDataContentType()
+}
+
+// upload posts the parts to /recipes signed in, with the headers.
+func (tu *testUI) upload(t *testing.T, c *http.Cookie, parts []formPart, headers ...string) (status int, location, body string) {
+	t.Helper()
+	b, ct := multipartBody(t, parts...)
+	w := tu.do(t, "POST", "/recipes", b, append([]string{"Cookie", cookieHeader(c), "Content-Type", ct}, headers...)...)
+	return w.Code, w.Header().Get("Location"), w.Body.String()
+}
+
+func TestRecipesEmpty(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	body := tu.get(t, tu.signIn(t), "/recipes").Body.String()
+	for _, want := range []string{
+		"<h1>Recipes</h1>", "<h2>No recipes yet</h2>", "Upload a recipe zip file below",
+		`<form method="post" action="/recipes" enctype="multipart/form-data">`,
+		`<input id="recipe" name="recipe" type="file" accept=".zip,application/zip" required>`,
+		"up to 8 MB.", `<button class="btn btn-primary" type="submit">Upload</button>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("empty page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `class="stack"`) {
+		t.Error("empty page has a recipe list")
+	}
+}
+
+func TestRecipesList(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	ctx := t.Context()
+	weather := addRecipe(t, tu, "<b>x</b>")
+	empty := addRecipe(t, tu, "Quotes")
+	bw := newInstance(t, tu, weather.ID, "Home <i>", "bw")
+	newInstance(t, tu, weather.ID, "Plain", "")
+	// A palette the registry does not have shows as its ID.
+	if _, err := tu.db.Write.CreateInstance(ctx, db.CreateInstanceParams{RecipeID: weather.ID, Name: "Odd", FieldValues: "{}", Palette: "gone", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// An instance in two playlists, one of them twice.
+	for _, name := range []string{"Morning", "Evening", "Morning"} {
+		if _, _, err := playlist.AddItem(ctx, tu.db, name, "", bw.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	morning, evening := playlistID(t, tu, "Morning"), playlistID(t, tu, "Evening")
+
+	body := tu.get(t, tu.signIn(t), "/recipes").Body.String()
+	for _, want := range []string{
+		`<li class="panel" id="recipe-` + id(weather.ID) + `">`, `<h2>&lt;b&gt;x&lt;/b&gt;</h2>`,
+		`href="/recipes/` + id(weather.ID) + `" aria-label="Add instance of &lt;b&gt;x&lt;/b&gt;">Add instance</a>`,
+		"<dd>/src/&lt;b&gt;x&lt;/b&gt;</dd>", "<dd>Every 15 min</dd>", "<dd>3 Jan 2026</dd>",
+		`<span class="item-name">Home &lt;i&gt;</span>`, `<span class="rel">Black &amp; White (1-bit)</span>`,
+		`<span class="rel">Device&#39;s palette</span>`, `<span class="rel">gone</span>`,
+		`In <a href="/playlists#playlist-` + id(evening) + `">Evening</a>, <a href="/playlists#playlist-` + id(morning) + `">Morning</a>`,
+		`href="/recipes/instances/` + id(bw.ID) + `/delete" aria-label="Remove Home &lt;i&gt;">Remove</a>`,
+		`id="recipe-` + id(empty.ID) + `"`, `<p class="rel">This recipe has no instances.</p>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("list lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "<b>x") || strings.Contains(body, "<i>") {
+		t.Error("list has unescaped names")
+	}
+	if strings.Count(body, "In <a") != 1 {
+		t.Error("an instance that is in no playlist says it is in one")
+	}
+	if strings.Contains(body, "No recipes yet") {
+		t.Error("list has the empty state")
+	}
+}
+
+func TestRecipeUpload(t *testing.T) {
+	t.Parallel()
+	tu, dir := newRecipesUI(t)
+	status, loc, body := tu.upload(t, tu.signIn(t), []formPart{
+		{field: "note", content: "ignored"},
+		{field: "recipe", filename: "weather.zip", content: string(testZip(t, "Test Recipe"))},
+	})
+	recipes := listRecipes(t, tu)
+	if status != http.StatusSeeOther || len(recipes) != 1 {
+		t.Fatalf("status %d with %d recipes: %s", status, len(recipes), body)
+	}
+	rec := recipes[0]
+	if want := "/recipes#recipe-" + id(rec.ID); loc != want {
+		t.Errorf("redirect to %q, want %q", loc, want)
+	}
+	if rec.Name != "Test Recipe" || rec.Source != "upload" || rec.RefreshInterval != 20*60 {
+		t.Errorf("recipe = %+v", rec)
+	}
+	if _, err := os.Stat(filepath.Join(recipe.Dir(dir, rec.ID), "full.liquid")); err != nil {
+		t.Errorf("recipe files are not installed: %v", err)
+	}
+	if page := tu.get(t, tu.signIn(t), "/recipes").Body.String(); !strings.Contains(page, `id="recipe-`+id(rec.ID)+`"`) || !strings.Contains(page, "Test Recipe") {
+		t.Error("the list does not show the uploaded recipe")
+	}
+}
+
+func TestRecipeUploadRefused(t *testing.T) {
+	t.Parallel()
+	const choose = "Choose a recipe zip file to upload."
+	zipFile := string(testZip(t, "x"))
+	noSettings := func() string {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		if _, err := zw.Create("readme.txt"); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}()
+	for _, tc := range []struct {
+		name   string
+		parts  []formPart
+		status int
+		want   string
+	}{
+		{"no recipe part", []formPart{{field: "note", content: "hi"}}, http.StatusBadRequest, choose},
+		{"no parts", nil, http.StatusBadRequest, choose},
+		{"empty file name", []formPart{{field: "recipe", empty: true}}, http.StatusBadRequest, choose},
+		{"recipe field that is not a file", []formPart{{field: "recipe", content: zipFile}}, http.StatusBadRequest, choose},
+		{"file in another field", []formPart{{field: "other", filename: "a.zip", content: zipFile}}, http.StatusBadRequest, choose},
+		{"not a zip", []formPart{{field: "recipe", filename: "a.zip", content: "this is not a zip file"}}, http.StatusBadRequest, "Open recipe zip"},
+		{"empty file", []formPart{{field: "recipe", filename: "a.zip"}}, http.StatusBadRequest, "Open recipe zip"},
+		{"zip without settings.yml", []formPart{{field: "recipe", filename: "a.zip", content: noSettings}}, http.StatusBadRequest, "no settings.yml"},
+		{"file one byte over the limit", []formPart{{field: "recipe", filename: "a.zip", content: strings.Repeat("a", recipe.MaxRecipeBytes+1)}}, http.StatusRequestEntityTooLarge, "The file is over 8 MB."},
+		{"body over the limit", []formPart{{field: "recipe", filename: "a.zip", content: strings.Repeat("a", recipe.MaxRecipeBytes+maxFormBody)}}, http.StatusRequestEntityTooLarge, "The file is over 8 MB."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu, dir := newRecipesUI(t)
+			status, _, body := tu.upload(t, tu.signIn(t), tc.parts)
+			if status != tc.status || !strings.Contains(body, tc.want) || !strings.Contains(body, `<p class="error" role="alert">`) || !strings.Contains(body, "<h1>Recipes</h1>") {
+				t.Errorf("status %d, body %s; want %d with %q above the list", status, body, tc.status, tc.want)
+			}
+			if got := len(listRecipes(t, tu)); got != 0 {
+				t.Errorf("%d recipes after a refused upload", got)
+			}
+			left, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(left) != 0 {
+				t.Errorf("a refused upload left %d files in the recipes directory", len(left))
+			}
+		})
+	}
+}
+
+func TestRecipeUploadNotMultipart(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	w := tu.post(t, tu.signIn(t), "/recipes", url.Values{"recipe": {"x"}})
+	if body := w.Body.String(); w.Code != http.StatusBadRequest || !strings.Contains(body, "Choose a recipe zip file to upload.") {
+		t.Errorf("status %d, body %s; want a 400 asking for a file", w.Code, body)
+	}
+}
+
+func TestRecipePageAndAddInstance(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather <i>")
+	c := tu.signIn(t)
+	path := "/recipes/" + id(rec.ID)
+	body := tu.get(t, c, path).Body.String()
+	for _, want := range []string{
+		`<a class="back" href="/recipes">`, "<h1>Weather &lt;i&gt;</h1>", "<h2 id=\"add-title\">Add an instance</h2>",
+		`<form method="post" action="/recipes/add-instance/` + id(rec.ID) + `">`,
+		`placeholder="Weather &lt;i&gt;"`, "Leave empty to use the recipe's name.",
+		`<option value="" selected>Device&#39;s palette</option>`, `<option value="bw">Black &amp; White (1-bit)</option>`,
+		`<button class="btn btn-primary" type="submit">Add</button>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("recipe page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "maxlength") {
+		t.Error("the name field has a length limit the domain does not")
+	}
+	// The palettes are the registry's, in its order.
+	if first, second := strings.Index(body, `value="bw"`), strings.Index(body, `value="gray-4"`); first < 0 || second < first {
+		t.Error("palettes are not in the registry's order")
+	}
+}
+
+func TestRecipeAddInstance(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		form         url.Values
+		wantName     string
+		wantPalette  string
+		wantRedirect bool
+	}{
+		{"default name", url.Values{"name": {""}, "palette": {""}}, "Weather", "", true},
+		{"trimmed name and palette", url.Values{"name": {"  Home  "}, "palette": {"bw"}}, "Home", "bw", true},
+		{"fields left out", url.Values{}, "Weather", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu, _ := newRecipesUI(t)
+			rec := addRecipe(t, tu, "Weather")
+			w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), tc.form)
+			if want := "/recipes#recipe-" + id(rec.ID); w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+				t.Fatalf("status %d to %q, want 303 to %q: %s", w.Code, w.Header().Get("Location"), want, w.Body)
+			}
+			insts := listInstances(t, tu)
+			if len(insts) != 1 || insts[0].PluginInstance.Name != tc.wantName || insts[0].PluginInstance.Palette != tc.wantPalette || insts[0].PluginInstance.RecipeID != rec.ID {
+				t.Errorf("instances = %+v, want one named %q with palette %q", insts, tc.wantName, tc.wantPalette)
+			}
+		})
+	}
+}
+
+func TestRecipeAddInstanceRefused(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather")
+	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{"name": {"Mine <b>"}, "palette": {"nope"}})
+	body := w.Body.String()
+	for _, want := range []string{
+		`<p class="error" role="alert">Unknown palette &#34;nope&#34;.</p>`, `value="Mine &lt;b&gt;"`, "<h1>Weather</h1>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("refused form lacks %q:\n%s", want, body)
+		}
+	}
+	if w.Code != http.StatusBadRequest || len(listInstances(t, tu)) != 0 {
+		t.Errorf("status %d with %d instances, want 400 and none", w.Code, len(listInstances(t, tu)))
+	}
+}
+
+func TestRecipeFormTooBig(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather")
+	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{"name": {strings.Repeat("a", maxFormBody)}})
+	if w.Code != http.StatusRequestEntityTooLarge || len(listInstances(t, tu)) != 0 {
+		t.Errorf("status %d with %d instances, want 413 and none", w.Code, len(listInstances(t, tu)))
+	}
+}
+
+func TestRecipeNotFound(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		method, path, want string
+	}{
+		{"GET", "/recipes/99", "No such recipe"},
+		{"GET", "/recipes/abc", "No such recipe"},
+		{"POST", "/recipes/add-instance/99", "No such recipe"},
+		{"POST", "/recipes/add-instance/abc", "No such recipe"},
+		{"GET", "/recipes/instances/99/delete", "No such instance"},
+		{"GET", "/recipes/instances/abc/delete", "No such instance"},
+		{"POST", "/recipes/instances/99/delete", "No such instance"},
+		{"POST", "/recipes/instances/abc/delete", "No such instance"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			t.Parallel()
+			tu, _ := newRecipesUI(t)
+			newInstance(t, tu, addRecipe(t, tu, "Weather").ID, "Home", "")
+			c := tu.signIn(t)
+			w := tu.get(t, c, tc.path)
+			if tc.method == "POST" {
+				w = tu.post(t, c, tc.path, url.Values{"name": {"x"}})
+			}
+			body := w.Body.String()
+			if w.Code != http.StatusNotFound || !strings.Contains(body, tc.want) || !strings.Contains(body, `<a href="/recipes">Back to Recipes</a>`) ||
+				!strings.Contains(body, `<a href="/recipes" aria-current="page">`) {
+				t.Errorf("status %d, body %s; want a 404 page for Recipes with %q", w.Code, body, tc.want)
+			}
+			if got := len(listInstances(t, tu)); got != 1 {
+				t.Errorf("%d instances left, want 1", got)
+			}
+		})
+	}
+}
+
+func TestInstanceDeleteConfirm(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather")
+	free := newInstance(t, tu, rec.ID, "Free <b>", "")
+	used := newInstance(t, tu, rec.ID, "Busy & <i>", "")
+	for _, name := range []string{"Zed", "Alpha"} {
+		if _, _, err := playlist.AddItem(t.Context(), tu.db, name, "", used.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := tu.signIn(t)
+	cancel := `<a class="btn btn-secondary" href="/recipes#recipe-` + id(rec.ID) + `">`
+
+	path := "/recipes/instances/" + id(free.ID) + "/delete"
+	w := tu.get(t, c, path)
+	body := w.Body.String()
+	for _, want := range []string{
+		"<h1>Remove instance</h1>", "Remove Free &lt;b&gt;?", "Its renders go too.",
+		`<form method="post" action="` + path + `">`, `btn btn-primary btn-danger-solid`, cancel + "Cancel</a>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("confirm page lacks %q", want)
+		}
+	}
+	if w.Code != http.StatusOK || strings.Contains(body, "<b>") {
+		t.Errorf("status %d, or unescaped name", w.Code)
+	}
+
+	w = tu.get(t, c, "/recipes/instances/"+id(used.ID)+"/delete")
+	body = w.Body.String()
+	alpha, zed := playlistID(t, tu, "Alpha"), playlistID(t, tu, "Zed")
+	for _, want := range []string{
+		`Busy &amp; &lt;i&gt; is in <a href="/playlists#playlist-` + id(alpha) + `">Alpha</a>, <a href="/playlists#playlist-` + id(zed) + `">Zed</a>. Remove it from them first.`,
+		cancel + "Back</a>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("in-use page lacks %q:\n%s", want, body)
+		}
+	}
+	if w.Code != http.StatusOK || strings.Contains(body, "<form") && strings.Contains(body, `action="/recipes/instances/`) {
+		t.Errorf("status %d, or the in-use page has a Remove form", w.Code)
+	}
+	if got := len(listInstances(t, tu)); got != 2 {
+		t.Errorf("GET removed an instance: %d left", got)
+	}
+}
+
+func TestInstanceDelete(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather")
+	free := newInstance(t, tu, rec.ID, "Free", "")
+	used := newInstance(t, tu, rec.ID, "Busy", "")
+	if _, _, err := playlist.AddItem(t.Context(), tu.db, "Morning", "", used.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	c := tu.signIn(t)
+
+	w := tu.post(t, c, "/recipes/instances/"+id(used.ID)+"/delete", url.Values{})
+	body := w.Body.String()
+	if w.Code != http.StatusConflict || !strings.Contains(body, "Busy is in") || !strings.Contains(body, "Morning") {
+		t.Errorf("in use: status %d, body %s; want 409 with the confirm page", w.Code, body)
+	}
+	if strings.Contains(body, "playlist remove") || strings.Contains(body, "item IDs") || strings.Contains(body, `class="btn btn-primary btn-danger-solid"`) {
+		t.Errorf("the 409 page shows the domain error or a Remove button: %s", body)
+	}
+	if got := len(listInstances(t, tu)); got != 2 {
+		t.Fatalf("an instance in a playlist was removed: %d left", got)
+	}
+
+	w = tu.post(t, c, "/recipes/instances/"+id(free.ID)+"/delete", url.Values{})
+	if want := "/recipes#recipe-" + id(rec.ID); w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+		t.Fatalf("status %d to %q, want 303 to %q", w.Code, w.Header().Get("Location"), want)
+	}
+	if insts := listInstances(t, tu); len(insts) != 1 || insts[0].PluginInstance.ID != used.ID {
+		t.Errorf("instances = %+v, want only the one in a playlist", insts)
+	}
+	// Removing it again finds nothing.
+	if w := tu.post(t, c, "/recipes/instances/"+id(free.ID)+"/delete", url.Values{}); w.Code != http.StatusNotFound {
+		t.Errorf("second removal: status %d, want 404", w.Code)
+	}
+}
+
+func TestRecipesNeedSession(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/recipes"},
+		{"POST", "/recipes"},
+		{"GET", "/recipes/1"},
+		{"POST", "/recipes/add-instance/1"},
+		{"GET", "/recipes/instances/1/delete"},
+		{"POST", "/recipes/instances/1/delete"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			t.Parallel()
+			tu, dir := newRecipesUI(t)
+			rec := addRecipe(t, tu, "Weather")
+			inst := newInstance(t, tu, rec.ID, "Home", "")
+			body, ct := multipartBody(t, formPart{field: "recipe", filename: "a.zip", content: string(testZip(t, "x"))})
+			for _, cookie := range []string{"", adminauth.CookieName + "=nope"} {
+				h := []string{"Content-Type", ct}
+				if cookie != "" {
+					h = append(h, "Cookie", cookie)
+				}
+				b := ""
+				if tc.method == "POST" {
+					b = body
+				}
+				w := tu.do(t, tc.method, tc.path, b, h...)
+				if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
+					t.Errorf("cookie %q: status %d to %q, want 303 to /login", cookie, w.Code, w.Header().Get("Location"))
+				}
+			}
+			if len(listRecipes(t, tu)) != 1 || len(listInstances(t, tu)) != 1 || listInstances(t, tu)[0].PluginInstance.ID != inst.ID {
+				t.Error("a request without a session changed something")
+			}
+			if left, _ := os.ReadDir(dir); len(left) != 0 {
+				t.Errorf("a request without a session wrote %d files", len(left))
+			}
+		})
+	}
+}
+
+func TestRecipesCrossOrigin(t *testing.T) {
+	t.Parallel()
+	tu, dir := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather")
+	inst := newInstance(t, tu, rec.ID, "Home", "")
+	c := tu.signIn(t)
+	status, _, _ := tu.upload(t, c, []formPart{{field: "recipe", filename: "a.zip", content: string(testZip(t, "x"))}}, "Sec-Fetch-Site", "cross-site")
+	if status != http.StatusForbidden {
+		t.Errorf("cross-origin upload: status %d, want 403", status)
+	}
+	for _, path := range []string{"/recipes/add-instance/" + id(rec.ID), "/recipes/instances/" + id(inst.ID) + "/delete"} {
+		if w := tu.post(t, c, path, url.Values{"name": {"x"}}, "Sec-Fetch-Site", "cross-site"); w.Code != http.StatusForbidden {
+			t.Errorf("cross-origin post to %s: status %d, want 403", path, w.Code)
+		}
+	}
+	if len(listRecipes(t, tu)) != 1 || len(listInstances(t, tu)) != 1 {
+		t.Error("a cross-origin post changed something")
+	}
+	if left, _ := os.ReadDir(dir); len(left) != 0 {
+		t.Errorf("a cross-origin upload wrote %d files", len(left))
+	}
+}
+
+func TestRecipePagesNoInlineCode(t *testing.T) {
+	t.Parallel()
+	tu, _ := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather")
+	inst := newInstance(t, tu, rec.ID, "Home", "")
+	c := tu.signIn(t)
+	for _, path := range []string{"/recipes", "/recipes/" + id(rec.ID), "/recipes/instances/" + id(inst.ID) + "/delete", "/recipes/99"} {
+		body := tu.get(t, c, path).Body.String()
+		for _, bad := range []string{"<script", "style=", "<style", " onclick=", " onsubmit="} {
+			if strings.Contains(body, bad) {
+				t.Errorf("%s has inline %q, which the CSP refuses", path, bad)
+			}
+		}
+		if n := strings.Count(body, "<h1>"); n != 1 {
+			t.Errorf("%s has %d h1 elements, want 1", path, n)
+		}
+		if strings.Count(body, `aria-current="page"`) != 1 || !strings.Contains(body, `<a href="/recipes" aria-current="page">`) {
+			t.Errorf("%s does not mark Recipes as the current page", path)
+		}
+	}
+}

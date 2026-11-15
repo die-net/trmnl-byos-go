@@ -126,6 +126,45 @@ func (q *Queries) GetRecipe(ctx context.Context, id int64) (Recipe, error) {
 	return i, err
 }
 
+const listInstancePlaylists = `-- name: ListInstancePlaylists :many
+SELECT DISTINCT playlist_slot.instance_id, playlist.id AS playlist_id, playlist.name AS playlist_name
+FROM playlist_slot
+JOIN playlist_item ON playlist_item.id = playlist_slot.item_id
+JOIN playlist ON playlist.id = playlist_item.playlist_id
+ORDER BY playlist_slot.instance_id, playlist.name
+`
+
+type ListInstancePlaylistsRow struct {
+	InstanceID   int64  `json:"instance_id"`
+	PlaylistID   int64  `json:"playlist_id"`
+	PlaylistName string `json:"playlist_name"`
+}
+
+// For every instance, the playlists that show it in any slot, each once, for
+// listing.
+func (q *Queries) ListInstancePlaylists(ctx context.Context) ([]ListInstancePlaylistsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInstancePlaylists)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInstancePlaylistsRow{}
+	for rows.Next() {
+		var i ListInstancePlaylistsRow
+		if err := rows.Scan(&i.InstanceID, &i.PlaylistID, &i.PlaylistName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInstances = `-- name: ListInstances :many
 SELECT plugin_instance.id, plugin_instance.recipe_id, plugin_instance.name, plugin_instance.field_values, plugin_instance.secret_values, plugin_instance.palette, plugin_instance.created_at, recipe.name AS recipe_name
 FROM plugin_instance
@@ -157,6 +196,44 @@ func (q *Queries) ListInstances(ctx context.Context) ([]ListInstancesRow, error)
 			&i.PluginInstance.CreatedAt,
 			&i.RecipeName,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlaylistsOfInstance = `-- name: ListPlaylistsOfInstance :many
+SELECT DISTINCT playlist.id AS playlist_id, playlist.name AS playlist_name
+FROM playlist_slot
+JOIN playlist_item ON playlist_item.id = playlist_slot.item_id
+JOIN playlist ON playlist.id = playlist_item.playlist_id
+WHERE playlist_slot.instance_id = ?
+ORDER BY playlist.name
+`
+
+type ListPlaylistsOfInstanceRow struct {
+	PlaylistID   int64  `json:"playlist_id"`
+	PlaylistName string `json:"playlist_name"`
+}
+
+// The playlists that show one instance in any slot, each once.
+func (q *Queries) ListPlaylistsOfInstance(ctx context.Context, instanceID int64) ([]ListPlaylistsOfInstanceRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistsOfInstance, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPlaylistsOfInstanceRow{}
+	for rows.Next() {
+		var i ListPlaylistsOfInstanceRow
+		if err := rows.Scan(&i.PlaylistID, &i.PlaylistName); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

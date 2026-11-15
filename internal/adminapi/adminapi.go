@@ -113,27 +113,6 @@ func (s *Server) Register(mux *http.ServeMux) {
 	}
 }
 
-// uploadTimeout is how long an upload may take to arrive. The server's own
-// read and write timeouts are short, for everything else, and a firmware
-// image or a recipe zip over a slow link needs longer.
-const uploadTimeout = 10 * time.Minute
-
-// allowSlowUpload gives the request its own read and write deadlines in
-// place of the server's. The write deadline runs from the same start, since
-// the server's is set when the request's headers arrive and would pass
-// before a slow upload ends.
-func allowSlowUpload(w http.ResponseWriter) {
-	rc := http.NewResponseController(w)
-	now := time.Now()
-	if err := rc.SetReadDeadline(now.Add(uploadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		slog.Warn("upload: extend read deadline", "err", err)
-	}
-	// A minute more, to answer.
-	if err := rc.SetWriteDeadline(now.Add(uploadTimeout + time.Minute)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		slog.Warn("upload: extend write deadline", "err", err)
-	}
-}
-
 // errorBody is the body of every error response.
 type errorBody struct {
 	Error string `json:"error"`

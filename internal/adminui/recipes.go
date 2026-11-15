@@ -1,0 +1,364 @@
+package adminui
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/profile"
+	"github.com/die-net/trmnl-byos-go/internal/recipe"
+	"github.com/die-net/trmnl-byos-go/internal/upload"
+)
+
+// uploadField is the name of the form field that holds the recipe zip.
+const uploadField = "recipe"
+
+// devicePalette is what an instance that asks for no palette shows.
+const devicePalette = "Device's palette"
+
+var (
+	noRecipe   = notFoundView{Nav: "recipes", What: "No such recipe", BackHref: "/recipes", BackName: "Recipes"}
+	noInstance = notFoundView{Nav: "recipes", What: "No such instance", BackHref: "/recipes", BackName: "Recipes"}
+)
+
+// linkView is a link to another page.
+type linkView struct {
+	Name, Href string
+}
+
+// recipeInstanceView is an instance as the recipe list shows it.
+type recipeInstanceView struct {
+	ID   int64
+	Name string
+	// Palette is the name of the palette the instance asks for, or
+	// devicePalette for none.
+	Palette string
+	// Playlists are the playlists that show the instance.
+	Playlists []linkView
+	// DeleteHref is the page that asks to remove the instance.
+	DeleteHref string
+}
+
+// recipeView is a recipe as the list shows it.
+type recipeView struct {
+	ID     int64
+	Name   string
+	Source string
+	// Refresh is how often the recipe is rendered, in words.
+	Refresh string
+	// Installed is the day the recipe was installed, in the server's zone.
+	Installed string
+	// Href is the recipe's page, which adds an instance.
+	Href      string
+	Instances []recipeInstanceView
+}
+
+// paletteNames maps each palette ID of the registry to its name.
+func paletteNames() map[string]string {
+	pals := profile.Palettes()
+	names := make(map[string]string, len(pals))
+	for _, p := range pals {
+		names[p.ID] = p.Name
+	}
+	return names
+}
+
+// recipeViews describes every recipe with its instances and the playlists
+// that show them, from three list queries however many there are.
+func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
+	recipes, err := s.db.Read.ListRecipes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list recipes: %w", err)
+	}
+	insts, err := s.db.Read.ListInstances(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list instances: %w", err)
+	}
+	inPlaylists, err := s.db.Read.ListInstancePlaylists(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list instance playlists: %w", err)
+	}
+	out := make([]recipeView, len(recipes))
+	byID := make(map[int64]*recipeView, len(recipes))
+	for i := range recipes {
+		r := &recipes[i]
+		out[i] = recipeView{
+			ID: r.ID, Name: r.Name, Source: r.Source, Refresh: "Every " + spanText(r.RefreshInterval),
+			Installed: time.Unix(r.InstalledAt, 0).In(s.zone).Format(dayLayout),
+			Href:      "/recipes/" + strconv.FormatInt(r.ID, 10),
+		}
+		byID[r.ID] = &out[i]
+	}
+	// The three reads are not one snapshot, so a row may name a recipe or
+	// instance made after the first, and it is skipped.
+	shown := make(map[int64][]linkView)
+	for _, p := range inPlaylists {
+		shown[p.InstanceID] = append(shown[p.InstanceID], playlistLink(p.PlaylistID, p.PlaylistName))
+	}
+	names := paletteNames()
+	for i := range insts {
+		inst := &insts[i].PluginInstance
+		rv := byID[inst.RecipeID]
+		if rv == nil {
+			continue
+		}
+		v := recipeInstanceView{ID: inst.ID, Name: inst.Name, Palette: devicePalette, Playlists: shown[inst.ID], DeleteHref: instanceHref(inst.ID) + "/delete"}
+		if inst.Palette != "" {
+			// A palette the registry no longer has shows as its ID.
+			v.Palette = cmp.Or(names[inst.Palette], inst.Palette)
+		}
+		rv.Instances = append(rv.Instances, v)
+	}
+	return out, nil
+}
+
+// instanceHref is the path of an instance's pages.
+func instanceHref(id int64) string {
+	return "/recipes/instances/" + strconv.FormatInt(id, 10)
+}
+
+// playlistLink is a link to a playlist's card on the playlists page.
+func playlistLink(id int64, name string) linkView {
+	return linkView{Name: name, Href: "/playlists#playlist-" + strconv.FormatInt(id, 10)}
+}
+
+func (s *Server) recipes(w http.ResponseWriter, r *http.Request) {
+	s.renderRecipes(w, r, http.StatusOK, "")
+}
+
+// renderRecipes sends the recipes page, with an error message above the
+// list if msg is not "".
+func (s *Server) renderRecipes(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	views, err := s.recipeViews(r.Context())
+	if err != nil {
+		serverError(w, "list recipes", err)
+		return
+	}
+	s.render(w, r, status, "recipes", pageData{
+		Nav: "recipes", Heading: "Recipes", Error: msg, Recipes: views,
+		UploadLimit: strconv.FormatInt(recipe.MaxRecipeBytes>>20, 10) + " MB",
+	})
+}
+
+// errNoFile means an upload had no recipe file in it.
+var errNoFile = errors.New("no recipe file")
+
+// errUnreadable means an upload was not a form that could be read.
+var errUnreadable = errors.New("unreadable upload")
+
+// recipePart returns the part of the multipart body that holds the recipe
+// file, or an error wrapping errNoFile or errUnreadable. Any other part is
+// skipped without being read.
+func recipePart(mr *multipart.Reader) (*multipart.Part, error) {
+	for {
+		part, err := mr.NextPart()
+		var tooBig *http.MaxBytesError
+		switch {
+		case errors.Is(err, io.EOF):
+			return nil, errNoFile
+		case errors.As(err, &tooBig):
+			return nil, err
+		case err != nil:
+			return nil, fmt.Errorf("%w: %w", errUnreadable, err)
+		}
+		if part.FormName() != uploadField {
+			continue
+		}
+		if part.FileName() == "" {
+			// A browser sends the field with no name or content when no
+			// file was chosen.
+			return nil, errNoFile
+		}
+		return part, nil
+	}
+}
+
+// uploadRecipe installs the zip file the upload form posts. The body is
+// streamed, so the zip is never held in memory: the file part goes straight
+// to recipe.InstallZip, which copies it to a temporary file.
+func (s *Server) uploadRecipe(w http.ResponseWriter, r *http.Request) {
+	upload.AllowSlow(w)
+	// Room for the recipe and the multipart framing around it, which is a
+	// few hundred bytes per field.
+	r.Body = http.MaxBytesReader(w, r.Body, recipe.MaxRecipeBytes+maxFormBody)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		s.renderRecipes(w, r, http.StatusBadRequest, "Choose a recipe zip file to upload.")
+		return
+	}
+	var rec db.Recipe
+	part, err := recipePart(mr)
+	if err == nil {
+		// The zip itself has the limit the API gives it. The limit on the
+		// body above only stops a request whose other parts never end.
+		rec, err = recipe.InstallZip(r.Context(), s.db, s.recipesDir, http.MaxBytesReader(w, part, recipe.MaxRecipeBytes), s.now())
+	}
+	var tooBig *http.MaxBytesError
+	switch {
+	case err == nil:
+		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
+	case errors.As(err, &tooBig):
+		s.renderRecipes(w, r, http.StatusRequestEntityTooLarge, fmt.Sprintf("The file is over %d MB.", recipe.MaxRecipeBytes>>20))
+	case errors.Is(err, errNoFile):
+		s.renderRecipes(w, r, http.StatusBadRequest, "Choose a recipe zip file to upload.")
+	case errors.Is(err, errUnreadable):
+		s.renderRecipes(w, r, http.StatusBadRequest, "The upload could not be read.")
+	case errors.Is(err, errkind.ErrInvalid):
+		s.renderRecipes(w, r, http.StatusBadRequest, invalidText(err))
+	default:
+		serverError(w, "install recipe", err)
+	}
+}
+
+// paletteOption is a choice in the palette list.
+type paletteOption struct {
+	// ID is the value the form posts, "" for the device's palette.
+	ID       string
+	Label    string
+	Selected bool
+}
+
+// instanceForm is the add instance form's values.
+type instanceForm struct {
+	Name    string
+	Palette string
+}
+
+// recipeEdit is a recipe as its page shows it.
+type recipeEdit struct {
+	Name string
+	// Action is the path the add instance form posts to.
+	Action   string
+	Form     instanceForm
+	Palettes []paletteOption
+}
+
+// recipeFromPath returns the recipe the path names.
+func (s *Server) recipeFromPath(w http.ResponseWriter, r *http.Request) (db.Recipe, bool) {
+	return fromPath(s, w, r, "get recipe", noRecipe, s.db.Read.GetRecipe)
+}
+
+func (s *Server) recipePage(w http.ResponseWriter, r *http.Request) {
+	rec, ok := s.recipeFromPath(w, r)
+	if !ok {
+		return
+	}
+	s.renderRecipe(w, r, http.StatusOK, &rec, &instanceForm{}, "")
+}
+
+// renderRecipe sends the page of a recipe with the form's values, and an
+// error message above the form if msg is not "".
+func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int, rec *db.Recipe, form *instanceForm, msg string) {
+	pals := profile.Palettes()
+	e := &recipeEdit{
+		Name: rec.Name, Action: "/recipes/add-instance/" + strconv.FormatInt(rec.ID, 10), Form: *form,
+		Palettes: make([]paletteOption, 0, len(pals)+1),
+	}
+	e.Palettes = append(e.Palettes, paletteOption{Label: devicePalette, Selected: form.Palette == ""})
+	for _, p := range pals {
+		e.Palettes = append(e.Palettes, paletteOption{ID: p.ID, Label: p.Name, Selected: p.ID == form.Palette})
+	}
+	s.render(w, r, status, "recipe", pageData{Nav: "recipes", Heading: rec.Name, Error: msg, RecipeEdit: e})
+}
+
+// addInstance creates an instance of a recipe from the form's name and
+// palette.
+func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
+	rec, ok := s.recipeFromPath(w, r)
+	if !ok {
+		return
+	}
+	form := &instanceForm{}
+	if !parseForm(w, r, func(status int, msg string) { s.renderRecipe(w, r, status, &rec, form, msg) }) {
+		return
+	}
+	form.Name = strings.TrimSpace(r.PostForm.Get("name"))
+	form.Palette = r.PostForm.Get("palette")
+	_, err := recipe.CreateInstance(r.Context(), s.db, nil, recipe.InstanceParams{RecipeID: rec.ID, Name: form.Name, Palette: form.Palette}, s.now())
+	switch {
+	case err == nil:
+		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
+	case errors.Is(err, recipe.ErrNoRecipe):
+		s.renderNotFound(w, r, noRecipe)
+	case errors.Is(err, errkind.ErrInvalid):
+		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, invalidText(err))
+	default:
+		serverError(w, "add instance", err)
+	}
+}
+
+// instanceDeleteView is the page that asks to confirm removing an instance.
+type instanceDeleteView struct {
+	// Action is the path the Remove button posts to, and Cancel the page the
+	// link goes back to.
+	Action, Cancel string
+	Name           string
+	// Playlists are the playlists that show the instance. While there are
+	// any, it cannot be removed.
+	Playlists []linkView
+}
+
+// instanceFromPath returns the instance the path names.
+func (s *Server) instanceFromPath(w http.ResponseWriter, r *http.Request) (db.PluginInstance, bool) {
+	return fromPath(s, w, r, "get instance", noInstance, s.db.Read.GetInstance)
+}
+
+// renderInstanceDelete sends the confirm page for an instance, which has no
+// Remove button while a playlist shows the instance.
+func (s *Server) renderInstanceDelete(w http.ResponseWriter, r *http.Request, status int, inst *db.PluginInstance) {
+	rows, err := s.db.Read.ListPlaylistsOfInstance(r.Context(), inst.ID)
+	if err != nil {
+		serverError(w, "list instance playlists", err)
+		return
+	}
+	d := &instanceDeleteView{
+		Action: instanceHref(inst.ID) + "/delete", Cancel: "/recipes#recipe-" + strconv.FormatInt(inst.RecipeID, 10), Name: inst.Name,
+	}
+	for _, p := range rows {
+		d.Playlists = append(d.Playlists, playlistLink(p.PlaylistID, p.PlaylistName))
+	}
+	s.render(w, r, status, "instance_delete", pageData{Nav: "recipes", Heading: "Remove instance", InstanceDelete: d})
+}
+
+// confirmRemoveInstance asks whether to remove an instance. It changes
+// nothing.
+func (s *Server) confirmRemoveInstance(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.instanceFromPath(w, r)
+	if !ok {
+		return
+	}
+	s.renderInstanceDelete(w, r, http.StatusOK, &inst)
+}
+
+// removeInstance removes an instance that no playlist shows.
+func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.instanceFromPath(w, r)
+	if !ok {
+		return
+	}
+	if !parseForm(w, r, func(status int, _ string) { s.renderInstanceDelete(w, r, status, &inst) }) {
+		return
+	}
+	err := recipe.DeleteInstance(r.Context(), s.db, inst.ID)
+	switch {
+	case err == nil:
+		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(inst.RecipeID, 10), http.StatusSeeOther)
+	case errors.Is(err, recipe.ErrNoInstance):
+		s.renderNotFound(w, r, noInstance)
+	case errors.Is(err, recipe.ErrInstanceInUse):
+		// The error's text names items and the command line, so the page
+		// shows the playlists instead.
+		s.renderInstanceDelete(w, r, http.StatusConflict, &inst)
+	default:
+		serverError(w, "remove instance", err)
+	}
+}

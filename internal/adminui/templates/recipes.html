@@ -1,0 +1,45 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<div class="page-head">
+<h1>{{.Heading}}</h1>
+<a class="btn btn-secondary" href="#upload">Upload a recipe</a>
+</div>{{end}}
+{{define "content"}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{if .Recipes}}<ul class="stack">
+{{range .Recipes}}<li class="panel" id="recipe-{{.ID}}">
+<div class="list-head">
+<h2>{{.Name}}</h2>
+<a class="btn btn-secondary" href="{{.Href}}" aria-label="Add instance of {{.Name}}">Add instance</a>
+</div>
+<dl class="facts">
+<div><dt>Refresh</dt><dd>{{.Refresh}}</dd></div>
+<div><dt>Installed</dt><dd>{{.Installed}}</dd></div>
+<div class="wide"><dt>Source</dt><dd>{{.Source}}</dd></div>
+</dl>
+{{if .Instances}}<ul class="items">
+{{range .Instances}}<li class="item">
+<div class="item-main">
+<span class="item-name">{{.Name}}</span>
+<span class="rel">{{.Palette}}</span>
+{{if .Playlists}}<span class="rel">In {{range $i, $p := .Playlists}}{{if $i}}, {{end}}<a href="{{$p.Href}}">{{$p.Name}}</a>{{end}}</span>{{end}}
+</div>
+<div class="item-actions">
+<a class="btn btn-secondary btn-danger" href="{{.DeleteHref}}" aria-label="Remove {{.Name}}">Remove</a>
+</div>
+</li>
+{{end}}</ul>{{else}}<p class="rel">This recipe has no instances.</p>{{end}}
+</li>
+{{end}}</ul>{{else}}<div class="empty">
+<h2>No recipes yet</h2>
+<p>Upload a recipe zip file below, or install one with the <code>trmnl-byos</code> command or the JSON API.</p>
+</div>{{end}}
+<section class="panel form-panel" id="upload" aria-labelledby="upload-title">
+<h2 id="upload-title">Upload a recipe</h2>
+<form method="post" action="/recipes" enctype="multipart/form-data">
+<div class="field">
+<label for="recipe">Recipe zip file</label>
+<input id="recipe" name="recipe" type="file" accept=".zip,application/zip" required>
+<p class="hint">A zip file with a settings.yml, up to {{.UploadLimit}}.</p>
+</div>
+<button class="btn btn-primary" type="submit">Upload</button>
+</form>
+</section>{{end}}

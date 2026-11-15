@@ -82,3 +82,25 @@ func TestRenderPalette(t *testing.T) {
 		}
 	}
 }
+
+func TestPalettes(t *testing.T) {
+	t.Parallel()
+	pals := Palettes()
+	if len(pals) == 0 {
+		t.Fatal("no palettes")
+	}
+	// The registry file starts with the 1-bit palette.
+	if pals[0].ID != "bw" || pals[0].Name == "" || pals[0].Grays != 2 {
+		t.Errorf("first palette = %+v, want bw with a name and 2 grays", pals[0])
+	}
+	seen := map[string]bool{}
+	for _, p := range pals {
+		if seen[p.ID] {
+			t.Errorf("palette %q is listed twice", p.ID)
+		}
+		seen[p.ID] = true
+		if p.Name == "" || !KnownPalette(p.ID) {
+			t.Errorf("palette %+v has no name or is not known", p)
+		}
+	}
+}

@@ -41,6 +41,9 @@ type Config struct {
 	// Zone is the server's time zone, which times are shown and schedules
 	// are read in. Nil is UTC.
 	Zone *time.Location
+	// RecipesDir is the directory recipes are installed under, which an
+	// uploaded recipe is installed into.
+	RecipesDir string
 }
 
 // Server handles admin UI requests.
@@ -49,6 +52,8 @@ type Server struct {
 	now func() time.Time
 	// zone is Config.Zone, or UTC.
 	zone *time.Location
+	// recipesDir is Config.RecipesDir.
+	recipesDir string
 	// secureURL is whether PublicURL is https.
 	secureURL bool
 	// cop refuses a cross-origin request that is not safe.
@@ -59,11 +64,12 @@ type Server struct {
 // New returns a Server that keeps state in client.
 func New(client *db.Client, cfg Config) *Server {
 	s := &Server{
-		db:    client,
-		now:   time.Now,
-		zone:  cmp.Or(cfg.Zone, time.UTC),
-		cop:   http.NewCrossOriginProtection(),
-		pages: map[string]*template.Template{},
+		db:         client,
+		now:        time.Now,
+		zone:       cmp.Or(cfg.Zone, time.UTC),
+		recipesDir: cfg.RecipesDir,
+		cop:        http.NewCrossOriginProtection(),
+		pages:      map[string]*template.Template{},
 	}
 	if u, err := url.Parse(cfg.PublicURL); err == nil {
 		s.secureURL = strings.EqualFold(u.Scheme, "https")
@@ -71,7 +77,7 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_delete", "notfound", "stub"} {
+	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_delete", "recipes", "recipe", "instance_delete", "notfound", "stub"} {
 		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/"+name+".html"))
 	}
 	return s
@@ -88,7 +94,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /devices/{id}", page(s.requireSession(s.deviceDetail)))
 	mux.Handle("POST /devices/{id}", page(s.requireSession(s.updateDevice)))
 	mux.Handle("POST /join", page(s.requireSession(s.joinWindowForm)))
-	mux.Handle("GET /recipes", page(s.requireSession(s.stub("recipes", "Recipes"))))
+	mux.Handle("GET /recipes", page(s.requireSession(s.recipes)))
+	mux.Handle("POST /recipes", page(s.requireSession(s.uploadRecipe)))
+	mux.Handle("GET /recipes/{id}", page(s.requireSession(s.recipePage)))
+	mux.Handle("POST /recipes/add-instance/{id}", page(s.requireSession(s.addInstance)))
+	mux.Handle("GET /recipes/instances/{id}/delete", page(s.requireSession(s.confirmRemoveInstance)))
+	mux.Handle("POST /recipes/instances/{id}/delete", page(s.requireSession(s.removeInstance)))
 	mux.Handle("GET /playlists", page(s.requireSession(s.playlists)))
 	mux.Handle("GET /playlists/{id}", page(s.requireSession(s.playlistPage)))
 	mux.Handle("POST /playlists/{id}", page(s.requireSession(s.savePlaylist)))
@@ -177,6 +188,14 @@ type pageData struct {
 	ItemEdit     *itemEdit
 	// Delete is the removal the confirm page asks about.
 	Delete *deleteView
+	// Recipes is what the recipes page lists, and UploadLimit the size it
+	// says an upload may be, such as "8 MB".
+	Recipes     []recipeView
+	UploadLimit string
+	// RecipeEdit is the recipe its page shows.
+	RecipeEdit *recipeEdit
+	// InstanceDelete is the instance removal the confirm page asks about.
+	InstanceDelete *instanceDeleteView
 	// NotFound says what the not-found page could not find.
 	NotFound notFoundView
 }

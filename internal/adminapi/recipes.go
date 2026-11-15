@@ -9,6 +9,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
+	"github.com/die-net/trmnl-byos-go/internal/upload"
 )
 
 // recipeJSON is an installed recipe.
@@ -56,7 +57,7 @@ func (s *Server) installRecipe(w http.ResponseWriter, r *http.Request) (recipeJS
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/zip" {
 		return recipeJSON{}, &statusError{status: http.StatusUnsupportedMediaType, msg: "send the recipe as a zip file with Content-Type application/zip"}
 	}
-	allowSlowUpload(w)
+	upload.AllowSlow(w)
 	body := http.MaxBytesReader(w, r.Body, recipe.MaxRecipeBytes)
 	rec, err := recipe.InstallZip(r.Context(), s.db, s.cfg.RecipesDir, body, s.now())
 	if err != nil {

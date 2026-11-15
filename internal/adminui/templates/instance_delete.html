@@ -1,0 +1,13 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "content"}}{{with .InstanceDelete}}{{if .Playlists}}<section class="panel form-panel" aria-labelledby="remove-title">
+<h2 id="remove-title">{{.Name}} is in use</h2>
+<p class="rel">{{.Name}} is in {{range $i, $p := .Playlists}}{{if $i}}, {{end}}<a href="{{$p.Href}}">{{$p.Name}}</a>{{end}}. Remove it from them first.</p>
+<p class="more"><a class="btn btn-secondary" href="{{.Cancel}}">Back</a></p>
+</section>{{else}}<section class="panel form-panel" aria-labelledby="remove-title">
+<h2 id="remove-title">Remove {{.Name}}?</h2>
+<p class="rel">Its renders go too. The recipe stays.</p>
+<form method="post" action="{{.Action}}">
+<button class="btn btn-primary btn-danger-solid" type="submit">Remove</button>
+</form>
+<p class="more"><a class="btn btn-secondary" href="{{.Cancel}}">Cancel</a></p>
+</section>{{end}}{{end}}{{end}}

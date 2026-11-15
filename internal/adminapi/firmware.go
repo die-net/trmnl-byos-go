@@ -7,6 +7,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
+	"github.com/die-net/trmnl-byos-go/internal/upload"
 )
 
 // firmwareJSON is a firmware build in the catalog and its rollout.
@@ -71,7 +72,7 @@ func (s *Server) addFirmware(w http.ResponseWriter, r *http.Request) (firmwareJS
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/octet-stream" {
 		return firmwareJSON{}, &statusError{status: http.StatusUnsupportedMediaType, msg: "send the firmware as a raw file with Content-Type application/octet-stream"}
 	}
-	allowSlowUpload(w)
+	upload.AllowSlow(w)
 	q := r.URL.Query()
 	body := http.MaxBytesReader(w, r.Body, firmware.MaxUploadBytes())
 	fw, err := firmware.Add(r.Context(), s.db, s.cfg.FirmwareDir, q.Get("model"), q.Get("version"), body, s.now())
