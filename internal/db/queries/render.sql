@@ -44,7 +44,7 @@ JOIN playlist_item ON playlist_item.playlist_id = playlist.id
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
-ORDER BY device.id, playlist_device.priority, playlist_device.playlist_id, playlist_item.position;
+ORDER BY device.id, playlist_device.priority, playlist_item.position;
 
 -- name: GetRenderDevice :one
 -- A device's values as of its last wake, which a per-device render shows

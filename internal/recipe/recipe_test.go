@@ -18,6 +18,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
@@ -389,7 +390,7 @@ func TestDeleteInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Write.LinkPlaylistDevice(ctx, db.LinkPlaylistDeviceParams{DeviceID: dev.ID, PlaylistID: pl.ID}); err != nil {
+	if err := playlist.LinkDevice(ctx, client, pl.ID, dev.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	items := make([]int64, 0, len(ids))

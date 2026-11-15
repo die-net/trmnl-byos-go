@@ -27,6 +27,7 @@ var steps = []step{
 	{"move playlist cursors out of device_state", moveCursors},
 	{"add admin sessions", addAdminSessions},
 	{"add playlist schedules and hidden items", addPlaylistSchedules},
+	{"make playlist priorities a unique index per device", addPlaylistPriorityIndex},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -232,6 +233,24 @@ UPDATE playlist_item SET position = ranked.idx
 func addPlaylistSchedules(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addPlaylistSchedulesSQL); err != nil {
 		return fmt.Errorf("add playlist schedules: %w", err)
+	}
+	return nil
+}
+
+// addPlaylistPrioritySQL is step 5. It renumbers each device's playlist links
+// to 0 to n-1 in their old order (priority, then playlist ID), since the API
+// now treats priority as an index, and then adds the unique index that keeps
+// it so. The rank is computed before any row changes, so the unique index
+// does not exist yet to collide with it.
+const addPlaylistPrioritySQL = `UPDATE playlist_device SET priority = ranked.idx
+  FROM (SELECT device_id, playlist_id, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY priority, playlist_id) - 1 AS idx FROM playlist_device) AS ranked
+  WHERE ranked.device_id = playlist_device.device_id AND ranked.playlist_id = playlist_device.playlist_id;
+CREATE UNIQUE INDEX playlist_device_priority ON playlist_device (device_id, priority)`
+
+// addPlaylistPriorityIndex is step 5: see addPlaylistPrioritySQL.
+func addPlaylistPriorityIndex(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addPlaylistPrioritySQL); err != nil {
+		return fmt.Errorf("add playlist priority index: %w", err)
 	}
 	return nil
 }

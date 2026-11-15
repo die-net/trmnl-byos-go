@@ -222,6 +222,11 @@ func playlists(ctx context.Context, args []string, out io.Writer) error {
 		"move":     playlistMove,
 		"set":      playlistSet,
 		"schedule": playlistSchedule,
+		"create":   playlistCreate,
+		"rename":   playlistRename,
+		"delete":   playlistDelete,
+		"link":     playlistLink,
+		"unlink":   playlistUnlink,
 	})
 }
 
@@ -424,16 +429,153 @@ func playlistSchedule(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	pl, err := client.Read.GetPlaylistByName(ctx, rest[0])
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: %q", playlist.ErrNoPlaylist, rest[0])
-	} else if err != nil {
-		return fmt.Errorf("get playlist: %w", err)
+	pl, err := playlistByName(ctx, client, rest[0])
+	if err != nil {
+		return err
 	}
-	if err := playlist.SetPlaylistSchedule(ctx, client, pl.ID, *edit); err != nil {
+	if err := playlist.UpdatePlaylist(ctx, client, pl.ID, playlist.Update{Schedule: edit}); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(out, "Updated playlist %q.\n", pl.Name)
+	return err
+}
+
+// playlistByName returns the playlist with the name, or an error wrapping
+// playlist.ErrNoPlaylist.
+func playlistByName(ctx context.Context, client *db.Client, name string) (db.Playlist, error) {
+	pl, err := client.Read.GetPlaylistByName(ctx, name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.Playlist{}, fmt.Errorf("%w: %q", playlist.ErrNoPlaylist, name)
+	} else if err != nil {
+		return db.Playlist{}, fmt.Errorf("get playlist: %w", err)
+	}
+	return pl, nil
+}
+
+func playlistCreate(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("playlist create", flag.ExitOnError)
+	data := dataFlag(fs)
+	rest := parseInterspersed(fs, args)
+	if len(rest) != 1 {
+		return errors.New("usage: trmnl-byos playlist create [-data dir] <playlist name>")
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	pl, err := playlist.CreatePlaylist(ctx, client, rest[0])
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Created playlist %q.\n", pl.Name)
+	return err
+}
+
+func playlistRename(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("playlist rename", flag.ExitOnError)
+	data := dataFlag(fs)
+	rest := parseInterspersed(fs, args)
+	if len(rest) != 2 {
+		return errors.New("usage: trmnl-byos playlist rename [-data dir] <playlist name> <new name>")
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	pl, err := playlistByName(ctx, client, rest[0])
+	if err != nil {
+		return err
+	}
+	if err := playlist.UpdatePlaylist(ctx, client, pl.ID, playlist.Update{Name: &rest[1]}); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Renamed playlist %q to %q.\n", pl.Name, strings.TrimSpace(rest[1]))
+	return err
+}
+
+func playlistDelete(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("playlist delete", flag.ExitOnError)
+	data := dataFlag(fs)
+	rest := parseInterspersed(fs, args)
+	if len(rest) != 1 {
+		return errors.New("usage: trmnl-byos playlist delete [-data dir] <playlist name>")
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	pl, err := playlistByName(ctx, client, rest[0])
+	if err != nil {
+		return err
+	}
+	if err := playlist.DeletePlaylist(ctx, client, pl.ID); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Deleted playlist %q.\n", pl.Name)
+	return err
+}
+
+func playlistLink(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("playlist link", flag.ExitOnError)
+	data := dataFlag(fs)
+	priority := fs.Int64("priority", 0, "the playlist's index in the device's order, from 0, which is tried first; default: last for a new link, unchanged for an existing one")
+	rest := parseInterspersed(fs, args)
+	if len(rest) != 2 {
+		return errors.New("usage: trmnl-byos playlist link [-data dir] <playlist name> <device> [-priority N]")
+	}
+	var prio *int64
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "priority" {
+			prio = priority
+		}
+	})
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	pl, err := playlistByName(ctx, client, rest[0])
+	if err != nil {
+		return err
+	}
+	dev, err := device.FindDevice(ctx, client.Read, rest[1])
+	if err != nil {
+		return err
+	}
+	if err := playlist.LinkDevice(ctx, client, pl.ID, dev.ID, prio); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Linked device %s to playlist %q.\n", dev.FriendlyID, pl.Name)
+	return err
+}
+
+func playlistUnlink(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("playlist unlink", flag.ExitOnError)
+	data := dataFlag(fs)
+	rest := parseInterspersed(fs, args)
+	if len(rest) != 2 {
+		return errors.New("usage: trmnl-byos playlist unlink [-data dir] <playlist name> <device>")
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	pl, err := playlistByName(ctx, client, rest[0])
+	if err != nil {
+		return err
+	}
+	dev, err := device.FindDevice(ctx, client.Read, rest[1])
+	if err != nil {
+		return err
+	}
+	if err := playlist.UnlinkDevice(ctx, client, pl.ID, dev.ID); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Unlinked device %s from playlist %q.\n", dev.FriendlyID, pl.Name)
 	return err
 }
 

@@ -550,7 +550,8 @@ func TestCandidatesWanted(t *testing.T) {
 			t.Fatal(err)
 		}
 		if device == second.ID {
-			err = h.db.Write.LinkPlaylistDevice(t.Context(), db.LinkPlaylistDeviceParams{DeviceID: device, PlaylistID: item.PlaylistID, Priority: -1})
+			first := int64(0)
+			err = playlist.LinkDevice(t.Context(), h.db, item.PlaylistID, device, &first)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1356,7 +1357,8 @@ func TestCandidatesHonorSchedules(t *testing.T) {
 		t.Helper()
 		s := playlist.Always
 		s.WindowStart, s.WindowEnd = start, end
-		if err := playlist.SetPlaylistSchedule(t.Context(), h.db, 1, s.Full()); err != nil {
+		edit := s.Full()
+		if err := playlist.UpdatePlaylist(t.Context(), h.db, 1, playlist.Update{Schedule: &edit}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1430,7 +1432,7 @@ func TestHiddenItemsAreNotTargets(t *testing.T) {
 	if err := playlist.UpdateItem(t.Context(), h.db, item.ID, playlist.ItemUpdate{Schedule: &playlist.ScheduleEdit{WindowStart: &closed, WindowEnd: &closedEnd}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := playlist.SetPlaylistSchedule(t.Context(), h.db, 1, playlist.ScheduleEdit{WindowStart: &closed, WindowEnd: &closedEnd}); err != nil {
+	if err := playlist.UpdatePlaylist(t.Context(), h.db, 1, playlist.Update{Schedule: &playlist.ScheduleEdit{WindowStart: &closed, WindowEnd: &closedEnd}}); err != nil {
 		t.Fatal(err)
 	}
 	h.renderDue(t, 2)

@@ -140,8 +140,9 @@ CREATE TABLE IF NOT EXISTS playlist (
 );
 
 -- playlist_device links a device to its playlists. A device shows the first
--- one, by lowest priority and then playlist ID, that is scheduled now and
--- has an item to show.
+-- one, by lowest priority, that is scheduled now and has an item to show.
+-- priority is the playlist's index in the device's order, 0 to n-1 with no
+-- gaps, and is unique per device.
 CREATE TABLE IF NOT EXISTS playlist_device (
   device_id INTEGER NOT NULL REFERENCES device (id) ON DELETE CASCADE,
   playlist_id INTEGER NOT NULL REFERENCES playlist (id) ON DELETE CASCADE,
@@ -150,6 +151,8 @@ CREATE TABLE IF NOT EXISTS playlist_device (
 );
 
 CREATE INDEX IF NOT EXISTS playlist_device_playlist ON playlist_device (playlist_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS playlist_device_priority ON playlist_device (device_id, priority);
 
 -- playlist_item is one screen in a playlist. Items show in position order,
 -- and position is the item's index in its playlist, 0 to n-1 with no gaps.

@@ -135,11 +135,16 @@ var (
 	ErrNoItem = errkind.New(errkind.ErrNotFound, "no such playlist item")
 	// ErrNoPlaylist means no playlist has the ID or name.
 	ErrNoPlaylist = errkind.New(errkind.ErrNotFound, "no such playlist")
+	// ErrNameTaken means another playlist has the name.
+	ErrNameTaken = errkind.New(errkind.ErrConflict, "a playlist has that name")
+	// ErrNotLinked means the device is not linked to the playlist.
+	ErrNotLinked = errkind.New(errkind.ErrNotFound, "device is not linked to the playlist")
 )
 
 // AddItem appends an item showing one instance on the whole screen to the
-// named playlist, creating the playlist if it does not exist, and links
-// the device to it when deviceID is not 0. An empty name is the device's
+// named playlist, checked by CleanName, creating the playlist if it does not
+// exist, and links the device to it, last in the device's order, when
+// deviceID is not 0 and it is not linked already. An empty name is the device's
 // friendly ID, so the device needs to be given then. duration is 0, to show
 // the item until a button press, or at least MinDuration.
 func AddItem(ctx context.Context, client *db.Client, name string, deviceID, instanceID int64, duration time.Duration) (db.PlaylistItem, string, error) {
@@ -148,6 +153,12 @@ func AddItem(ctx context.Context, client *db.Client, name string, deviceID, inst
 	}
 	if name == "" && deviceID == 0 {
 		return db.PlaylistItem{}, "", fmt.Errorf("%w: give a playlist name or a device", errkind.ErrInvalid)
+	}
+	if name != "" {
+		var err error
+		if name, err = CleanName(name); err != nil {
+			return db.PlaylistItem{}, "", err
+		}
 	}
 	var item db.PlaylistItem
 	err := client.InTx(ctx, func(q *db.Queries) error {
@@ -171,7 +182,7 @@ func AddItem(ctx context.Context, client *db.Client, name string, deviceID, inst
 			return fmt.Errorf("get playlist: %w", err)
 		}
 		if deviceID != 0 {
-			if err := q.LinkPlaylistDevice(ctx, db.LinkPlaylistDeviceParams{DeviceID: deviceID, PlaylistID: pl.ID}); err != nil {
+			if err := q.AppendPlaylistDevice(ctx, db.AppendPlaylistDeviceParams{DeviceID: deviceID, PlaylistID: pl.ID}); err != nil {
 				return fmt.Errorf("link device: %w", err)
 			}
 		}
@@ -205,18 +216,34 @@ func validDuration(d time.Duration) error {
 	return nil
 }
 
-// renumber gives the items of a playlist the positions 0 to n-1 in the order
-// of ids. A position is unique within its playlist and SQLite checks that one
-// row at a time, so the old positions are first moved out of the range of
-// indexes. It runs in the caller's transaction.
-func renumber(ctx context.Context, q *db.Queries, playlistID int64, ids []int64) error {
+// movedKey is the sort key of a row that moves from index from to index to,
+// among rows whose keys are twice their old index. A row moving down is placed
+// just after the row now at to, and one moving up just before it, so every
+// other row keeps its relative order. A row that stays has its own key.
+func movedKey(from, to int64) int64 {
+	switch {
+	case to > from:
+		return 2*to + 1
+	case to < from:
+		return 2*to - 1
+	default:
+		return 2 * to
+	}
+}
+
+// renumber gives the items of a playlist the positions 0 to n-1 in their
+// current order, with the item moved, if not 0, placed at index to after
+// it was at from. A position is unique within its playlist and SQLite checks
+// that one row at a time, so the old positions are first moved out of the
+// range of indexes. It takes two statements however many items there are, and
+// runs in the caller's transaction.
+func renumber(ctx context.Context, q *db.Queries, playlistID, moved, from, to int64) error {
 	if err := q.NegatePlaylistPositions(ctx, playlistID); err != nil {
 		return fmt.Errorf("renumber items: %w", err)
 	}
-	for i, id := range ids {
-		if err := q.SetItemPosition(ctx, db.SetItemPositionParams{Position: int64(i), ID: id}); err != nil {
-			return fmt.Errorf("renumber items: %w", err)
-		}
+	err := q.RankPlaylistItems(ctx, db.RankPlaylistItemsParams{PlaylistID: playlistID, MovedID: moved, MovedKey: movedKey(from, to)})
+	if err != nil {
+		return fmt.Errorf("renumber items: %w", err)
 	}
 	return nil
 }
@@ -235,11 +262,7 @@ func DeleteItem(ctx context.Context, client *db.Client, id int64) error {
 		if _, err := q.DeletePlaylistItem(ctx, id); err != nil {
 			return fmt.Errorf("remove item: %w", err)
 		}
-		ids, err := q.ListPlaylistItemIDs(ctx, item.PlaylistID)
-		if err != nil {
-			return fmt.Errorf("list items: %w", err)
-		}
-		return renumber(ctx, q, item.PlaylistID, ids)
+		return renumber(ctx, q, item.PlaylistID, 0, 0, 0)
 	})
 }
 
@@ -314,35 +337,7 @@ func UpdateItem(ctx context.Context, client *db.Client, id int64, u ItemUpdate) 
 		if u.Position == nil {
 			return nil
 		}
-		from := slices.Index(ids, id)
-		ids = slices.Delete(ids, from, from+1)
-		ids = slices.Insert(ids, int(*u.Position), id)
-		return renumber(ctx, q, item.PlaylistID, ids)
-	})
-}
-
-// SetPlaylistSchedule applies the edit to a playlist's schedule. It returns
-// an error wrapping ErrNoPlaylist if there is no such playlist, and one
-// wrapping errkind.ErrInvalid if the result is not a valid schedule.
-func SetPlaylistSchedule(ctx context.Context, client *db.Client, id int64, edit ScheduleEdit) error {
-	return client.InTx(ctx, func(q *db.Queries) error {
-		pl, err := q.GetPlaylist(ctx, id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: %d", ErrNoPlaylist, id)
-		} else if err != nil {
-			return fmt.Errorf("get playlist: %w", err)
-		}
-		s := edit.Apply(Schedule{Days: pl.Days, WindowStart: pl.WindowStart, WindowEnd: pl.WindowEnd, StartsAt: pl.StartsAt, EndsAt: pl.EndsAt})
-		if err := s.Validate(); err != nil {
-			return err
-		}
-		err = q.UpdatePlaylistSchedule(ctx, db.UpdatePlaylistScheduleParams{
-			Days: s.Days, WindowStart: s.WindowStart, WindowEnd: s.WindowEnd, StartsAt: s.StartsAt, EndsAt: s.EndsAt, ID: id,
-		})
-		if err != nil {
-			return fmt.Errorf("update playlist: %w", err)
-		}
-		return nil
+		return renumber(ctx, q, item.PlaylistID, id, int64(slices.Index(ids, id)), *u.Position)
 	})
 }
 

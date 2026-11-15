@@ -517,7 +517,7 @@ func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	sched, edit, err := s.scheduleFromPost(r)
 	if err == nil {
-		err = playlist.SetPlaylistSchedule(r.Context(), s.db, pl.ID, *edit)
+		err = playlist.UpdatePlaylist(r.Context(), s.db, pl.ID, playlist.Update{Schedule: edit})
 	}
 	switch {
 	case err == nil:

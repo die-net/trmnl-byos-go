@@ -225,7 +225,7 @@ func TestUpdateItemRefusedChangesNothing(t *testing.T) {
 	}
 }
 
-func TestSetPlaylistSchedule(t *testing.T) {
+func TestUpdatePlaylistSchedule(t *testing.T) {
 	t.Parallel()
 	client, _, _ := newPlaylist(t, 1)
 	ctx := t.Context()
@@ -234,7 +234,7 @@ func TestSetPlaylistSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 	days, start, end, from, until := int64(5), int64(60), int64(30), int64(100), int64(200)
-	err = SetPlaylistSchedule(ctx, client, pl.ID, ScheduleEdit{Days: &days, WindowStart: &start, WindowEnd: &end, StartsAt: &from, EndsAt: &until})
+	err = UpdatePlaylist(ctx, client, pl.ID, Update{Schedule: &ScheduleEdit{Days: &days, WindowStart: &start, WindowEnd: &end, StartsAt: &from, EndsAt: &until}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,17 +245,17 @@ func TestSetPlaylistSchedule(t *testing.T) {
 	// A partial edit keeps the rest, and the result is what is validated: an
 	// end date before the kept start date is refused.
 	early := int64(50)
-	if err := SetPlaylistSchedule(ctx, client, pl.ID, ScheduleEdit{EndsAt: &early}); !errors.Is(err, errkind.ErrInvalid) {
+	if err := UpdatePlaylist(ctx, client, pl.ID, Update{Schedule: &ScheduleEdit{EndsAt: &early}}); !errors.Is(err, errkind.ErrInvalid) {
 		t.Errorf("end before the kept start: %v", err)
 	}
 	zero := int64(0)
-	if err := SetPlaylistSchedule(ctx, client, pl.ID, ScheduleEdit{Days: &zero}); !errors.Is(err, errkind.ErrInvalid) {
+	if err := UpdatePlaylist(ctx, client, pl.ID, Update{Schedule: &ScheduleEdit{Days: &zero}}); !errors.Is(err, errkind.ErrInvalid) {
 		t.Errorf("no days: %v", err)
 	}
 	if again, err := client.Read.GetPlaylist(ctx, pl.ID); err != nil || again != got {
 		t.Errorf("a refused edit changed the playlist: %+v, %v", again, err)
 	}
-	if err := SetPlaylistSchedule(ctx, client, pl.ID+100, ScheduleEdit{}); !errors.Is(err, ErrNoPlaylist) {
+	if err := UpdatePlaylist(ctx, client, pl.ID+100, Update{}); !errors.Is(err, ErrNoPlaylist) {
 		t.Errorf("unknown playlist: %v", err)
 	}
 }
@@ -271,8 +271,12 @@ func TestDeviceLists(t *testing.T) {
 	// "q" has priority 0 and "p" 1, so q is tried first even though p has the lower ID.
 	p, _ := client.Read.GetPlaylistByName(ctx, "p")
 	q, _ := client.Read.GetPlaylistByName(ctx, "q")
-	for _, l := range []db.LinkPlaylistDeviceParams{{DeviceID: dev.ID, PlaylistID: p.ID, Priority: 1}, {DeviceID: dev.ID, PlaylistID: q.ID, Priority: 0}} {
-		if err := client.Write.LinkPlaylistDevice(ctx, l); err != nil {
+	zero := int64(0)
+	for _, l := range []struct {
+		id       int64
+		priority *int64
+	}{{p.ID, nil}, {q.ID, &zero}} {
+		if err := LinkDevice(ctx, client, l.id, dev.ID, l.priority); err != nil {
 			t.Fatal(err)
 		}
 	}

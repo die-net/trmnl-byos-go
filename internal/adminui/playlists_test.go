@@ -122,7 +122,7 @@ func TestPlaylistsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tu.db.Write.LinkPlaylistDevice(ctx, db.LinkPlaylistDeviceParams{DeviceID: other.ID, PlaylistID: pl.ID}); err != nil {
+	if err := playlist.LinkDevice(ctx, tu.db, pl.ID, other.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestPlaylistsList(t *testing.T) {
 	}
 	// 2026-12-01 00:00 in the server's zone, which UTC would show as the day before.
 	start := time.Date(2026, 12, 1, 0, 0, 0, 0, testZone).Unix()
-	if err := playlist.SetPlaylistSchedule(ctx, tu.db, playlistID(t, tu, mornings), playlist.ScheduleEdit{StartsAt: &start}); err != nil {
+	if err := playlist.UpdatePlaylist(ctx, tu.db, playlistID(t, tu, mornings), playlist.Update{Schedule: &playlist.ScheduleEdit{StartsAt: &start}}); err != nil {
 		t.Fatal(err)
 	}
 
