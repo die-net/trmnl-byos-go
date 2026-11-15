@@ -538,7 +538,7 @@ func TestRecipeAddInstanceRequiredField(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{})
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "City: is required. Until this form can set fields, make the instance with trmnl-byos instance add -recipe "+id(rec.ID)+" -field KEY=VALUE, or with POST /api/v1/instances.") || len(listInstances(t, tu)) != 0 {
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "City: is required. Until this form can set fields, make the instance with trmnl-byos instance add -recipe "+id(rec.ID)+" -field city=VALUE, or with POST /api/v1/instances.") || len(listInstances(t, tu)) != 0 {
 		t.Errorf("status %d with %d instances: %s", w.Code, len(listInstances(t, tu)), w.Body)
 	}
 }

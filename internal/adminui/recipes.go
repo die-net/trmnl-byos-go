@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -313,8 +315,14 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 		// A recipe with a required field can't get an instance from this form
 		// until it has a settings form.
 		// The refused create made no instance, so the hint is a command that
-		// makes one with its fields.
-		hint := fmt.Sprintf(" Until this form can set fields, make the instance with trmnl-byos instance add -recipe %d -field KEY=VALUE, or with POST /api/v1/instances.", rec.ID)
+		// makes one with its fields. -field takes keynames, which the
+		// message's labels are not, so it names each.
+		var cmd strings.Builder
+		fmt.Fprintf(&cmd, "trmnl-byos instance add -recipe %d", rec.ID)
+		for _, k := range slices.Sorted(maps.Keys(fieldErrs)) {
+			fmt.Fprintf(&cmd, " -field %s=VALUE", k)
+		}
+		hint := " Until this form can set fields, make the instance with " + cmd.String() + ", or with POST /api/v1/instances."
 		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err)+hint)
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err))
