@@ -51,7 +51,7 @@ func TestSettingsPage(t *testing.T) {
 		t.Error("an unset setting has a reset button")
 	}
 	// The panels are in the order the package lists the settings.
-	wantSequence(t, body, `id="refresh_seconds"`, `id="min_password_length"`)
+	wantInOrder(t, body, `id="refresh_seconds"`, `id="min_password_length"`)
 
 	if w := tu.post(t, c, "/settings", url.Values{"key": {"refresh_seconds"}, "value": {"600"}}); w.Code != http.StatusSeeOther {
 		t.Fatalf("save status %d", w.Code)
@@ -162,7 +162,7 @@ func TestSettingBadKey(t *testing.T) {
 					t.Fatalf("status %d, want 400: %s", w.Code, body)
 				}
 				// One message, at the top of the page and in no panel.
-				wantSequence(t, body, `<p class="error" role="alert">Choose a setting.</p>`, `id="refresh_seconds"`)
+				wantInOrder(t, body, `<p class="error" role="alert">Choose a setting.</p>`, `id="refresh_seconds"`)
 				if n := strings.Count(body, `role="alert"`); n != 1 {
 					t.Errorf("%d messages, want 1", n)
 				}
@@ -216,7 +216,7 @@ func TestSaveSettingRefusedKeepsStored(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status %d, want 400", w.Code)
 	}
-	wantSequence(t, w.Body.String(), `id="refresh_seconds"`,
+	wantInOrder(t, w.Body.String(), `id="refresh_seconds"`,
 		`<p class="error" role="alert" id="error-refresh_seconds">Enter a whole number from 1 to 31536000.</p>`,
 		`required value="0" aria-describedby="error-refresh_seconds hint-refresh_seconds" aria-invalid="true">`,
 		`Currently 5 min. The default is 900.`, "Reset to default",
@@ -250,7 +250,7 @@ func TestSettingsBadRow(t *testing.T) {
 	// The message is escaped, in the bad setting's panel only, above its
 	// form, and the input holds the default. The hint does not say the
 	// value is the default, and the reset button is there.
-	wantSequence(t, body, `id="refresh_seconds"`,
+	wantInOrder(t, body, `id="refresh_seconds"`,
 		`<p class="error" role="alert" id="error-refresh_seconds">`+badMessage,
 		`is not usable, so the default is in effect. Save a value or reset to the default.</p>`,
 		`required value="900" aria-describedby="error-refresh_seconds hint-refresh_seconds">`,
@@ -306,7 +306,7 @@ func TestSettingsBadRowRefusedSave(t *testing.T) {
 	}
 	body := w.Body.String()
 	// Only the refusal, not the stored-value message too.
-	wantSequence(t, body, `id="refresh_seconds"`,
+	wantInOrder(t, body, `id="refresh_seconds"`,
 		`<p class="error" role="alert" id="error-refresh_seconds">Enter a whole number from 1 to 31536000.</p>`,
 		`required value="0" aria-describedby="error-refresh_seconds hint-refresh_seconds" aria-invalid="true">`, "Reset to default")
 	if n := strings.Count(body, `role="alert"`); n != 1 || strings.Contains(body, "not usable") {
@@ -356,20 +356,5 @@ func TestSettingsNav(t *testing.T) {
 	body := tu.get(t, tu.signIn(t), "/settings").Body.String()
 	if strings.Count(body, `aria-current="page"`) != 1 || !strings.Contains(body, `<a href="/settings" aria-current="page">`) {
 		t.Error("the page does not mark Settings as the current page")
-	}
-}
-
-// wantSequence fails the test unless body has every one of wants, each after
-// the one before it.
-func wantSequence(t *testing.T, body string, wants ...string) {
-	t.Helper()
-	pos := 0
-	for _, want := range wants {
-		i := strings.Index(body[pos:], want)
-		if i < 0 {
-			t.Errorf("page lacks %q after offset %d:\n%s", want, pos, body)
-			return
-		}
-		pos += i + len(want)
 	}
 }

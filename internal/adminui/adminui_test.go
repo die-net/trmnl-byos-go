@@ -386,3 +386,18 @@ func TestStaticAndMarkup(t *testing.T) {
 		}
 	}
 }
+
+// wantInOrder fails the test unless body has every text in wants, each after
+// the one before it.
+func wantInOrder(t *testing.T, body string, wants ...string) {
+	t.Helper()
+	pos := 0
+	for _, want := range wants {
+		i := strings.Index(body[pos:], want)
+		if i < 0 {
+			t.Errorf("page lacks %q after offset %d:\n%s", want, pos, body)
+			return
+		}
+		pos += i + len(want)
+	}
+}
