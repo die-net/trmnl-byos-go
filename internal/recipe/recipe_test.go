@@ -511,18 +511,18 @@ func TestInstallZip(t *testing.T) {
 		t.Cleanup(func() { _ = f.Close() })
 		return f
 	}
-	rec, err := InstallZip(t.Context(), client, recipes, open("r.zip"), time.Unix(1000, 0))
-	if err != nil || rec.Source != "upload" || rec.InstalledAt != 1000 {
+	rec, err := InstallZip(t.Context(), client, recipes, open("r.zip"), "", time.Unix(1000, 0))
+	if err != nil || rec.Source != UploadSource || rec.InstalledAt != 1000 {
 		t.Fatalf("InstallZip = %+v, %v", rec, err)
 	}
 	if _, err := os.Stat(filepath.Join(Dir(recipes, rec.ID), "full.liquid")); err != nil {
 		t.Error(err)
 	}
 	boom := errors.New("connection reset")
-	if _, err := InstallZip(t.Context(), client, recipes, io.MultiReader(strings.NewReader("PK"), iotest.ErrReader(boom)), time.Now()); !errors.Is(err, boom) {
+	if _, err := InstallZip(t.Context(), client, recipes, io.MultiReader(strings.NewReader("PK"), iotest.ErrReader(boom)), "", time.Now()); !errors.Is(err, boom) {
 		t.Errorf("failing reader: %v", err)
 	}
-	if _, err := InstallZip(t.Context(), client, recipes, open("escape.zip"), time.Now()); !errors.Is(err, errkind.ErrInvalid) {
+	if _, err := InstallZip(t.Context(), client, recipes, open("escape.zip"), "", time.Now()); !errors.Is(err, errkind.ErrInvalid) {
 		t.Errorf("escaping zip: %v", err)
 	}
 	entries, err := os.ReadDir(recipes)
@@ -590,7 +590,7 @@ func TestInstallZipConflictingNames(t *testing.T) {
 			}
 			client := openDB(t)
 			recipes := filepath.Join(t.TempDir(), "recipes")
-			_, err := InstallZip(t.Context(), client, recipes, &buf, time.Now())
+			_, err := InstallZip(t.Context(), client, recipes, &buf, "", time.Now())
 			if !errors.Is(err, errkind.ErrInvalid) {
 				t.Fatalf("InstallZip = %v, want errkind.ErrInvalid", err)
 			}
@@ -629,7 +629,7 @@ func TestInstallZipCorruptMember(t *testing.T) {
 	b[i] ^= 0xff
 	client := openDB(t)
 	recipes := filepath.Join(t.TempDir(), "recipes")
-	_, err := InstallZip(t.Context(), client, recipes, bytes.NewReader(b), time.Now())
+	_, err := InstallZip(t.Context(), client, recipes, bytes.NewReader(b), "", time.Now())
 	if !errors.Is(err, errkind.ErrInvalid) || !errors.Is(err, zip.ErrChecksum) {
 		t.Fatalf("corrupt member: %v, want invalid input from a checksum error", err)
 	}
@@ -738,5 +738,124 @@ func TestSweepTemps(t *testing.T) {
 		if kept := err == nil; kept != e.kept {
 			t.Errorf("%s: kept = %v (%v), want %v", e.name, kept, err, e.kept)
 		}
+	}
+}
+
+// zipOf returns a zip file of the named files, in the order given, which
+// can name one twice.
+func zipOf(t *testing.T, files ...[2]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range files {
+		w, err := zw.Create(f[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, f[1])
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestInstallZipName checks the name a recipe gets: its settings.yml's, or
+// else the uploaded file's name without a directory (of either kind) or an
+// extension, or else the recorded source.
+func TestInstallZipName(t *testing.T) {
+	t.Parallel()
+	const unnamed = "strategy: polling\nrefresh_interval: 60\n"
+	for _, tc := range []struct {
+		name, settings, filename, want string
+	}{
+		{"name in settings.yml wins", settingsYML, "other.zip", "Test Recipe"},
+		{"file name", unnamed, "My Recipe.zip", "My Recipe"},
+		{"Windows path", unnamed, `C:\dl\weather.zip`, "weather"},
+		{"directories above", unnamed, "../../x.zip", "x"},
+		{"no extension", unnamed, "dir/plain", "plain"},
+		{"only the last extension", unnamed, "weather.v2.zip", "weather.v2"},
+		{"space around", unnamed, "  spaced .zip", "spaced"},
+		{"empty", unnamed, "", UploadSource},
+		{"only an extension", unnamed, ".zip", UploadSource},
+		{"only a directory", unnamed, "dir/", UploadSource},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			z := zipOf(t, [2]string{"settings.yml", tc.settings}, [2]string{"full.liquid", "x"})
+			recipes := filepath.Join(t.TempDir(), "recipes")
+			rec, err := InstallZip(t.Context(), openDB(t), recipes, bytes.NewReader(z), tc.filename, time.Now())
+			if err != nil || rec.Name != tc.want || rec.Source != UploadSource {
+				t.Errorf("InstallZip = %+v, %v; want name %q from %q", rec, err, tc.want, UploadSource)
+			}
+			// The file name is only text: nothing is made from it.
+			if entries, err := os.ReadDir(recipes); err != nil || len(entries) != 1 || entries[0].Name() != strconv.FormatInt(rec.ID, 10) {
+				t.Errorf("recipes dir = %v, %v; want only the recipe's directory", entries, err)
+			}
+		})
+	}
+}
+
+// TestInstallInvalidText checks that each way a recipe is refused as
+// invalid input says so as a plain statement, without a nested Go error
+// text, and keeps the cause where there is one.
+func TestInstallInvalidText(t *testing.T) {
+	t.Parallel()
+	good := [2]string{"settings.yml", settingsYML}
+	liquid := [2]string{"full.liquid", "x"}
+	many := make([][2]string, 0, 2+maxRecipeFiles)
+	many = append(many, good, liquid)
+	for i := range maxRecipeFiles {
+		many = append(many, [2]string{"f" + strconv.Itoa(i), "x"})
+	}
+	damaged := func() []byte {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		for _, name := range []string{"settings.yml", "full.liquid"} {
+			body := "<div>NEEDLE-PAYLOAD</div>"
+			if name == "settings.yml" {
+				body = settingsYML
+			}
+			w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, body)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		b := buf.Bytes()
+		b[bytes.Index(b, []byte("NEEDLE-PAYLOAD"))] ^= 0xff
+		return b
+	}()
+	for _, tc := range []struct {
+		name  string
+		zip   []byte
+		want  string
+		cause error
+	}{
+		{"not a zip", []byte("plain text"), "the file is not a zip archive", zip.ErrFormat},
+		{"empty file", nil, "the file is empty", nil},
+		{"no settings.yml", zipOf(t, liquid), "the zip has no settings.yml at its top, in src/, or in one top-level folder", nil},
+		{"name leaves the directory", zipOf(t, good, liquid, [2]string{"../escape", "x"}), `the zip has a file name that leaves its directory: "../escape"`, nil},
+		{"no full.liquid", zipOf(t, good), "the recipe has no full.liquid", nil},
+		{"settings.yml is not YAML", zipOf(t, [2]string{"settings.yml", "name: [unclosed"}, liquid), "the recipe's settings.yml is not valid YAML", nil},
+		{"the recipe's settings.yml is empty", zipOf(t, [2]string{"settings.yml", ""}, liquid), "the recipe's settings.yml is empty", io.EOF},
+		{"too many files", zipOf(t, many...), "the recipe has more than 1000 files", nil},
+		{"too large", zipOf(t, good, [2]string{"full.liquid", strings.Repeat("a", MaxRecipeBytes+1)}), "the recipe's files are over 8 MB in all", nil},
+		{"same file twice", zipOf(t, good, liquid, liquid), "full.liquid clashes with another file of the same name in the recipe", nil},
+		{"member fails its checksum", damaged, "full.liquid in the zip is damaged", zip.ErrChecksum},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := InstallZip(t.Context(), openDB(t), filepath.Join(t.TempDir(), "recipes"), bytes.NewReader(tc.zip), "a.zip", time.Now())
+			if !errors.Is(err, errkind.ErrInvalid) || err.Error() != tc.want {
+				t.Fatalf("InstallZip = %v; want invalid input saying %q", err, tc.want)
+			}
+			if tc.cause != nil && !errors.Is(err, tc.cause) {
+				t.Errorf("%v lost its cause %v", err, tc.cause)
+			}
+		})
 	}
 }

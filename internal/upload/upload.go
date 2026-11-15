@@ -1,12 +1,16 @@
 // Package upload extends the deadlines of a request that carries a large
-// body, such as a firmware image or a recipe zip.
+// body, such as a firmware image or a recipe zip, and tells a client that
+// dropped it from a server that failed.
 package upload
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
 // timeout is how long an upload may take to arrive. The server's own read
@@ -28,4 +32,42 @@ func AllowSlow(w http.ResponseWriter) {
 	if err := rc.SetWriteDeadline(now.Add(timeout + time.Minute)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		slog.Warn("upload: extend write deadline", "err", err)
 	}
+}
+
+// ErrCutOff means the request body ended early or could not be read. It is
+// invalid input, so a caller answers with a client error.
+var ErrCutOff = errkind.New(errkind.ErrInvalid, "the upload was cut off or could not be read")
+
+// Reader returns r with its read errors marked as the client's. Everything
+// read through it comes from the request, so a read that fails means the
+// client hung up, stalled past the deadline, or sent a broken body. A
+// failure to write the upload to disk is not read through it, and stays a
+// server error. A read error wraps ErrCutOff and keeps the cause, which
+// the message leaves out. io.EOF, and the *http.MaxBytesError of a body
+// over its limit, which callers answer with their own message, pass
+// unchanged.
+func Reader(r io.Reader) io.Reader {
+	return reader{r}
+}
+
+type reader struct{ r io.Reader }
+
+func (c reader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		return n, err
+	}
+	return n, CutOff(err)
+}
+
+// CutOff marks err, which came from reading the request body, as ErrCutOff,
+// for a caller that reads the body through a parser that returns its own
+// errors, such as a multipart reader. nil and a *http.MaxBytesError are
+// returned as they are.
+func CutOff(err error) error {
+	var tooBig *http.MaxBytesError
+	if err == nil || errors.As(err, &tooBig) {
+		return err
+	}
+	return errkind.Wrap(ErrCutOff, ErrCutOff.Error(), err)
 }

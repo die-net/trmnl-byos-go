@@ -10,6 +10,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -88,19 +89,32 @@ func Dir(recipesDir string, id int64) string {
 // settings.yml at its top, or a trmnlp project holding it in src/; a zip
 // may also hold either inside one top-level directory, as GitHub's do.
 func Install(ctx context.Context, client *db.Client, recipesDir, src string, now time.Time) (db.Recipe, error) {
-	return installFrom(ctx, client, recipesDir, src, src, now)
+	return installFrom(ctx, client, recipesDir, src, src, strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)), now)
 }
 
-// uploadSource is the recorded source of a recipe installed from an upload,
+// UploadSource is the recorded source of a recipe installed from an upload,
 // whose file is gone once it is installed.
-const uploadSource = "upload"
+const UploadSource = "upload"
+
+// uploadName is the name an uploaded recipe gets when its settings.yml has
+// none: the uploaded file's name without its directory and extension, or
+// UploadSource if nothing is left. A browser may send a Windows path, so
+// both / and \ end a directory. The name is only text and never reaches the
+// filesystem.
+func uploadName(filename string) string {
+	if i := strings.LastIndexAny(filename, `/\`); i >= 0 {
+		filename = filename[i+1:]
+	}
+	return cmp.Or(strings.TrimSpace(strings.TrimSuffix(filename, path.Ext(filename))), UploadSource)
+}
 
 // InstallZip installs the recipe in the zip file r streams, as Install does
 // a zip file. A zip needs random access, so r is copied to a temporary file
 // in recipesDir first, and the file is removed afterwards. The caller
 // bounds r, with http.MaxBytesReader for a request body, since this reads
-// until it ends.
-func InstallZip(ctx context.Context, client *db.Client, recipesDir string, r io.Reader, now time.Time) (db.Recipe, error) {
+// until it ends. filename is the name the file was uploaded with, or "". It
+// only names a recipe whose settings.yml has no name.
+func InstallZip(ctx context.Context, client *db.Client, recipesDir string, r io.Reader, filename string, now time.Time) (db.Recipe, error) {
 	if err := os.MkdirAll(recipesDir, 0o750); err != nil {
 		return db.Recipe{}, fmt.Errorf("create recipes dir: %w", err)
 	}
@@ -117,11 +131,12 @@ func InstallZip(ctx context.Context, client *db.Client, recipesDir string, r io.
 	if err != nil {
 		return db.Recipe{}, fmt.Errorf("save upload: %w", err)
 	}
-	return installFrom(ctx, client, recipesDir, f.Name(), uploadSource, now)
+	return installFrom(ctx, client, recipesDir, f.Name(), UploadSource, uploadName(filename), now)
 }
 
 // installFrom copies the recipe at src and records it as coming from source.
-func installFrom(ctx context.Context, client *db.Client, recipesDir, src, source string, now time.Time) (db.Recipe, error) {
+// A recipe whose settings.yml has no name is called fallback.
+func installFrom(ctx context.Context, client *db.Client, recipesDir, src, source, fallback string, now time.Time) (db.Recipe, error) {
 	if err := os.MkdirAll(recipesDir, 0o750); err != nil {
 		return db.Recipe{}, fmt.Errorf("create recipes dir: %w", err)
 	}
@@ -140,7 +155,7 @@ func installFrom(ctx context.Context, client *db.Client, recipesDir, src, source
 		return db.Recipe{}, err
 	}
 	if settings.Name == "" {
-		settings.Name = strings.TrimSuffix(filepath.Base(source), filepath.Ext(source))
+		settings.Name = fallback
 	}
 	// The row and the directory go in together: a rename that fails rolls
 	// the row back. A crash between the rename and the commit leaves a
@@ -273,7 +288,10 @@ func ReadSettings(dir string) (Settings, error) {
 	defer f.Close()
 	var s Settings
 	if err := yaml.NewDecoder(io.LimitReader(f, MaxRecipeBytes)).Decode(&s); err != nil {
-		return Settings{}, fmt.Errorf("%w: read settings.yml: %w", errkind.ErrInvalid, err)
+		if errors.Is(err, io.EOF) {
+			return Settings{}, errkind.Wrap(errkind.ErrInvalid, "the recipe's settings.yml is empty", err)
+		}
+		return Settings{}, errkind.Wrap(errkind.ErrInvalid, "the recipe's settings.yml is not valid YAML", err)
 	}
 	return s, nil
 }
@@ -283,6 +301,9 @@ func copyRecipe(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return fmt.Errorf("recipe source: %w", err)
+	}
+	if info.Mode().IsRegular() && info.Size() == 0 {
+		return errkind.New(errkind.ErrInvalid, "the file is empty")
 	}
 	out, err := os.OpenRoot(dst)
 	if err != nil {
@@ -298,8 +319,10 @@ func copyRecipe(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if !c.seen["settings.yml"] || !c.seen["full.liquid"] {
-		return fmt.Errorf("%w: recipe needs settings.yml and full.liquid", errkind.ErrInvalid)
+	for _, name := range []string{"settings.yml", "full.liquid"} {
+		if !c.seen[name] {
+			return errkind.New(errkind.ErrInvalid, "the recipe has no "+name)
+		}
 	}
 	return nil
 }
@@ -322,7 +345,7 @@ func (c *copier) fromDir(dir string) error {
 	if _, err := in.Stat("settings.yml"); err != nil {
 		top = "src"
 		if _, err := in.Stat("src/settings.yml"); err != nil {
-			return fmt.Errorf("%w: no settings.yml in %s or its src directory", errkind.ErrInvalid, dir)
+			return errkind.New(errkind.ErrInvalid, fmt.Sprintf("there is no settings.yml in %s or its src directory", dir))
 		}
 	}
 	return fs.WalkDir(in.FS(), top, func(name string, d fs.DirEntry, err error) error {
@@ -352,15 +375,18 @@ func (c *copier) fromDir(dir string) error {
 // holding its shallowest settings.yml.
 func (c *copier) fromZip(file string) error {
 	zr, err := zip.OpenReader(file)
+	if errors.Is(err, zip.ErrFormat) {
+		return errkind.Wrap(errkind.ErrInvalid, "the file is not a zip archive", err)
+	}
 	if err != nil {
-		return fmt.Errorf("%w: open recipe zip: %w", errkind.ErrInvalid, err)
+		return fmt.Errorf("open recipe zip: %w", err)
 	}
 	defer zr.Close()
 	top, depth := "", -1
 	for _, f := range zr.File {
 		name := path.Clean(f.Name)
 		if !fs.ValidPath(name) {
-			return fmt.Errorf("%w: recipe zip has an unsafe name %q", errkind.ErrInvalid, f.Name)
+			return errkind.New(errkind.ErrInvalid, fmt.Sprintf("the zip has a file name that leaves its directory: %q", f.Name))
 		}
 		if path.Base(name) != "settings.yml" {
 			continue
@@ -375,7 +401,7 @@ func (c *copier) fromZip(file string) error {
 		}
 	}
 	if depth < 0 {
-		return fmt.Errorf("%w: recipe zip has no settings.yml", errkind.ErrInvalid)
+		return errkind.New(errkind.ErrInvalid, "the zip has no settings.yml at its top, in src/, or in one top-level folder")
 	}
 	for _, f := range zr.File {
 		rel, ok := relative(top, path.Clean(f.Name))
@@ -392,21 +418,30 @@ func (c *copier) fromZip(file string) error {
 func (c *copier) addZipFile(name string, f *zip.File) error {
 	r, err := f.Open()
 	if err != nil {
-		return fmt.Errorf("%w: recipe zip %s: %w", errkind.ErrInvalid, name, err)
+		return damaged(name, err)
 	}
 	defer r.Close()
-	return c.add(name, invalidReader{r})
+	return c.add(name, invalidReader{r, name})
 }
 
-// invalidReader marks the errors of reading a zip member as invalid input:
-// a bad checksum or a damaged stream is the upload's fault. Errors writing
-// the file are not marked, since a full disk is the server's.
-type invalidReader struct{ r io.Reader }
+// damaged is the error for a zip member that cannot be read. It is invalid
+// input: the zip is bad, whether from a failed checksum or a broken stream.
+func damaged(name string, cause error) error {
+	return errkind.Wrap(errkind.ErrInvalid, fmt.Sprintf("%s in the zip is damaged", name), cause)
+}
+
+// invalidReader marks the errors of reading the zip member name as invalid
+// input: a bad checksum or a damaged stream is the upload's fault. Errors
+// writing the file are not marked, since a full disk is the server's.
+type invalidReader struct {
+	r    io.Reader
+	name string
+}
 
 func (r invalidReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 	if err != nil && !errors.Is(err, io.EOF) {
-		err = fmt.Errorf("%w: %w", errkind.ErrInvalid, err)
+		err = damaged(r.name, err)
 	}
 	return n, err
 }
@@ -439,7 +474,7 @@ func (c *copier) add(name string, r io.Reader) error {
 		c.seen = map[string]bool{}
 	}
 	if len(c.seen) >= maxRecipeFiles {
-		return fmt.Errorf("%w: recipe has over %d files", errkind.ErrInvalid, maxRecipeFiles)
+		return errkind.New(errkind.ErrInvalid, fmt.Sprintf("the recipe has more than %d files", maxRecipeFiles))
 	}
 	c.seen[name] = true
 	// A zip can name a file twice, or a path as both a file and a
@@ -456,11 +491,15 @@ func (c *copier) add(name string, r io.Reader) error {
 	if cerr := w.Close(); err == nil {
 		err = cerr
 	}
+	if errors.Is(err, errkind.ErrInvalid) {
+		// Reading the file failed, which says why in its own words.
+		return err
+	}
 	if err != nil {
 		return fmt.Errorf("recipe file %s: %w", name, err)
 	}
 	if c.bytes > MaxRecipeBytes {
-		return fmt.Errorf("%w: recipe is over %d bytes", errkind.ErrInvalid, MaxRecipeBytes)
+		return errkind.New(errkind.ErrInvalid, fmt.Sprintf("the recipe's files are over %d MB in all", MaxRecipeBytes>>20))
 	}
 	return nil
 }
@@ -469,7 +508,7 @@ func (c *copier) add(name string, r io.Reader) error {
 // that exists already is invalid input.
 func openError(name string, err error) error {
 	if errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("%w: recipe file %s clashes with another file of the same name", errkind.ErrInvalid, name)
+		return errkind.New(errkind.ErrInvalid, fmt.Sprintf("%s clashes with another file of the same name in the recipe", name))
 	}
 	return fmt.Errorf("recipe file %s: %w", name, err)
 }

@@ -19,18 +19,33 @@ var (
 )
 
 type kindError struct {
-	kind error
-	msg  string
+	kind  error
+	msg   string
+	cause error
 }
 
 func (e *kindError) Error() string { return e.msg }
 
-// Unwrap returns the kind, so errors.Is finds it.
-func (e *kindError) Unwrap() error { return e.kind }
+// Unwrap returns the kind, and the cause if there is one, so errors.Is and
+// errors.As find both.
+func (e *kindError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{e.kind}
+	}
+	return []error{e.kind, e.cause}
+}
 
 // New returns an error with the message msg that is of the given kind.
 // Declare a package's own sentinel with it, so the message is the
 // package's and errors.Is matches both the sentinel and the kind.
 func New(kind error, msg string) error {
 	return &kindError{kind: kind, msg: msg}
+}
+
+// Wrap returns an error of the given kind with the message msg, and cause
+// in its chain. The message does not repeat the cause, so it can be shown
+// as it is when the cause is a Go error text that means nothing to a
+// reader. errors.Is and errors.As still find the cause.
+func Wrap(kind error, msg string, cause error) error {
+	return &kindError{kind: kind, msg: msg, cause: cause}
 }

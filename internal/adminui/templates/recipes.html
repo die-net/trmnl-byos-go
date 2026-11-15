@@ -3,8 +3,7 @@
 <h1>{{.Heading}}</h1>
 <a class="btn btn-secondary" href="#upload">Upload a recipe</a>
 </div>{{end}}
-{{define "content"}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
-{{if .Recipes}}<ul class="stack">
+{{define "content"}}{{if .Recipes}}<ul class="stack">
 {{range .Recipes}}<li class="panel" id="recipe-{{.ID}}">
 <div class="list-head">
 <h2>{{.Name}}</h2>
@@ -13,7 +12,7 @@
 <dl class="facts">
 <div><dt>Refresh</dt><dd>{{.Refresh}}</dd></div>
 <div><dt>Installed</dt><dd>{{.Installed}}</dd></div>
-<div class="wide"><dt>Source</dt><dd>{{.Source}}</dd></div>
+<div class="wide"><dt>Source</dt><dd{{if .SourceTitle}} title="{{.SourceTitle}}"{{end}}>{{.Source}}</dd></div>
 </dl>
 {{if .Instances}}<ul class="items">
 {{range .Instances}}<li class="item">
@@ -22,9 +21,9 @@
 <span class="rel">{{.Palette}}</span>
 {{if .Playlists}}<span class="rel">In {{range $i, $p := .Playlists}}{{if $i}}, {{end}}<a href="{{$p.Href}}">{{$p.Name}}</a>{{end}}</span>{{end}}
 </div>
-<div class="item-actions">
+{{if not .Playlists}}<div class="item-actions">
 <a class="btn btn-secondary btn-danger" href="{{.DeleteHref}}" aria-label="Remove {{.Name}}">Remove</a>
-</div>
+</div>{{end}}
 </li>
 {{end}}</ul>{{else}}<p class="rel">This recipe has no instances.</p>{{end}}
 </li>
@@ -34,7 +33,8 @@
 </div>{{end}}
 <section class="panel form-panel" id="upload" aria-labelledby="upload-title">
 <h2 id="upload-title">Upload a recipe</h2>
-<form method="post" action="/recipes" enctype="multipart/form-data">
+<form method="post" action="/recipes#upload" enctype="multipart/form-data">
+{{if .UploadError}}<p class="error" role="alert">{{.UploadError}}</p>{{end}}
 <div class="field">
 <label for="recipe">Recipe zip file</label>
 <input id="recipe" name="recipe" type="file" accept=".zip,application/zip" required>
