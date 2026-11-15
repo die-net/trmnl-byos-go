@@ -1,9 +1,9 @@
 // Package recipe installs TRMNL recipes and assembles the trmnlp project a
 // build of a plugin instance sends to the renderer.
 //
-// A recipe is untrusted code. The server only copies its files and reads a
-// few settings from its settings.yml; its Liquid, transforms and page
-// scripts run in the renderer.
+// A recipe is untrusted code. The server only copies its files and reads its
+// name, refresh interval and custom fields from its settings.yml; its
+// Liquid, transforms and page scripts run in the renderer.
 package recipe
 
 import (
@@ -12,8 +12,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,15 +25,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
-	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/render"
-	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
 // Limits on an installed recipe, which keep a build's project well under
@@ -69,6 +64,9 @@ type Settings struct {
 	Name string `yaml:"name"`
 	// RefreshInterval is how often the recipe's data changes, in minutes.
 	RefreshInterval int `yaml:"refresh_interval"`
+	// CustomFields are the settings an instance of the recipe has values
+	// for.
+	CustomFields []Field `yaml:"custom_fields"`
 }
 
 // Refresh is how often an instance of the recipe is rendered.
@@ -306,7 +304,9 @@ func removeOlder(dir, pattern string, cutoff time.Time) error {
 	return nil
 }
 
-// ReadSettings reads the settings.yml of the recipe in dir.
+// ReadSettings reads the settings.yml of the recipe in dir. A recipe whose
+// custom fields cannot be understood, such as one with two of the same
+// keyname, is an error that wraps errkind.ErrInvalid.
 func ReadSettings(dir string) (Settings, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -318,14 +318,47 @@ func ReadSettings(dir string) (Settings, error) {
 		return Settings{}, fmt.Errorf("open settings.yml: %w", err)
 	}
 	defer f.Close()
-	var s Settings
-	if err := yaml.NewDecoder(io.LimitReader(f, MaxRecipeBytes)).Decode(&s); err != nil {
+	// Decoded to a tree first, so that an alias is refused before any
+	// unmarshaler runs. yaml.v3 resolves an alias by calling the unmarshaler
+	// again for what it names, and its own limit on aliases cannot see the
+	// work an unmarshaler does, so a few thousand aliases of one anchored
+	// field would cost gigabytes.
+	var doc yaml.Node
+	if err := yaml.NewDecoder(io.LimitReader(f, MaxRecipeBytes)).Decode(&doc); err != nil {
 		if errors.Is(err, io.EOF) {
 			return Settings{}, errkind.Wrap(errkind.ErrInvalid, "the recipe's settings.yml is empty", err)
 		}
 		return Settings{}, errkind.Wrap(errkind.ErrInvalid, "the recipe's settings.yml is not valid YAML", err)
 	}
+	if err := refuseAliases(&doc); err != nil {
+		return Settings{}, err
+	}
+	var s Settings
+	if err := doc.Decode(&s); err != nil {
+		if errors.Is(err, errkind.ErrInvalid) {
+			// A custom field's own error, which says which field and why.
+			return Settings{}, err
+		}
+		return Settings{}, errkind.Wrap(errkind.ErrInvalid, "the recipe's settings.yml is not valid YAML", err)
+	}
+	if err := checkFields(s.CustomFields); err != nil {
+		return Settings{}, err
+	}
 	return s, nil
+}
+
+// refuseAliases returns an error that wraps errkind.ErrInvalid if the tree
+// has an alias, with the line of the first one.
+func refuseAliases(n *yaml.Node) error {
+	if n.Kind == yaml.AliasNode {
+		return fmt.Errorf("%w: settings.yml line %d: aliases are not supported", errkind.ErrInvalid, n.Line)
+	}
+	for _, c := range n.Content {
+		if err := refuseAliases(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // copyRecipe copies the recipe's files into dst. from reads them from the
@@ -549,8 +582,8 @@ type Project struct {
 
 // trmnlpConfig is the .trmnlp.yml of a build.
 type trmnlpConfig struct {
-	TimeZone     string            `yaml:"time_zone,omitempty"`
-	CustomFields map[string]string `yaml:"custom_fields,omitempty"`
+	TimeZone     string             `yaml:"time_zone,omitempty"`
+	CustomFields map[string]envRefs `yaml:"custom_fields,omitempty"`
 	// FrameworkAssetHost and AssetOverrides send the framework's assets,
 	// and those of the other cached hosts, over plain HTTP, so the proxy
 	// can cache them.
@@ -559,6 +592,27 @@ type trmnlpConfig struct {
 	// Variables overrides the trmnl variables a recipe sees. trmnlp does
 	// not run it through Liquid, so a value in it is only data.
 	Variables *variables `yaml:"variables,omitempty"`
+}
+
+// envRefs is a custom field's value in .trmnlp.yml: the names of the
+// environment variables that hold it. It is written as one {{ env.NAME }}, or
+// as a list of them for a multi-select, which trmnlp interpolates element by
+// element, so the recipe's Liquid gets an array as it does on TRMNL.
+type envRefs struct {
+	names []string
+	list  bool
+}
+
+// MarshalYAML writes the references as a string, or a list of strings.
+func (r envRefs) MarshalYAML() (any, error) {
+	refs := make([]string, len(r.names))
+	for i, n := range r.names {
+		refs[i] = "{{ env." + n + " }}"
+	}
+	if r.list {
+		return refs, nil
+	}
+	return refs[0], nil
 }
 
 // variables is .trmnlp.yml's variables, which trmnlp merges over a
@@ -697,20 +751,32 @@ const frameworkHost = "trmnl.com"
 // the given field values and time zone. cachedHosts are the hosts whose
 // assets the proxy caches.
 //
-// Every field value, secret or not, travels in Env. trmnlp renders each
-// custom_fields value as Liquid, so a value placed in the file would have
-// any {{ or {% in it run as Liquid; a value from the environment is not.
-func NewProject(dir string, fields map[string]string, timeZone string, cachedHosts []string) Project {
+// Every field value, secret or not, travels in Env, as FIELD_n for the nth
+// field by keyname, and FIELD_n_k for the kth element of a list. trmnlp
+// renders each custom_fields value as Liquid, so a value placed in the file
+// would have any {{ or {% in it run as Liquid; a value from the environment
+// is not.
+func NewProject(dir string, fields map[string]Value, timeZone string, cachedHosts []string) Project {
 	p := Project{dir: dir, config: trmnlpConfig{TimeZone: timeZone}}
 	keys := slices.Sorted(maps.Keys(fields))
 	if len(keys) > 0 {
 		p.Env = make(map[string]string, len(keys))
-		p.config.CustomFields = make(map[string]string, len(keys))
+		p.config.CustomFields = make(map[string]envRefs, len(keys))
 	}
 	for i, k := range keys {
 		name := "FIELD_" + strconv.Itoa(i)
-		p.Env[name] = fields[k]
-		p.config.CustomFields[k] = "{{ env." + name + " }}"
+		v := fields[k]
+		if !v.IsList() {
+			p.Env[name] = v.One
+			p.config.CustomFields[k] = envRefs{names: []string{name}}
+			continue
+		}
+		names := make([]string, len(v.Many))
+		for j, item := range v.Many {
+			names[j] = name + "_" + strconv.Itoa(j)
+			p.Env[names[j]] = item
+		}
+		p.config.CustomFields[k] = envRefs{names: names, list: true}
 	}
 	if len(cachedHosts) > 0 {
 		p.config.AssetOverrides = make(map[string]string, len(cachedHosts))
@@ -735,195 +801,4 @@ func (p Project) Write(tw *tar.Writer) error {
 		return fmt.Errorf("encode .trmnlp.yml: %w", err)
 	}
 	return render.AddFile(tw, ".trmnlp.yml", int64(buf.Len()), &buf)
-}
-
-// InstanceParams are the settings of a new plugin instance.
-type InstanceParams struct {
-	RecipeID int64
-	Name     string
-	// Palette is the palette the instance asks for, or "" for the
-	// device's own.
-	Palette string
-	// Fields are custom field values by keyname, stored as they are.
-	Fields map[string]string
-	// Secrets are custom field values stored sealed with the secrets key,
-	// and never shown back.
-	Secrets map[string]string
-}
-
-// MinSecretLen is the fewest characters a secret field value may have. A
-// shorter value is easy to guess, so sealing it protects nothing, and
-// redacting it from a build log would hide every place its characters
-// appear. Such a value can be a plain field.
-const MinSecretLen = 6
-
-// CreateInstance records a new plugin instance. Secret values need key. An
-// empty Name is the recipe's. It returns ErrNoRecipe for an unknown recipe,
-// and an error wrapping errkind.ErrInvalid for an unknown palette, a field
-// given both as a field and as a secret, or a secret shorter than
-// MinSecretLen.
-func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, p InstanceParams, now time.Time) (db.PluginInstance, error) {
-	if p.Palette != "" && !profile.KnownPalette(p.Palette) {
-		return db.PluginInstance{}, fmt.Errorf("%w: unknown palette %q", errkind.ErrInvalid, p.Palette)
-	}
-	for k, v := range p.Secrets {
-		if _, ok := p.Fields[k]; ok {
-			return db.PluginInstance{}, fmt.Errorf("%w: field %q is given as both a field and a secret", errkind.ErrInvalid, k)
-		}
-		if utf8.RuneCountInString(v) < MinSecretLen {
-			return db.PluginInstance{}, fmt.Errorf("%w: secret %q is shorter than %d characters; give it as a plain field", errkind.ErrInvalid, k, MinSecretLen)
-		}
-	}
-	if len(p.Secrets) > 0 && key == nil {
-		return db.PluginInstance{}, secrets.ErrNoKey
-	}
-	rec, err := client.Read.GetRecipe(ctx, p.RecipeID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return db.PluginInstance{}, fmt.Errorf("%w: %d", ErrNoRecipe, p.RecipeID)
-	}
-	if err != nil {
-		return db.PluginInstance{}, fmt.Errorf("get recipe: %w", err)
-	}
-	if p.Name == "" {
-		p.Name = rec.Name
-	}
-	if p.Fields == nil {
-		p.Fields = map[string]string{}
-	}
-	fields, err := json.Marshal(p.Fields)
-	if err != nil {
-		return db.PluginInstance{}, fmt.Errorf("encode fields: %w", err)
-	}
-	var plain []byte
-	if len(p.Secrets) > 0 {
-		if plain, err = json.Marshal(p.Secrets); err != nil {
-			return db.PluginInstance{}, fmt.Errorf("encode secrets: %w", err)
-		}
-	}
-	var inst db.PluginInstance
-	err = client.InTx(ctx, func(q *db.Queries) error {
-		var err error
-		inst, err = q.CreateInstance(ctx, db.CreateInstanceParams{
-			RecipeID:    p.RecipeID,
-			Name:        p.Name,
-			FieldValues: string(fields),
-			Palette:     p.Palette,
-			CreatedAt:   now.Unix(),
-		})
-		if err != nil {
-			return fmt.Errorf("save instance: %w", err)
-		}
-		if plain == nil {
-			return nil
-		}
-		// The sealed value is bound to the instance ID, so it can be made
-		// only once the row has one.
-		if inst.SecretValues, err = key.Seal(plain, secretAD(inst.ID)); err != nil {
-			return fmt.Errorf("seal secrets: %w", err)
-		}
-		if err := q.SetInstanceSecrets(ctx, db.SetInstanceSecretsParams{SecretValues: inst.SecretValues, ID: inst.ID}); err != nil {
-			return fmt.Errorf("save secrets: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return db.PluginInstance{}, err
-	}
-	return inst, nil
-}
-
-// secretAD is the associated data an instance's secrets are sealed with, so
-// a sealed value copied to another instance does not open.
-func secretAD(id int64) []byte {
-	return []byte("plugin_instance:" + strconv.FormatInt(id, 10))
-}
-
-// ErrInstanceInUse means an instance is in playlist items, which have to
-// be removed before it can be.
-var ErrInstanceInUse = errkind.New(errkind.ErrConflict, "instance is in a playlist")
-
-// DeleteInstance removes an instance and its renders. It refuses while a
-// playlist item shows the instance, with an error that wraps
-// ErrInstanceInUse and names the items, since deleting the instance would
-// silently delete them too.
-func DeleteInstance(ctx context.Context, client *db.Client, id int64) error {
-	return client.InTx(ctx, func(q *db.Queries) error {
-		items, err := q.ListInstanceItems(ctx, id)
-		if err != nil {
-			return fmt.Errorf("list items: %w", err)
-		}
-		if len(items) > 0 {
-			ids := make([]string, len(items))
-			for i, item := range items {
-				ids[i] = strconv.FormatInt(item, 10)
-			}
-			return fmt.Errorf("%w, in item IDs %s; take them out with playlist remove first", ErrInstanceInUse, strings.Join(ids, ", "))
-		}
-		n, err := q.DeleteInstance(ctx, id)
-		if err != nil {
-			return fmt.Errorf("delete instance: %w", err)
-		}
-		if n == 0 {
-			return fmt.Errorf("%w: %d", ErrNoInstance, id)
-		}
-		return nil
-	})
-}
-
-// InstanceFields returns an instance's field values, secret ones included,
-// which need key. secretValues is the value of each secret field, for a
-// caller that must keep them out of what it stores or shows.
-func InstanceFields(inst *db.PluginInstance, key *secrets.Key) (fields map[string]string, secretValues []string, err error) {
-	fields, secret, err := splitFields(inst, key)
-	if err != nil {
-		return nil, nil, err
-	}
-	maps.Copy(fields, secret)
-	return fields, slices.Collect(maps.Values(secret)), nil
-}
-
-// PublicFields returns an instance's field values that are not secret, and
-// the sorted names of the secret fields that are set, without their values.
-// The names are an empty, non-nil slice when none are set. Reading them
-// needs key. When the sealed secrets cannot be opened, because there is no
-// key, the key changed, or they were sealed before they were bound to the
-// instance's ID, the names are nil, which means unknown, and the instance
-// is logged by ID. One unreadable instance then does not fail a list.
-func PublicFields(inst *db.PluginInstance, key *secrets.Key) (fields map[string]string, secretNames []string, err error) {
-	fields, secret, err := splitFields(inst, key)
-	if errors.Is(err, errUnreadable) {
-		if !errors.Is(err, secrets.ErrNoKey) {
-			// The error is not logged: it comes from the sealed value.
-			slog.Warn("instance secrets cannot be opened", "instance", inst.ID)
-		}
-		return fields, nil, nil
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	return fields, append([]string{}, slices.Sorted(maps.Keys(secret))...), nil
-}
-
-// errUnreadable marks an error from opening an instance's sealed secrets. Its
-// text is the start of the message the render path shows.
-var errUnreadable = errors.New("secret fields")
-
-// splitFields returns an instance's plain and secret field values. An
-// error that wraps errUnreadable means the sealed secrets did not open.
-func splitFields(inst *db.PluginInstance, key *secrets.Key) (fields, secret map[string]string, err error) {
-	fields = map[string]string{}
-	if err := json.Unmarshal([]byte(inst.FieldValues), &fields); err != nil {
-		return nil, nil, fmt.Errorf("decode fields: %w", err)
-	}
-	if len(inst.SecretValues) == 0 {
-		return fields, nil, nil
-	}
-	plain, err := key.Open(inst.SecretValues, secretAD(inst.ID))
-	if err != nil {
-		return fields, nil, fmt.Errorf("%w: %w", errUnreadable, err)
-	}
-	if err := json.Unmarshal(plain, &secret); err != nil {
-		return nil, nil, fmt.Errorf("decode secret fields: %w", err)
-	}
-	return fields, secret, nil
 }

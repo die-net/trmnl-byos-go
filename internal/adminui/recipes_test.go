@@ -46,10 +46,23 @@ func addRecipe(t *testing.T, tu *testUI, name string) db.Recipe {
 	return r
 }
 
+// writeSettings gives the recipe the settings.yml that creating an instance
+// of it reads, which has no custom fields.
+func writeSettings(t *testing.T, recipesDir string, recipeID int64) {
+	t.Helper()
+	dir := recipe.Dir(recipesDir, recipeID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.yml"), []byte("name: Weather\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // newInstance creates an instance of the recipe with the palette.
 func newInstance(t *testing.T, tu *testUI, recipeID int64, name, palette string) db.PluginInstance {
 	t.Helper()
-	inst, err := recipe.CreateInstance(t.Context(), tu.db, nil, recipe.InstanceParams{RecipeID: recipeID, Name: name, Palette: palette}, tu.now)
+	inst, err := tu.db.Write.CreateInstance(t.Context(), db.CreateInstanceParams{RecipeID: recipeID, Name: name, FieldValues: "{}", Palette: palette, CreatedAt: tu.now.Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,8 +492,9 @@ func TestRecipeAddInstance(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tu, _ := newRecipesUI(t)
+			tu, dir := newRecipesUI(t)
 			rec := addRecipe(t, tu, "Weather")
+			writeSettings(t, dir, rec.ID)
 			w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), tc.form)
 			if want := "/recipes#recipe-" + id(rec.ID); w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
 				t.Fatalf("status %d to %q, want 303 to %q: %s", w.Code, w.Header().Get("Location"), want, w.Body)
@@ -508,6 +522,24 @@ func TestRecipeAddInstanceRefused(t *testing.T) {
 	}
 	if w.Code != http.StatusBadRequest || len(listInstances(t, tu)) != 0 {
 		t.Errorf("status %d with %d instances, want 400 and none", w.Code, len(listInstances(t, tu)))
+	}
+}
+
+// TestRecipeAddInstanceRequiredField checks that a recipe with a required
+// custom field, which this form cannot fill in yet, is refused as bad input
+// with the field named, not as a server error.
+func TestRecipeAddInstanceRequiredField(t *testing.T) {
+	t.Parallel()
+	tu, dir := newRecipesUI(t)
+	rec := addRecipe(t, tu, "Weather")
+	writeSettings(t, dir, rec.ID)
+	settings := filepath.Join(recipe.Dir(dir, rec.ID), "settings.yml")
+	if err := os.WriteFile(settings, []byte("name: Weather\ncustom_fields:\n- keyname: city\n  field_type: string\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{})
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "City: is required.") || len(listInstances(t, tu)) != 0 {
+		t.Errorf("status %d with %d instances: %s", w.Code, len(listInstances(t, tu)), w.Body)
 	}
 }
 

@@ -140,6 +140,7 @@ type PluginInstance struct {
 	SecretValues []byte `json:"secret_values"`
 	Palette      string `json:"palette"`
 	CreatedAt    int64  `json:"created_at"`
+	SettingsAt   int64  `json:"settings_at"`
 }
 
 type Recipe struct {
@@ -164,6 +165,7 @@ type Render struct {
 	Log         string `json:"log"`
 	DataAt      int64  `json:"data_at"`
 	Failures    int64  `json:"failures"`
+	SettingsAt  int64  `json:"settings_at"`
 }
 
 type RenderImage struct {

@@ -1,0 +1,458 @@
+package recipe
+
+import (
+	"bytes"
+	"cmp"
+	"errors"
+	"maps"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/playlist"
+	"github.com/die-net/trmnl-byos-go/internal/secrets"
+)
+
+// weatherYML is a recipe with one field of each kind the instance tests
+// need: a required string, a secret, a select with a default, a
+// multi-select, and a bounded number.
+const weatherYML = `name: Weather
+refresh_interval: 15
+custom_fields:
+- keyname: city
+  field_type: string
+  name: City
+  maxlength: 20
+- keyname: token
+  field_type: password
+  name: Token
+  optional: true
+- keyname: other
+  field_type: password
+  name: Other
+  optional: true
+- keyname: units
+  field_type: select
+  name: Units
+  options: [Metric, Imperial]
+  default: metric
+- keyname: tags
+  field_type: select
+  name: Tags
+  multiple: true
+  optional: true
+  options: [a, b, c]
+- keyname: days
+  field_type: number
+  name: Days
+  optional: true
+  min: 1
+  max: 10
+- keyname: about
+  field_type: author_bio
+  name: About
+`
+
+// fixture is a database with the recipe of weatherYML installed.
+type fixture struct {
+	client     *db.Client
+	recipesDir string
+	recipe     db.Recipe
+}
+
+func newFixture(t *testing.T) fixture {
+	t.Helper()
+	client := openDB(t)
+	src := t.TempDir()
+	writeDir(t, src, map[string]string{"settings.yml": weatherYML, "full.liquid": "x"})
+	recipes := filepath.Join(t.TempDir(), "recipes")
+	rec, err := Install(t.Context(), client, recipes, src, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fixture{client: client, recipesDir: recipes, recipe: rec}
+}
+
+func testKey(t *testing.T, b64 string) *secrets.Key {
+	t.Helper()
+	key, err := secrets.Parse(b64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+const (
+	keyA = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+	keyB = "HR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw="
+)
+
+func TestInstanceFields(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	p := InstanceParams{RecipeID: f.recipe.ID, Name: "i", Values: map[string]Value{
+		"city": {One: "Zurich"}, "token": {One: "hunter2"}, "tags": {Many: []string{"a", "c"}}, "days": {},
+	}}
+	if _, err := CreateInstance(t.Context(), f.client, nil, f.recipesDir, p, time.Now()); !errors.Is(err, secrets.ErrNoKey) {
+		t.Errorf("secret stored without a key: %v", err)
+	}
+	inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(inst.SecretValues, []byte("hunter2")) || strings.Contains(inst.FieldValues, "hunter2") {
+		t.Error("secret stored in the clear")
+	}
+	if inst.FieldValues != `{"city":"Zurich","tags":["a","c"]}` {
+		t.Errorf("stored fields = %s, want the non-secret ones, with the empty one left out", inst.FieldValues)
+	}
+	want := map[string]Value{"city": {One: "Zurich"}, "token": {One: "hunter2"}, "tags": {Many: []string{"a", "c"}}}
+	got, secret, err := InstanceFields(&inst, key)
+	if err != nil || !maps.EqualFunc(got, want, Value.equal) || !slices.Equal(secret, []string{"hunter2"}) {
+		t.Errorf("InstanceFields = %v, %v, %v", got, secret, err)
+	}
+	public, names, err := PublicFields(&inst, key)
+	if err != nil || len(public) != 2 || !slices.Equal(names, []string{"token"}) {
+		t.Errorf("PublicFields = %v, %v, %v", public, names, err)
+	}
+	if _, _, err := InstanceFields(&inst, nil); !errors.Is(err, secrets.ErrNoKey) {
+		t.Errorf("secrets opened without a key: %v", err)
+	}
+	other, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Bern"}}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.SecretValues = inst.SecretValues
+	if _, _, err := InstanceFields(&other, key); err == nil {
+		t.Error("secrets copied to another instance opened")
+	}
+}
+
+// TestCreateInstanceInvalid checks that bad settings are refused, with every
+// bad field in one FieldErrors, that an unknown recipe is ErrNoRecipe, and
+// that nothing is stored for any of them.
+func TestCreateInstanceInvalid(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	for _, tc := range []struct {
+		name       string
+		p          InstanceParams
+		key        *secrets.Key
+		want       error
+		wantFields []string
+	}{
+		{"unknown palette", InstanceParams{RecipeID: f.recipe.ID, Palette: "neon", Values: map[string]Value{"city": {One: "x"}}}, key, errkind.ErrInvalid, nil},
+		{"unknown recipe", InstanceParams{RecipeID: f.recipe.ID + 1}, key, ErrNoRecipe, nil},
+		{"required field missing", InstanceParams{RecipeID: f.recipe.ID}, key, errkind.ErrInvalid, []string{"city"}},
+		{"required field empty", InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {}}}, key, errkind.ErrInvalid, []string{"city"}},
+		{"several bad fields", InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{
+			"city": {One: strings.Repeat("x", 21)}, "days": {One: "11"}, "tags": {Many: []string{"z"}}, "nope": {One: "x"}, "about": {One: "x"},
+			"token": {One: "abcde"},
+		}}, key, errkind.ErrInvalid, []string{"about", "city", "days", "nope", "tags", "token"}},
+		{"secret without a key", InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "x"}, "token": {One: "hunter2"}}}, nil, secrets.ErrNoKey, nil},
+	} {
+		_, err := CreateInstance(ctx, f.client, tc.key, f.recipesDir, tc.p, time.Now())
+		if !errors.Is(err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
+		}
+		var fe FieldErrors
+		if got := errors.As(err, &fe); got != (tc.wantFields != nil) || (got && !slices.Equal(slices.Sorted(maps.Keys(fe)), tc.wantFields)) {
+			t.Errorf("%s: field errors = %v, want fields %v", tc.name, fe, tc.wantFields)
+		}
+		for _, v := range tc.p.Values {
+			if err != nil && v.One != "" && strings.Contains(err.Error(), "hunter2") {
+				t.Errorf("%s: the error shows a secret: %v", tc.name, err)
+			}
+		}
+	}
+	if left, err := f.client.Read.ListInstances(ctx); err != nil || len(left) != 0 {
+		t.Errorf("refused instances were stored: %+v, %v", left, err)
+	}
+	inst, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Palette: "bw", Values: map[string]Value{
+		"city": {One: "Zurich"}, "tags": {One: "b"},
+	}}, time.Now())
+	if err != nil || inst.Name != "Weather" || inst.FieldValues != `{"city":"Zurich","tags":["b"]}` {
+		t.Fatalf("default name and a single choice for a multi-select: %+v, %v", inst, err)
+	}
+}
+
+// TestUpdateInstance checks each way an update merges, validates and bumps
+// settings_at, from one instance made with a city, a secret token, and two
+// tags, whose settings_at is 0.
+func TestUpdateInstance(t *testing.T) {
+	t.Parallel()
+	const settingsAt = 5000
+	now := time.Unix(settingsAt, 0)
+	initial := map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"a", "b"}}}
+	for _, tc := range []struct {
+		desc       string
+		update     InstanceUpdate
+		key        string // "a" for the key the instance was made with, "b" for another, "" for none
+		wantErr    error
+		wantFields []string // keynames of the field errors
+		// What the instance holds after: the plain fields, the secrets, the
+		// name, and the palette. A refused update leaves all as they were.
+		fields     map[string]Value
+		secret     map[string]string
+		name       string
+		palette    string
+		settingsAt int64 // 0 when it is not raised
+	}{
+		{
+			desc: "change a field", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "a",
+			fields: map[string]Value{"city": {One: "Bern"}, "tags": {Many: []string{"a", "b"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+		},
+		{desc: "same values", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"a", "b"}}, "token": {One: "hunter2"}}}, key: "a"},
+		{
+			desc: "same list in another order", update: InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{"b", "a"}}}}, key: "a",
+			fields: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"b", "a"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+		},
+		{desc: "rename and palette are not settings", update: InstanceUpdate{Name: ptr("Home"), Palette: ptr("bw")}, key: "a", name: "Home", palette: "bw"},
+		{desc: "empty name is the recipe's", update: InstanceUpdate{Name: ptr("")}, key: "a", name: "Weather"},
+		{
+			desc: "a field left out is kept", update: InstanceUpdate{Values: map[string]Value{"days": {One: "3"}}}, key: "a",
+			fields: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"a", "b"}}, "days": {One: "3"}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+		},
+		{
+			desc: "an empty list clears", update: InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{}}}}, key: "a",
+			fields: map[string]Value{"city": {One: "Zurich"}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+		},
+		{desc: "clearing what is not set changes nothing", update: InstanceUpdate{Values: map[string]Value{"days": {}}}, key: "a"},
+		{desc: "a required field cannot be cleared", update: InstanceUpdate{Values: map[string]Value{"city": {}}}, key: "a", wantErr: errkind.ErrInvalid, wantFields: []string{"city"}},
+		{desc: "a field with a default can be cleared", update: InstanceUpdate{Values: map[string]Value{"units": {}}}, key: "a"},
+		{
+			desc: "bad fields at once, and no change", update: InstanceUpdate{Name: ptr("x"), Values: map[string]Value{"city": {One: "ok"}, "days": {One: "0"}, "units": {One: "kelvin"}}}, key: "a",
+			wantErr: errkind.ErrInvalid, wantFields: []string{"days", "units"},
+		},
+		{desc: "unknown palette, and no change", update: InstanceUpdate{Name: ptr("x"), Palette: ptr("neon")}, key: "a", wantErr: errkind.ErrInvalid},
+		{
+			desc: "a secret changes", update: InstanceUpdate{Values: map[string]Value{"token": {One: "swordfish"}}}, key: "a",
+			fields: initial, secret: map[string]string{"token": "swordfish"}, settingsAt: settingsAt,
+		},
+		{desc: "a secret clears", update: InstanceUpdate{Values: map[string]Value{"token": {}}}, key: "a", fields: initial, secret: map[string]string{}, settingsAt: settingsAt},
+		{
+			desc: "a secret kept with no key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "",
+			fields: map[string]Value{"city": {One: "Bern"}, "tags": {Many: []string{"a", "b"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+		},
+		{
+			desc: "a secret kept under another key", update: InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, key: "b",
+			fields: map[string]Value{"city": {One: "Bern"}, "tags": {Many: []string{"a", "b"}}}, secret: map[string]string{"token": "hunter2"}, settingsAt: settingsAt,
+		},
+		{desc: "a secret changed with no key", update: InstanceUpdate{Values: map[string]Value{"token": {One: "swordfish"}}}, key: "", wantErr: secrets.ErrNoKey},
+		{desc: "a secret changed under another key", update: InstanceUpdate{Values: map[string]Value{"token": {One: "swordfish"}}}, key: "b", wantErr: errkind.ErrInvalid},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			f := newFixture(t)
+			keys := map[string]*secrets.Key{"a": testKey(t, keyA), "b": testKey(t, keyB), "": nil}
+			values := maps.Clone(initial)
+			values["token"] = Value{One: "hunter2"}
+			before, err := CreateInstance(ctx, f.client, keys["a"], f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: values}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := UpdateInstance(ctx, f.client, keys[tc.key], f.recipesDir, before.ID, tc.update, now)
+			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			var fe FieldErrors
+			if errors.As(err, &fe) != (tc.wantFields != nil) || !slices.Equal(slices.Sorted(maps.Keys(fe)), tc.wantFields) {
+				t.Errorf("field errors = %v, want fields %v", fe, tc.wantFields)
+			}
+			stored, err := f.client.Read.GetInstance(ctx, before.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantErr != nil {
+				if !reflect.DeepEqual(stored, before) {
+					t.Errorf("a refused update changed the instance:\nbefore %+v\nafter  %+v", before, stored)
+				}
+				return
+			}
+			if !reflect.DeepEqual(stored, got) {
+				t.Errorf("the update returned %+v, but %+v is stored", got, stored)
+			}
+			wantFields, wantSecret := tc.fields, tc.secret
+			if wantFields == nil {
+				wantFields, wantSecret = initial, map[string]string{"token": "hunter2"}
+			}
+			plain, secret, err := decodeFields(&stored, keys["a"], true)
+			if err != nil || !maps.EqualFunc(plain, wantFields, Value.equal) || !maps.Equal(secret, wantSecret) {
+				t.Errorf("fields %v, secrets %v, %v; want %v, %v", plain, secret, err, wantFields, wantSecret)
+			}
+			if len(wantSecret) == 0 && stored.SecretValues != nil {
+				t.Error("no secrets left, but a sealed value is stored")
+			}
+			if tc.settingsAt == 0 && !bytes.Equal(stored.SecretValues, before.SecretValues) {
+				t.Error("secrets were sealed again though no secret changed")
+			}
+			wantName, wantPalette := cmp.Or(tc.name, before.Name), cmp.Or(tc.palette, before.Palette)
+			if stored.Name != wantName || stored.Palette != wantPalette || stored.SettingsAt != tc.settingsAt {
+				t.Errorf("name %q, palette %q, settings_at %d; want %q, %q, %d", stored.Name, stored.Palette, stored.SettingsAt, wantName, wantPalette, tc.settingsAt)
+			}
+		})
+	}
+}
+
+// ptr returns a pointer to v.
+func ptr[T any](v T) *T { return &v }
+
+// TestDeleteInstance checks that an instance that items show is kept, and
+// that the error counts the items without naming them, and that deleting an
+// instance deletes its renders.
+func TestDeleteInstance(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	client := f.client
+	rec := f.recipe
+	ids := make([]int64, 0, 2)
+	for _, name := range []string{"a", "b"} {
+		inst, err := CreateInstance(ctx, client, nil, f.recipesDir, InstanceParams{RecipeID: rec.ID, Name: name, Values: map[string]Value{"city": {One: "x"}}}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, inst.ID)
+	}
+	dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: "D8:3B:DA:12:34:56", ApiKeyHash: []byte{1}, FriendlyID: "ABC123", CreatedAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, err := client.Write.CreatePlaylist(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := playlist.LinkDevice(ctx, client, playlist.ByID(pl.ID), dev.FriendlyID); err != nil {
+		t.Fatal(err)
+	}
+	items := make([]int64, 0, len(ids))
+	for _, inst := range ids {
+		item, err := client.Write.CreatePlaylistItem(ctx, db.CreatePlaylistItemParams{PlaylistID: pl.ID, Position: int64(len(items)), Layout: "full"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Write.CreatePlaylistSlot(ctx, db.CreatePlaylistSlotParams{ItemID: item.ID, Slot: 0, InstanceID: inst}); err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, item.ID)
+	}
+	renderID, err := client.Write.SaveRenderSuccess(ctx, db.SaveRenderSuccessParams{InstanceID: ids[0], Width: 800, Height: 480, Palette: "bw", RenderedAt: 1, AttemptedAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Write.SaveRenderImage(ctx, db.SaveRenderImageParams{RenderID: renderID, Layout: "full", Image: "img", Bytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = DeleteInstance(ctx, client, ids[0])
+	if !errors.Is(err, ErrInstanceInUse) || !errors.Is(err, errkind.ErrConflict) || err.Error() != "instance is in 1 playlist items" {
+		t.Fatalf("instance in a playlist item: %v", err)
+	}
+	if refs, err := client.Read.ListReferencedImages(ctx); err != nil || len(refs) != 1 {
+		t.Fatalf("a refused delete changed renders: %v, %v", refs, err)
+	}
+	if err := DeleteInstance(ctx, client, 999); !errors.Is(err, ErrNoInstance) {
+		t.Errorf("unknown instance: %v", err)
+	}
+
+	// With its item removed it goes, and its renders with it.
+	if _, err := client.Write.DeletePlaylistItem(ctx, items[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteInstance(ctx, client, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if refs, err := client.Read.ListReferencedImages(ctx); err != nil || len(refs) != 0 {
+		t.Errorf("renders left behind: %v, %v", refs, err)
+	}
+	left, err := client.Read.ListInstances(ctx)
+	if err != nil || len(left) != 1 || left[0].PluginInstance.ID != ids[1] {
+		t.Errorf("instances left: %+v, %v", left, err)
+	}
+	if err := DeleteInstance(ctx, client, ids[1]); !errors.Is(err, ErrInstanceInUse) {
+		t.Errorf("the other instance's item was not protected: %v", err)
+	}
+}
+
+// TestUpdateInstanceSettingsAt checks that settings_at rises with every
+// change, by at least one when changes come in the same second or the clock
+// goes back, so a build that read the earlier settings is never taken for
+// current.
+func TestUpdateInstanceSettingsAt(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	inst, err := CreateInstance(ctx, f.client, nil, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "a"}}}, time.Unix(100, 0))
+	if err != nil || inst.SettingsAt != 0 {
+		t.Fatalf("a new instance: %+v, %v", inst, err)
+	}
+	for _, tc := range []struct {
+		city string
+		at   int64
+		want int64
+	}{
+		{"b", 100, 100},
+		{"c", 100, 101},
+		{"d", 100, 102},
+		{"d", 500, 102},
+		{"e", 500, 500},
+		{"f", 400, 501},
+	} {
+		got, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: tc.city}}}, time.Unix(tc.at, 0))
+		if err != nil || got.SettingsAt != tc.want {
+			t.Errorf("city %q at %d: settings_at %d, %v; want %d", tc.city, tc.at, got.SettingsAt, err, tc.want)
+		}
+	}
+	if _, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID+1, InstanceUpdate{}, time.Now()); !errors.Is(err, ErrNoInstance) {
+		t.Errorf("unknown instance: %v", err)
+	}
+}
+
+// TestUpdateTwoSecrets checks that clearing or changing one secret keeps the
+// other, by value, and that an update that touches no secret leaves the sealed
+// bytes as they were though there is no key to open them.
+func TestUpdateTwoSecrets(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	now := time.Unix(5000, 0)
+	inst, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{
+		"city": {One: "Zurich"}, "token": {One: "hunter2"}, "other": {One: "swordfish"},
+	}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A plain field changes with both secrets set and no key.
+	got, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"city": {One: "Bern"}}}, now)
+	if err != nil || !bytes.Equal(got.SecretValues, inst.SecretValues) {
+		t.Fatalf("a plain update with no key: %v; sealed bytes changed: %v", err, !bytes.Equal(got.SecretValues, inst.SecretValues))
+	}
+	for _, tc := range []struct {
+		name   string
+		update map[string]Value
+		want   map[string]Value
+	}{
+		{"clear one", map[string]Value{"token": {}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "swordfish"}}},
+		{"change the other", map[string]Value{"other": {One: "trout-fish"}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "trout-fish"}}},
+		{"set one back", map[string]Value{"token": {One: "hunter3"}}, map[string]Value{"city": {One: "Bern"}, "other": {One: "trout-fish"}, "token": {One: "hunter3"}}},
+	} {
+		got, err = UpdateInstance(ctx, f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: tc.update}, now)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		fields, _, err := InstanceFields(&got, key)
+		if err != nil || !maps.EqualFunc(fields, tc.want, Value.equal) {
+			t.Errorf("%s: fields %v, %v; want %v", tc.name, fields, err, tc.want)
+		}
+	}
+}

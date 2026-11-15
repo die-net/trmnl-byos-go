@@ -49,3 +49,12 @@ JOIN playlist_item ON playlist_item.id = playlist_slot.item_id
 JOIN playlist ON playlist.id = playlist_item.playlist_id
 WHERE playlist_slot.instance_id = ?
 ORDER BY playlist.name;
+
+-- name: UpdateInstance :one
+-- Writes every setting of an instance, which the caller has read and merged
+-- in the same transaction. settings_at is the caller's, since it rises only
+-- when the field values or secrets changed.
+UPDATE plugin_instance
+SET name = ?, palette = ?, field_values = ?, secret_values = ?, settings_at = ?
+WHERE id = ?
+RETURNING *;

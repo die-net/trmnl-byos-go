@@ -12,7 +12,7 @@ import (
 const createInstance = `-- name: CreateInstance :one
 INSERT INTO plugin_instance (recipe_id, name, field_values, secret_values, palette, created_at)
 VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id, recipe_id, name, field_values, secret_values, palette, created_at
+RETURNING id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at
 `
 
 type CreateInstanceParams struct {
@@ -42,6 +42,7 @@ func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) 
 		&i.SecretValues,
 		&i.Palette,
 		&i.CreatedAt,
+		&i.SettingsAt,
 	)
 	return i, err
 }
@@ -91,7 +92,7 @@ func (q *Queries) DeleteInstance(ctx context.Context, id int64) (int64, error) {
 }
 
 const getInstance = `-- name: GetInstance :one
-SELECT id, recipe_id, name, field_values, secret_values, palette, created_at FROM plugin_instance WHERE id = ?
+SELECT id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at FROM plugin_instance WHERE id = ?
 `
 
 func (q *Queries) GetInstance(ctx context.Context, id int64) (PluginInstance, error) {
@@ -105,6 +106,7 @@ func (q *Queries) GetInstance(ctx context.Context, id int64) (PluginInstance, er
 		&i.SecretValues,
 		&i.Palette,
 		&i.CreatedAt,
+		&i.SettingsAt,
 	)
 	return i, err
 }
@@ -166,7 +168,7 @@ func (q *Queries) ListInstancePlaylists(ctx context.Context) ([]ListInstancePlay
 }
 
 const listInstances = `-- name: ListInstances :many
-SELECT plugin_instance.id, plugin_instance.recipe_id, plugin_instance.name, plugin_instance.field_values, plugin_instance.secret_values, plugin_instance.palette, plugin_instance.created_at, recipe.name AS recipe_name
+SELECT plugin_instance.id, plugin_instance.recipe_id, plugin_instance.name, plugin_instance.field_values, plugin_instance.secret_values, plugin_instance.palette, plugin_instance.created_at, plugin_instance.settings_at, recipe.name AS recipe_name
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
 ORDER BY plugin_instance.id
@@ -194,6 +196,7 @@ func (q *Queries) ListInstances(ctx context.Context) ([]ListInstancesRow, error)
 			&i.PluginInstance.SecretValues,
 			&i.PluginInstance.Palette,
 			&i.PluginInstance.CreatedAt,
+			&i.PluginInstance.SettingsAt,
 			&i.RecipeName,
 		); err != nil {
 			return nil, err
@@ -294,4 +297,46 @@ type SetInstanceSecretsParams struct {
 func (q *Queries) SetInstanceSecrets(ctx context.Context, arg SetInstanceSecretsParams) error {
 	_, err := q.db.ExecContext(ctx, setInstanceSecrets, arg.SecretValues, arg.ID)
 	return err
+}
+
+const updateInstance = `-- name: UpdateInstance :one
+UPDATE plugin_instance
+SET name = ?, palette = ?, field_values = ?, secret_values = ?, settings_at = ?
+WHERE id = ?
+RETURNING id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at
+`
+
+type UpdateInstanceParams struct {
+	Name         string `json:"name"`
+	Palette      string `json:"palette"`
+	FieldValues  string `json:"field_values"`
+	SecretValues []byte `json:"secret_values"`
+	SettingsAt   int64  `json:"settings_at"`
+	ID           int64  `json:"id"`
+}
+
+// Writes every setting of an instance, which the caller has read and merged
+// in the same transaction. settings_at is the caller's, since it rises only
+// when the field values or secrets changed.
+func (q *Queries) UpdateInstance(ctx context.Context, arg UpdateInstanceParams) (PluginInstance, error) {
+	row := q.db.QueryRowContext(ctx, updateInstance,
+		arg.Name,
+		arg.Palette,
+		arg.FieldValues,
+		arg.SecretValues,
+		arg.SettingsAt,
+		arg.ID,
+	)
+	var i PluginInstance
+	err := row.Scan(
+		&i.ID,
+		&i.RecipeID,
+		&i.Name,
+		&i.FieldValues,
+		&i.SecretValues,
+		&i.Palette,
+		&i.CreatedAt,
+		&i.SettingsAt,
+	)
+	return i, err
 }
