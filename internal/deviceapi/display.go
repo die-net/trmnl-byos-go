@@ -17,6 +17,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/screen"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 type displayResponse struct {
@@ -49,6 +50,18 @@ func displayFailed(w http.ResponseWriter, mac, step string, err error) {
 	writeJSON(w, displayResponse{Status: statusOK, RefreshRate: retryRefresh, SpecialFunction: "none"})
 }
 
+// refreshRate returns the seconds a device sleeps between wakes, from the
+// refresh_seconds setting, read now so a change applies at the next wake. A
+// setting that cannot be read is logged and the default is used, since the
+// device still needs an answer.
+func (s *Server) refreshRate(ctx context.Context) int64 {
+	d, err := settings.RefreshInterval(ctx, s.db.Read)
+	if err != nil {
+		slog.Error("display: read the refresh interval; using the default", "err", err)
+	}
+	return int64(d / time.Second)
+}
+
 func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	debugRequest(r)
@@ -65,7 +78,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		}
 		if stale {
 			slog.Warn("display: registered MAC with a stale key; resetting the device", "mac", r.Header.Get("ID"))
-			writeJSON(w, displayResponse{Status: statusOK, ResetFirmware: true, RefreshRate: int64(s.cfg.RefreshRate / time.Second)})
+			writeJSON(w, displayResponse{Status: statusOK, ResetFirmware: true, RefreshRate: s.refreshRate(ctx)})
 			return
 		}
 		slog.Warn("display: unknown device or bad token", "mac", r.Header.Get("ID"))
@@ -76,7 +89,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
 	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"))
 	sp := screenProfile(p)
-	choice := screenChoice{refresh: int64(s.cfg.RefreshRate / time.Second)}
+	choice := screenChoice{refresh: s.refreshRate(ctx)}
 	dot, calibrating := device.CalibrationDot(dev.ScreenOverride)
 	if left := dev.ScreenOverrideUntil - s.now().Unix(); calibrating && left > 0 && sp.Levels > 2 {
 		choice.name, choice.size, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, sp), func(w io.Writer) error { return screen.Calibration(w, sp, dot) })

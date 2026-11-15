@@ -9,6 +9,7 @@
 //	trmnl-byos playlist   edit what devices show
 //	trmnl-byos token      create and remove API tokens
 //	trmnl-byos password   set the admin password for the web UI
+//	trmnl-byos setting    list and change settings, such as the refresh interval
 //	trmnl-byos firmware   add firmware builds and roll them out
 package main
 
@@ -56,6 +57,7 @@ commands:
   playlist   edit what devices show: add, remove, list
   token      create and remove API tokens: add, list, remove
   password   set the admin password for the web UI
+  setting    list and change settings: list, set, reset
   firmware   add firmware builds and roll them out: add, list, rollout, cancel, device
 
 Run "trmnl-byos <command> -h" for a command's flags.
@@ -94,6 +96,8 @@ func run() int {
 		err = tokens(ctx, args, os.Stdout)
 	case "password":
 		err = password(ctx, args, os.Stdin, os.Stdout)
+	case "setting":
+		err = setting(ctx, args, os.Stdout)
 	case "firmware":
 		err = firmwares(ctx, args, os.Stdout)
 	default:
@@ -112,6 +116,30 @@ func dataFlag(fs *flag.FlagSet) *string {
 	return fs.String("data", "data", "directory holding the database and images")
 }
 
+// oneArgCommand runs a command that takes the -data flag and one argument,
+// named argName in its usage. It opens the database, calls act with the
+// argument, and prints done, a format with one verb for the argument.
+func oneArgCommand(ctx context.Context, args []string, out io.Writer, name, argName string,
+	act func(ctx context.Context, client *db.Client, arg string) error, done string,
+) error {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	data := dataFlag(fs)
+	_ = fs.Parse(args) // ExitOnError exits on a parse error.
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: trmnl-byos %s [-data dir] <%s>", name, argName)
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if err := act(ctx, client, fs.Arg(0)); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, done, fs.Arg(0))
+	return err
+}
+
 func openDB(ctx context.Context, data string) (*db.Client, error) {
 	return db.Open(ctx, filepath.Join(data, "trmnl.db"))
 }
@@ -121,7 +149,6 @@ func serve(ctx context.Context, args []string) error {
 	data := dataFlag(fs)
 	listen := fs.String("listen", ":8080", "address to listen on")
 	publicURL := fs.String("public-url", "", "base URL devices reach this server at, such as http://192.168.1.10:8080 (default: from each request)")
-	refresh := fs.Duration("refresh", 15*time.Minute, "how long devices sleep between wakes")
 	renderURL := fs.String("render-url", "", "URL of the renderer, such as http://renderer:8081 (default: recipes are not rendered)")
 	proxyListen := fs.String("proxy-listen", ":3128", "address the renderer's proxy listens on, when -render-url is set; never publish it")
 	cacheDir := fs.String("cache", "cache", "directory holding the renderer's asset cache")
@@ -130,9 +157,6 @@ func serve(ctx context.Context, args []string) error {
 
 	if *debug {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
-	}
-	if *refresh < time.Second {
-		return fmt.Errorf("-refresh %v is under a second", *refresh)
 	}
 	key, err := secrets.FromEnv()
 	if err != nil {
@@ -156,7 +180,7 @@ func serve(ctx context.Context, args []string) error {
 	}
 
 	mux := http.NewServeMux()
-	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, RefreshRate: *refresh, FirmwareDir: firmwareDir(*data)}).Register(mux)
+	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, FirmwareDir: firmwareDir(*data)}).Register(mux)
 	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data)}).Register(mux)
 	adminui.New(client, adminui.Config{PublicURL: *publicURL}).Register(mux)
 	srv := &http.Server{

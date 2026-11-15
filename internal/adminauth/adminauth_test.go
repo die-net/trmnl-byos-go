@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/apitoken"
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 const testPassword = "correct horse battery"
@@ -47,27 +50,83 @@ func withPassword(t *testing.T) *db.Client {
 }
 
 func TestSetPasswordLength(t *testing.T) {
-	client := openTest(t)
 	for _, tc := range []struct {
 		name string
-		pw   string
-		ok   bool
+		// minSetting is the min_password_length setting, or 0 to leave the
+		// default of 12.
+		minSetting int
+		pw         string
+		ok         bool
 	}{
-		{"empty", "", false},
-		{"11 bytes", strings.Repeat("a", 11), false},
-		{"12 bytes", strings.Repeat("a", 12), true},
-		{"1024 bytes", strings.Repeat("a", 1024), true},
-		{"1025 bytes", strings.Repeat("a", 1025), false},
+		{"default, empty", 0, "", false},
+		{"default, 11 bytes", 0, strings.Repeat("a", 11), false},
+		{"default, 12 bytes", 0, strings.Repeat("a", 12), true},
+		{"default, 1024 bytes", 0, strings.Repeat("a", 1024), true},
+		{"default, 1025 bytes", 0, strings.Repeat("a", 1025), false},
+		{"set to 6, 5 bytes", 6, strings.Repeat("a", 5), false},
+		{"set to 6, 6 bytes", 6, strings.Repeat("a", 6), true},
+		{"set to 20, 19 bytes", 20, strings.Repeat("a", 19), false},
+		{"set to 20, 20 bytes", 20, strings.Repeat("a", 20), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			client := openTest(t)
+			if tc.minSetting != 0 {
+				if err := settings.Set(t.Context(), client, settings.KeyMinPasswordLength, strconv.Itoa(tc.minSetting), t0); err != nil {
+					t.Fatal(err)
+				}
+			}
 			err := SetPassword(t.Context(), client, tc.pw, t0)
 			if tc.ok && err != nil {
 				t.Fatal(err)
 			}
-			if !tc.ok && !errors.Is(err, errkind.ErrInvalid) {
-				t.Fatalf("err = %v, want invalid input", err)
+			if !tc.ok {
+				if !errors.Is(err, errkind.ErrInvalid) || !errors.Is(err, ErrPasswordLength) {
+					t.Fatalf("err = %v, want a password length error", err)
+				}
+				wantMin := 12
+				if tc.minSetting != 0 {
+					wantMin = tc.minSetting
+				}
+				if want := fmt.Sprintf("must be %d to 1024 bytes", wantMin); !strings.Contains(err.Error(), want) {
+					t.Errorf("err %q does not state the bounds %q", err, want)
+				}
 			}
 		})
+	}
+}
+
+// TestRaisedMinimumKeepsOldPassword checks that the minimum applies only
+// when a password is set: one set under a lower minimum still logs in.
+func TestRaisedMinimumKeepsOldPassword(t *testing.T) {
+	ctx := t.Context()
+	client := openTest(t)
+	if err := settings.Set(ctx, client, settings.KeyMinPasswordLength, "6", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPassword(ctx, client, "sixsix", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, client, settings.KeyMinPasswordLength, "30", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckPassword(ctx, client, "sixsix"); err != nil {
+		t.Fatalf("old password after raising the minimum: %v", err)
+	}
+	if err := SetPassword(ctx, client, "sixsix", t0); !errors.Is(err, ErrPasswordLength) {
+		t.Fatalf("setting it again: %v, want a length error", err)
+	}
+}
+
+// TestSetPasswordCorruptMinimum checks that an unusable setting is an error
+// naming the key, not a silent default.
+func TestSetPasswordCorruptMinimum(t *testing.T) {
+	client := openTest(t)
+	if err := client.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyMinPasswordLength, Value: "lots", UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	err := SetPassword(t.Context(), client, testPassword, t0)
+	if err == nil || !strings.Contains(err.Error(), settings.KeyMinPasswordLength) {
+		t.Fatalf("err = %v, want one naming the setting", err)
 	}
 }
 
@@ -82,7 +141,7 @@ func TestCheckPassword(t *testing.T) {
 		{"right", testPassword, nil},
 		{"wrong", testPassword + "x", ErrWrongPassword},
 		{"empty", "", ErrWrongPassword},
-		{"too long", strings.Repeat("a", MaxPasswordLen+1), ErrWrongPassword},
+		{"too long", strings.Repeat("a", settings.MaxPasswordLen+1), ErrWrongPassword},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := CheckPassword(ctx, client, tc.pw); !errors.Is(err, tc.want) {

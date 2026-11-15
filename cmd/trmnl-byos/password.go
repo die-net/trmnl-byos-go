@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/die-net/trmnl-byos-go/internal/adminauth"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 // password sets the admin password for the web UI. At a terminal it asks
@@ -45,7 +46,7 @@ func password(ctx context.Context, args []string, in *os.File, out io.Writer) er
 // maxPasswordLine bounds the line read from a pipe: a password, and room for
 // a line ending, with some slack so an over-long one is refused as too long
 // rather than cut to a valid one.
-const maxPasswordLine = adminauth.MaxPasswordLen + 16
+const maxPasswordLine = settings.MaxPasswordLen + 16
 
 // readPassword reads a new password from in. For a terminal it prompts on out
 // and asks twice. For anything else it takes the first line, without its
