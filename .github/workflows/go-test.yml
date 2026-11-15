@@ -1,4 +1,10 @@
 name: go-test
+
+# Never add pull_request_target or workflow_run to any workflow here. They
+# run with this repository's secrets and a token that can write, so a
+# workflow that checks out or runs a pull request's code under them hands
+# both to whoever wrote that code, including a fork's author.
+
 on:
   pull_request:
   # A pull request can restore only its own caches and main's, so main
