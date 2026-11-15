@@ -5,11 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +16,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
+	"github.com/die-net/trmnl-byos-go/internal/secrets"
 	"github.com/die-net/trmnl-byos-go/internal/upload"
 )
 
@@ -49,6 +48,8 @@ type recipeInstanceView struct {
 	Palette string
 	// Playlists are the playlists that show the instance.
 	Playlists []linkView
+	// EditHref is the page that edits the instance.
+	EditHref string
 	// DeleteHref is the page that asks to remove the instance.
 	DeleteHref string
 }
@@ -127,7 +128,7 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 		inst := &insts[i].PluginInstance
 		// The snapshot has the recipe of every instance in it.
 		rv := byID[inst.RecipeID]
-		v := recipeInstanceView{ID: inst.ID, Name: inst.Name, Palette: devicePalette, Playlists: shown[inst.ID], DeleteHref: instanceHref(inst.ID) + "/delete"}
+		v := recipeInstanceView{ID: inst.ID, Name: inst.Name, Palette: devicePalette, Playlists: shown[inst.ID], EditHref: instanceHref(inst.ID), DeleteHref: instanceHref(inst.ID) + "/delete"}
 		if inst.Palette != "" {
 			// A palette the registry no longer has shows as its ID.
 			p, _ := profile.PaletteByID(inst.Palette)
@@ -248,19 +249,67 @@ type paletteOption struct {
 	Selected bool
 }
 
-// instanceForm is the add instance form's values.
+// instanceForm is the name and palette an instance form shows.
 type instanceForm struct {
 	Name    string
 	Palette string
 }
 
+// instanceFormView is what the add and edit instance forms share: the name
+// and palette, then a control for each custom field of the recipe.
+type instanceFormView struct {
+	// Action is the path the form posts to.
+	Action string
+	// NamePlaceholder is the recipe's name, which an empty name means.
+	NamePlaceholder string
+	Form            instanceForm
+	Palettes        []paletteOption
+	Fields          []fieldView
+	// Unreadable says the instance's stored secrets cannot be read, so the
+	// form cannot say which are set.
+	Unreadable bool
+	// Orphans are the refusals that name no field the form shows.
+	Orphans []string
+	// Submit is the text of the button.
+	Submit string
+	// NameDiffers and PaletteDiffers say, on a refused stale save, that the
+	// name or palette on the page is not the one stored now.
+	NameDiffers, PaletteDiffers bool
+	// Differs is the note such a field gets.
+	Differs string
+	// Seen is the recipe.InstanceState of the instance the edit form shows,
+	// which the form sends back so a save from a page that is out of date is
+	// refused. It is "" for the add form.
+	Seen string
+}
+
+// newInstanceForm returns the form view for the fields as src shows them.
+// The refusal of the errors in src is a Check the fields line, returned as
+// msg unless it is given.
+func newInstanceForm(action, namePlaceholder, submit string, form *instanceForm, fields []recipe.Field, src *fieldSource, msg string) (v instanceFormView, top string) {
+	pals := profile.Palettes()
+	v = instanceFormView{
+		Action: action, NamePlaceholder: namePlaceholder, Submit: submit, Form: *form,
+		Palettes: make([]paletteOption, 0, len(pals)+1),
+		// Nil names are an unknown, which only an edit has.
+		Unreadable: src.editing && src.secretNames == nil,
+	}
+	v.Palettes = append(v.Palettes, paletteOption{Label: devicePalette, Selected: form.Palette == ""})
+	for _, p := range pals {
+		v.Palettes = append(v.Palettes, paletteOption{ID: p.ID, Label: p.Name, Selected: p.ID == form.Palette})
+	}
+	var shown int
+	v.Fields, v.Orphans, shown = src.build(fields)
+	if msg == "" && shown > 0 {
+		msg = "Check the fields below."
+	}
+	return v, msg
+}
+
 // recipeEdit is a recipe as its page shows it.
 type recipeEdit struct {
 	Name string
-	// Action is the path the add instance form posts to.
-	Action   string
-	Form     instanceForm
-	Palettes []paletteOption
+	instanceFormView
 }
 
 // recipeFromPath returns the recipe the path names.
@@ -268,67 +317,94 @@ func (s *Server) recipeFromPath(w http.ResponseWriter, r *http.Request) (db.Reci
 	return fromPath(s, w, r, "get recipe", noRecipe, s.db.Read.GetRecipe)
 }
 
+// recipeFields returns the custom fields of the recipe. It reads a file, so
+// it is called once for a request and outside any transaction.
+func (s *Server) recipeFields(w http.ResponseWriter, r *http.Request, recipeID int64) ([]recipe.Field, bool) {
+	settings, err := recipe.ReadSettings(recipe.Dir(s.recipesDir, recipeID))
+	if err != nil {
+		serverError(w, r, "read recipe settings", err)
+		return nil, false
+	}
+	return settings.CustomFields, true
+}
+
 func (s *Server) recipePage(w http.ResponseWriter, r *http.Request) {
 	rec, ok := s.recipeFromPath(w, r)
 	if !ok {
 		return
 	}
-	s.renderRecipe(w, r, http.StatusOK, &rec, &instanceForm{}, "")
+	fields, ok := s.recipeFields(w, r, rec.ID)
+	if !ok {
+		return
+	}
+	s.renderRecipe(w, r, http.StatusOK, &rec, fields, &instanceForm{}, &fieldSource{}, "")
 }
 
 // renderRecipe sends the page of a recipe with the form's values, and an
-// error message above the form if msg is not "".
-func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int, rec *db.Recipe, form *instanceForm, msg string) {
-	pals := profile.Palettes()
-	e := &recipeEdit{
-		Name: rec.Name, Action: "/recipes/add-instance/" + strconv.FormatInt(rec.ID, 10), Form: *form,
-		Palettes: make([]paletteOption, 0, len(pals)+1),
-	}
-	e.Palettes = append(e.Palettes, paletteOption{Label: devicePalette, Selected: form.Palette == ""})
-	for _, p := range pals {
-		e.Palettes = append(e.Palettes, paletteOption{ID: p.ID, Label: p.Name, Selected: p.ID == form.Palette})
-	}
-	s.render(w, r, status, "recipe", &pageData{Nav: "recipes", Heading: rec.Name, Error: msg, RecipeEdit: e})
+// error message above the form if msg is not "". src says what the field
+// controls show.
+func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int, rec *db.Recipe, fields []recipe.Field, form *instanceForm, src *fieldSource, msg string) {
+	v, top := newInstanceForm("/recipes/add-instance/"+strconv.FormatInt(rec.ID, 10), rec.Name, "Add", form, fields, src, msg)
+	s.render(w, r, status, "recipe", &pageData{Nav: "recipes", Heading: rec.Name, Error: top, RecipeEdit: &recipeEdit{Name: rec.Name, instanceFormView: v}})
 }
 
-// addInstance creates an instance of a recipe from the form's name and
-// palette.
+// addInstance creates an instance of a recipe from the form's name, palette
+// and field values.
 func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	rec, ok := s.recipeFromPath(w, r)
 	if !ok {
 		return
 	}
+	fields, ok := s.recipeFields(w, r, rec.ID)
+	if !ok {
+		return
+	}
 	form := &instanceForm{}
-	if !parseForm(w, r, func(status int, msg string) { s.renderRecipe(w, r, status, &rec, form, msg) }) {
+	if !parseFormLimit(w, r, maxInstanceFormBody, func(status int, msg string) { s.renderRecipe(w, r, status, &rec, fields, form, &fieldSource{}, msg) }) {
 		return
 	}
 	form.Name = strings.TrimSpace(r.PostForm.Get("name"))
 	form.Palette = r.PostForm.Get("palette")
-	var fieldErrs recipe.FieldErrors
-	_, err := recipe.CreateInstance(r.Context(), s.db, nil, s.recipesDir, recipe.InstanceParams{RecipeID: rec.ID, Name: form.Name, Palette: form.Palette}, s.now())
-	switch {
-	case err == nil:
+	_, err := recipe.CreateInstance(r.Context(), s.db, s.secrets, s.recipesDir, recipe.InstanceParams{
+		RecipeID: rec.ID, Name: form.Name, Palette: form.Palette,
+		Values: postedValues(fields, r.PostForm), Secret: markedSecret(fields, r.PostForm),
+	}, s.now())
+	if err == nil {
 		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
-	case errors.Is(err, recipe.ErrNoRecipe):
-		s.renderNotFound(w, r, noRecipe)
-	case errors.As(err, &fieldErrs):
-		// A recipe with a required field can't get an instance from this form
-		// until it has a settings form.
-		// The refused create made no instance, so the hint is a command that
-		// makes one with its fields. -field takes keynames, which the
-		// message's labels are not, so it names each.
-		var cmd strings.Builder
-		fmt.Fprintf(&cmd, "trmnl-byos instance add -recipe %d", rec.ID)
-		for _, k := range slices.Sorted(maps.Keys(fieldErrs)) {
-			fmt.Fprintf(&cmd, " -field %s=VALUE", k)
-		}
-		hint := " Until this form can set fields, make the instance with " + cmd.String() + ", or with POST /api/v1/instances."
-		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err)+hint)
-	case errors.Is(err, errkind.ErrInvalid):
-		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err))
-	default:
-		serverError(w, r, "add instance", err)
+		return
 	}
+	src := &fieldSource{posted: r.PostForm}
+	if errors.Is(err, recipe.ErrNoRecipe) {
+		s.renderNotFound(w, r, noRecipe)
+		return
+	}
+	status, msg, ok := refusal(err, src)
+	if !ok {
+		serverError(w, r, "add instance", err)
+		return
+	}
+	s.renderRecipe(w, r, status, &rec, fields, form, src, msg)
+}
+
+// noKeyText is what a refusal for want of a secrets key says.
+const noKeyText = "The server has no secrets key, so a secret value cannot be saved or kept. Set " + secrets.EnvVar + " on the server and restart it."
+
+// refusal says how a page answers an error from CreateInstance or
+// UpdateInstance that is the admin's to fix: the status, the message to show
+// above the form, and false for any other error. The errors of a field it
+// leaves in src, which the form shows in the field's block.
+func refusal(err error, src *fieldSource) (status int, msg string, ok bool) {
+	var fieldErrs recipe.FieldErrors
+	switch {
+	case errors.As(err, &fieldErrs):
+		src.errs = fieldErrs
+		return http.StatusBadRequest, "", true
+	case errors.Is(err, secrets.ErrNoKey):
+		return http.StatusBadRequest, noKeyText, true
+	case errors.Is(err, errkind.ErrInvalid):
+		return http.StatusBadRequest, kindText(err), true
+	}
+	return 0, "", false
 }
 
 // instanceDeleteView is the page that asks to confirm removing an instance.

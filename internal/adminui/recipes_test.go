@@ -62,7 +62,7 @@ func writeSettings(t *testing.T, recipesDir string, recipeID int64) {
 // newInstance creates an instance of the recipe with the palette.
 func newInstance(t *testing.T, tu *testUI, recipeID int64, name, palette string) db.PluginInstance {
 	t.Helper()
-	inst, err := tu.db.Write.CreateInstance(t.Context(), db.CreateInstanceParams{RecipeID: recipeID, Name: name, FieldValues: "{}", Palette: palette, CreatedAt: tu.now.Unix()})
+	inst, err := tu.db.Write.CreateInstance(t.Context(), db.CreateInstanceParams{RecipeID: recipeID, Name: name, FieldValues: "{}", SecretKeys: "[]", Palette: palette, CreatedAt: tu.now.Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,8 +452,9 @@ func TestRecipeUploadNotMultipart(t *testing.T) {
 
 func TestRecipePageAndAddInstance(t *testing.T) {
 	t.Parallel()
-	tu, _ := newRecipesUI(t)
+	tu, dir := newRecipesUI(t)
 	rec := addRecipe(t, tu, "Weather <i>")
+	writeSettings(t, dir, rec.ID)
 	c := tu.signIn(t)
 	path := "/recipes/" + id(rec.ID)
 	body := tu.get(t, c, path).Body.String()
@@ -509,8 +510,9 @@ func TestRecipeAddInstance(t *testing.T) {
 
 func TestRecipeAddInstanceRefused(t *testing.T) {
 	t.Parallel()
-	tu, _ := newRecipesUI(t)
+	tu, dir := newRecipesUI(t)
 	rec := addRecipe(t, tu, "Weather")
+	writeSettings(t, dir, rec.ID)
 	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{"name": {"Mine <b>"}, "palette": {"nope"}})
 	body := w.Body.String()
 	for _, want := range []string{
@@ -525,29 +527,12 @@ func TestRecipeAddInstanceRefused(t *testing.T) {
 	}
 }
 
-// TestRecipeAddInstanceRequiredField checks that a recipe with a required
-// custom field, which this form cannot fill in yet, is refused as bad input
-// with the field named, not as a server error.
-func TestRecipeAddInstanceRequiredField(t *testing.T) {
+func TestRecipeFormTooBig(t *testing.T) {
 	t.Parallel()
 	tu, dir := newRecipesUI(t)
 	rec := addRecipe(t, tu, "Weather")
 	writeSettings(t, dir, rec.ID)
-	settings := filepath.Join(recipe.Dir(dir, rec.ID), "settings.yml")
-	if err := os.WriteFile(settings, []byte("name: Weather\ncustom_fields:\n- keyname: city\n  field_type: string\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{})
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "City: is required. Until this form can set fields, make the instance with trmnl-byos instance add -recipe "+id(rec.ID)+" -field city=VALUE, or with POST /api/v1/instances.") || len(listInstances(t, tu)) != 0 {
-		t.Errorf("status %d with %d instances: %s", w.Code, len(listInstances(t, tu)), w.Body)
-	}
-}
-
-func TestRecipeFormTooBig(t *testing.T) {
-	t.Parallel()
-	tu, _ := newRecipesUI(t)
-	rec := addRecipe(t, tu, "Weather")
-	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{"name": {strings.Repeat("a", maxFormBody)}})
+	w := tu.post(t, tu.signIn(t), "/recipes/add-instance/"+id(rec.ID), url.Values{"name": {strings.Repeat("a", maxInstanceFormBody)}})
 	if w.Code != http.StatusRequestEntityTooLarge || len(listInstances(t, tu)) != 0 {
 		t.Errorf("status %d with %d instances, want 413 and none", w.Code, len(listInstances(t, tu)))
 	}
@@ -737,11 +722,12 @@ func TestRecipesCrossOrigin(t *testing.T) {
 
 func TestRecipePagesNoInlineCode(t *testing.T) {
 	t.Parallel()
-	tu, _ := newRecipesUI(t)
+	tu, dir := newRecipesUI(t)
 	rec := addRecipe(t, tu, "Weather")
+	writeSettings(t, dir, rec.ID)
 	inst := newInstance(t, tu, rec.ID, "Home", "")
 	c := tu.signIn(t)
-	for _, path := range []string{"/recipes", "/recipes/" + id(rec.ID), "/recipes/instances/" + id(inst.ID) + "/delete", "/recipes/99"} {
+	for _, path := range []string{"/recipes", "/recipes/" + id(rec.ID), "/recipes/instances/" + id(inst.ID), "/recipes/instances/" + id(inst.ID) + "/delete", "/recipes/99"} {
 		body := tu.get(t, c, path).Body.String()
 		for _, bad := range []string{"<script", "style=", "<style", " onclick=", " onsubmit="} {
 			if strings.Contains(body, bad) {

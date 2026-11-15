@@ -862,6 +862,103 @@ a.btn {
   color: var(--muted);
 }
 
+/* The custom fields of an instance form. Everything here is scoped to
+   .field-setting, .field-check or the field's own elements, so no other form
+   changes. A recipe's labels, hints and option names can be long, so they
+   wrap. */
+.field-setting label,
+.field-setting legend,
+.field-setting .hint,
+.field-setting .field-error,
+.field-setting .field-title {
+  overflow-wrap: anywhere;
+}
+
+.field-setting .field-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.field-setting .req {
+  margin-left: var(--space-1);
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.field textarea {
+  display: block;
+  width: 100%;
+  min-height: calc(var(--tap) * 2);
+  padding: var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 1rem;
+  resize: vertical;
+}
+
+.field textarea::placeholder {
+  color: var(--muted);
+}
+
+.field-setting [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+fieldset.field-setting [aria-invalid="true"] {
+  border: 0;
+}
+
+.field-setting .field-error {
+  margin: var(--space-1) 0 0;
+  color: var(--danger);
+  font-size: 0.875rem;
+}
+
+/* A box and its label in one row, which is the whole tap target. The rules
+   come after .field's, so they win over its full-width inputs. */
+fieldset.field-setting {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+fieldset.field-setting legend {
+  padding: 0;
+  font-weight: 600;
+}
+
+.field-check label {
+  display: flex;
+  min-height: var(--tap);
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.field-setting.field-check > label {
+  font-weight: 600;
+}
+
+.field-check input[type="checkbox"] {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.field-check .hint {
+  margin-top: 0;
+}
+
 /* From a tablet up, the tab bar becomes text links in the top bar. */
 @media (min-width: 48rem) {
   .topbar-inner {
