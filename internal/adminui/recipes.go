@@ -272,11 +272,9 @@ type instanceFormView struct {
 	Orphans []string
 	// Submit is the text of the button.
 	Submit string
-	// NameDiffers and PaletteDiffers say, on a refused stale save, that the
-	// name or palette on the page is not the one stored now.
-	NameDiffers, PaletteDiffers bool
-	// Differs is the note such a field gets.
-	Differs string
+	// NameNotes and PaletteNotes are, on a refused stale save, the notes
+	// under a name or palette that is not the one stored now.
+	NameNotes, PaletteNotes []string
 	// Seen is the recipe.InstanceState of the instance the edit form shows,
 	// which the form sends back so a save from a page that is out of date is
 	// refused. It is "" for the add form.

@@ -3,6 +3,7 @@ package adminui
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -86,7 +87,16 @@ func (s *Server) renderInstance(w http.ResponseWriter, r *http.Request, status i
 	v, top := newInstanceForm(instanceHref(st.inst.ID), st.rec.Name, "Save", form, st.fields, src, msg)
 	v.Seen = st.state
 	if src.conflict {
-		v.NameDiffers, v.PaletteDiffers, v.Differs = form.Name != st.inst.Name, form.Palette != st.inst.Palette, differsText
+		if form.Name != st.inst.Name {
+			v.NameNotes = []string{differsText, storedNow(st.inst.Name)}
+		}
+		if form.Palette != st.inst.Palette {
+			label := devicePalette
+			if i := slices.IndexFunc(v.Palettes, func(p paletteOption) bool { return p.ID == st.inst.Palette }); st.inst.Palette != "" && i >= 0 {
+				label = v.Palettes[i].Label
+			}
+			v.PaletteNotes = []string{differsText, storedNow(label)}
+		}
 	}
 	s.render(w, r, status, "instance", &pageData{
 		Nav: "recipes", Heading: st.inst.Name, Error: top,

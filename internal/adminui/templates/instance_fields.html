@@ -3,14 +3,14 @@
 <label for="name">Name</label>
 <input id="name" name="name" type="text" autocomplete="off" placeholder="{{.NamePlaceholder}}" value="{{.Form.Name}}">
 <p class="hint">Leave empty to use the recipe's name.</p>
-{{if .NameDiffers}}<p class="hint">{{.Differs}}</p>
+{{range .NameNotes}}<p class="hint">{{.}}</p>
 {{end}}</div>
 <div class="field">
 <label for="palette">Palette</label>
 <select id="palette" name="palette">
 {{range .Palettes}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
 {{end}}</select>
-{{if .PaletteDiffers}}<p class="hint">{{.Differs}}</p>
+{{range .PaletteNotes}}<p class="hint">{{.}}</p>
 {{end}}</div>
 {{if .Unreadable}}<p class="note">The stored secret values cannot be read, because the server has no secrets key or the key changed. This form cannot say which secret fields have a value.</p>
 {{end}}{{range .Fields}}{{template "field" .}}{{end}}{{end}}
@@ -26,7 +26,8 @@
 {{range .Options}}<label for="{{.ID}}"><input id="{{.ID}}" name="{{$f.Name}}" type="checkbox" value="{{.Value}}"{{if .Selected}} checked{{end}}><span>{{.Label}}</span></label>
 {{end}}{{template "hints" .}}{{template "fielderr" .}}</fieldset>
 {{else}}<div class="field field-setting">
-<label for="{{.ID}}">{{.Label}}{{if .Required}} <span class="req">Required</span>{{end}}</label>
+{{if .Secret}}<input type="hidden" name="{{.HiddenName}}" value="1">
+{{end}}<label for="{{.ID}}">{{.Label}}{{if .Required}} <span class="req">Required</span>{{end}}</label>
 {{if eq .Input "textarea"}}<textarea id="{{.ID}}" name="{{.Name}}" rows="{{.Rows}}"{{if .MaxLength}} maxlength="{{.MaxLength}}"{{end}}{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}{{if .Secret}} autocomplete="off"{{end}}{{if .HTMLRequired}} required{{end}}{{if .Described}} aria-describedby="{{.Described}}"{{end}}{{if .Error}} aria-invalid="true"{{end}}>
 {{if not .Secret}}{{.Value}}{{end}}</textarea>
 {{else if eq .Input "select"}}<select id="{{.ID}}" name="{{.Name}}"{{if .HTMLRequired}} required{{end}}{{if .Described}} aria-describedby="{{.Described}}"{{end}}{{if .Error}} aria-invalid="true"{{end}}>
