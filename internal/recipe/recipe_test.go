@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"io/fs"
@@ -796,6 +797,27 @@ func TestInstallZipName(t *testing.T) {
 	}
 }
 
+// cutDirectory returns the zip with its end record changed to say the
+// central directory starts ten bytes before the end of the file, so the
+// directory runs off the end while the record still counts every entry.
+func cutDirectory(t *testing.T, zipped []byte) []byte {
+	t.Helper()
+	// An end record with no comment is the last 22 bytes. The directory's
+	// size is at byte 12 of it and its offset at byte 16.
+	const endLen = 22
+	if len(zipped) < endLen {
+		t.Fatalf("zip of %d bytes has no end record", len(zipped))
+	}
+	out := bytes.Clone(zipped)
+	end := out[len(out)-endLen:]
+	// The directory ends where the end record starts, so its offset plus
+	// its size plus 12 is ten bytes before the end of the file.
+	size, offset := binary.LittleEndian.Uint32(end[12:]), binary.LittleEndian.Uint32(end[16:])
+	binary.LittleEndian.PutUint32(end[12:], 0)
+	binary.LittleEndian.PutUint32(end[16:], offset+size+endLen-10)
+	return out
+}
+
 // TestInstallInvalidText checks that each way a recipe is refused as
 // invalid input says so as a plain statement, without a nested Go error
 // text, and keeps the cause where there is one.
@@ -836,6 +858,7 @@ func TestInstallInvalidText(t *testing.T) {
 		cause error
 	}{
 		{"not a zip", []byte("plain text"), "the file is not a zip archive", zip.ErrFormat},
+		{"zip directory runs off the end", cutDirectory(t, zipOf(t, good, liquid)), "the file is not a zip archive", io.ErrUnexpectedEOF},
 		{"empty file", nil, "the file is empty", nil},
 		{"no settings.yml", zipOf(t, liquid), "the zip has no settings.yml at its top, in src/, or in one top-level folder", nil},
 		{"name leaves the directory", zipOf(t, good, liquid, [2]string{"../escape", "x"}), `the zip has a file name that leaves its directory: "../escape"`, nil},

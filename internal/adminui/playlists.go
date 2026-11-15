@@ -225,8 +225,15 @@ var (
 	noItem     = notFoundView{Nav: "playlists", What: "No such playlist item", BackHref: "/playlists", BackName: "Playlists"}
 )
 
-// serverError logs err and sends a generic 500.
-func serverError(w http.ResponseWriter, what string, err error) {
+// serverError logs err and sends a generic 500. A request whose context has
+// ended, because the client hung up or its deadline passed, has no one to
+// answer and has not failed on the server's side: the error is the
+// context's, so it is logged for debugging only and nothing is written.
+func serverError(w http.ResponseWriter, r *http.Request, what string, err error) {
+	if r.Context().Err() != nil {
+		slog.Debug("admin ui: "+what+": request ended", "err", err)
+		return
+	}
 	slog.Error("admin ui: "+what, "err", err)
 	http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
 }
@@ -313,7 +320,7 @@ func (s *Server) playlists(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderPlaylists(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	views, err := s.playlistViews(r.Context())
 	if err != nil {
-		serverError(w, "list playlists", err)
+		serverError(w, r, "list playlists", err)
 		return
 	}
 	s.render(w, r, status, "playlists", pageData{Nav: "playlists", Heading: "Playlists", Error: msg, Playlists: views})
@@ -335,7 +342,7 @@ func (s *Server) itemAction(do func(ctx context.Context, post map[string][]strin
 			s.renderNotFound(w, r, noItem)
 			return
 		} else if err != nil {
-			serverError(w, "get playlist item", err)
+			serverError(w, r, "get playlist item", err)
 			return
 		}
 		if !parseForm(w, r, func(status int, msg string) { s.renderPlaylists(w, r, status, msg) }) {
@@ -350,7 +357,7 @@ func (s *Server) itemAction(do func(ctx context.Context, post map[string][]strin
 		case errors.Is(err, errkind.ErrInvalid):
 			s.renderPlaylists(w, r, http.StatusBadRequest, invalidText(err))
 		default:
-			serverError(w, "change playlist item", err)
+			serverError(w, r, "change playlist item", err)
 		}
 	}
 }
@@ -403,7 +410,7 @@ func fromPath[T any](s *Server, w http.ResponseWriter, r *http.Request, what str
 	case errors.Is(err, sql.ErrNoRows):
 		s.renderNotFound(w, r, nf)
 	default:
-		serverError(w, what, err)
+		serverError(w, r, what, err)
 	}
 	return zero, false
 }
@@ -472,7 +479,7 @@ func (s *Server) saveItem(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderItem(w, r, http.StatusBadRequest, &row, &form, invalidText(err))
 	default:
-		serverError(w, "save playlist item", err)
+		serverError(w, r, "save playlist item", err)
 	}
 }
 
@@ -501,7 +508,7 @@ func scheduleOf(pl *db.Playlist) playlist.Schedule {
 func (s *Server) renderPlaylist(w http.ResponseWriter, r *http.Request, status int, pl *db.Playlist, sched *scheduleForm, add *addForm, msg string) {
 	insts, err := s.db.Read.ListInstances(r.Context())
 	if err != nil {
-		serverError(w, "list instances", err)
+		serverError(w, r, "list instances", err)
 		return
 	}
 	base := "/playlists/" + strconv.FormatInt(pl.ID, 10)
@@ -539,7 +546,7 @@ func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, invalidText(err))
 	default:
-		serverError(w, "save playlist", err)
+		serverError(w, r, "save playlist", err)
 	}
 }
 
@@ -576,7 +583,7 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) {
 		// The instance was removed after the page was shown.
 		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, "That instance no longer exists.")
 	default:
-		serverError(w, "add playlist item", err)
+		serverError(w, r, "add playlist item", err)
 	}
 }
 

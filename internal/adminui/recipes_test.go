@@ -3,6 +3,8 @@ package adminui
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -380,6 +382,50 @@ func TestRecipeUploadCutOff(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// hangUp is a request body whose client hangs up partway: it yields data,
+// then ends the request's context and fails, as the server does when the
+// connection drops.
+type hangUp struct {
+	data   io.Reader
+	cancel context.CancelFunc
+}
+
+func (h *hangUp) Read(p []byte) (int, error) {
+	n, err := h.data.Read(p)
+	if errors.Is(err, io.EOF) {
+		h.cancel()
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
+// TestRecipeUploadClientGone checks that an upload whose client hung up is
+// not answered as a server failure. The request's context has ended, so the
+// list the refusal would show cannot be read, and there is no one to show
+// it to.
+func TestRecipeUploadClientGone(t *testing.T) {
+	t.Parallel()
+	tu, dir := newRecipesUI(t)
+	c := tu.signIn(t)
+	body, ct := multipartBody(t, formPart{field: "recipe", filename: "a.zip", content: string(testZip(t, "x"))})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cut := strings.Index(body, "PK") + 40
+	req := httptest.NewRequestWithContext(ctx, "POST", "/recipes", &hangUp{data: strings.NewReader(body[:cut]), cancel: cancel})
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("Cookie", cookieHeader(c))
+	w := tu.serve(req)
+	if w.Code == http.StatusInternalServerError || w.Body.Len() != 0 {
+		t.Errorf("status %d, body %q; want nothing written for a client that hung up", w.Code, w.Body)
+	}
+	if got := len(listRecipes(t, tu)); got != 0 {
+		t.Errorf("%d recipes after the client hung up", got)
+	}
+	if left, err := os.ReadDir(dir); err != nil || len(left) != 0 {
+		t.Errorf("an upload whose client hung up left %v in the recipes directory (%v)", left, err)
 	}
 }
 
