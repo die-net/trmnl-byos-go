@@ -3,6 +3,7 @@ package adminui
 import (
 	"cmp"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"mime/multipart"
@@ -421,12 +422,30 @@ func (s *Server) instanceFromPath(w http.ResponseWriter, r *http.Request) (db.Pl
 	return fromPath(s, w, r, "get instance", noInstance, s.db.Read.GetInstance)
 }
 
-// renderInstanceDelete sends the confirm page for an instance, which has no
-// Remove button while a playlist shows the instance.
-func (s *Server) renderInstanceDelete(w http.ResponseWriter, r *http.Request, status int, inst *db.PluginInstance) {
-	rows, err := s.db.Read.ListPlaylistsOfInstance(r.Context(), inst.ID)
-	if err != nil {
-		serverError(w, r, "list instance playlists", err)
+// renderInstanceDelete sends the confirm page for the instance with the ID,
+// which has no Remove button while a playlist shows the instance. The
+// instance and its playlists are read in one snapshot, and an instance that
+// is gone gets the not-found page.
+func (s *Server) renderInstanceDelete(w http.ResponseWriter, r *http.Request, status int, id int64) {
+	ctx := r.Context()
+	var inst db.PluginInstance
+	var rows []db.ListPlaylistsOfInstanceRow
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if inst, err = q.GetInstance(ctx, id); err != nil {
+			return fmt.Errorf("get instance: %w", err)
+		}
+		if rows, err = q.ListPlaylistsOfInstance(ctx, id); err != nil {
+			return fmt.Errorf("list instance playlists: %w", err)
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		s.renderNotFound(w, r, noInstance)
+		return
+	case err != nil:
+		serverError(w, r, "read instance", err)
 		return
 	}
 	d := &instanceDeleteView{
@@ -441,11 +460,12 @@ func (s *Server) renderInstanceDelete(w http.ResponseWriter, r *http.Request, st
 // confirmRemoveInstance asks whether to remove an instance. It changes
 // nothing.
 func (s *Server) confirmRemoveInstance(w http.ResponseWriter, r *http.Request) {
-	inst, ok := s.instanceFromPath(w, r)
+	id, ok := idFromPath(r)
 	if !ok {
+		s.renderNotFound(w, r, noInstance)
 		return
 	}
-	s.renderInstanceDelete(w, r, http.StatusOK, &inst)
+	s.renderInstanceDelete(w, r, http.StatusOK, id)
 }
 
 // removeInstance removes an instance that no playlist shows.
@@ -454,7 +474,7 @@ func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !parseForm(w, r, func(status int, _ string) { s.renderInstanceDelete(w, r, status, &inst) }) {
+	if !parseForm(w, r, func(status int, _ string) { s.renderInstanceDelete(w, r, status, inst.ID) }) {
 		return
 	}
 	err := recipe.DeleteInstance(r.Context(), s.db, inst.ID)
@@ -466,7 +486,7 @@ func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, recipe.ErrInstanceInUse):
 		// The error's text only counts the items, so the page shows the
 		// playlists instead.
-		s.renderInstanceDelete(w, r, http.StatusConflict, &inst)
+		s.renderInstanceDelete(w, r, http.StatusConflict, inst.ID)
 	default:
 		serverError(w, r, "remove instance", err)
 	}

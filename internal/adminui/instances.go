@@ -1,7 +1,9 @@
 package adminui
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -35,16 +37,37 @@ type instanceState struct {
 	state string
 }
 
-// loadInstance reads what the instance's pages show. It reads the recipe's
-// settings file, so it is not called inside a transaction.
-func (s *Server) loadInstance(w http.ResponseWriter, r *http.Request, inst *db.PluginInstance) (*instanceState, bool) {
-	st := &instanceState{inst: *inst}
-	var err error
-	if st.rec, err = s.db.Read.GetRecipe(r.Context(), inst.RecipeID); err != nil {
-		serverError(w, r, "get recipe", err)
+// loadInstance reads what the pages of the instance the path names show. The
+// instance and its recipe are read in one snapshot, and either one gone gets
+// the not-found page. It reads the recipe's settings file, so it is not
+// called inside a transaction.
+func (s *Server) loadInstance(w http.ResponseWriter, r *http.Request) (*instanceState, bool) {
+	id, ok := idFromPath(r)
+	if !ok {
+		s.renderNotFound(w, r, noInstance)
 		return nil, false
 	}
-	var ok bool
+	ctx := r.Context()
+	st := &instanceState{}
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if st.inst, err = q.GetInstance(ctx, id); err != nil {
+			return fmt.Errorf("get instance: %w", err)
+		}
+		if st.rec, err = q.GetRecipe(ctx, st.inst.RecipeID); err != nil {
+			return fmt.Errorf("get recipe: %w", err)
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		s.renderNotFound(w, r, noInstance)
+		return nil, false
+	case err != nil:
+		serverError(w, r, "read instance", err)
+		return nil, false
+	}
+	inst := &st.inst
 	if st.fields, ok = s.recipeFields(w, r, inst.RecipeID); !ok {
 		return nil, false
 	}
@@ -70,15 +93,11 @@ func (st *instanceState) source(posted map[string][]string) *fieldSource {
 }
 
 func (s *Server) instancePage(w http.ResponseWriter, r *http.Request) {
-	inst, ok := s.instanceFromPath(w, r)
+	st, ok := s.loadInstance(w, r)
 	if !ok {
 		return
 	}
-	st, ok := s.loadInstance(w, r, &inst)
-	if !ok {
-		return
-	}
-	s.renderInstance(w, r, http.StatusOK, st, &instanceForm{Name: inst.Name, Palette: inst.Palette}, st.source(nil), "")
+	s.renderInstance(w, r, http.StatusOK, st, &instanceForm{Name: st.inst.Name, Palette: st.inst.Palette}, st.source(nil), "")
 }
 
 // renderInstance sends the edit page of an instance with the form's values,
@@ -113,14 +132,11 @@ const instanceChanged = "This instance changed after the page loaded, so nothing
 // page showed, so a save from a page that is out of date is refused instead
 // of undoing a change the page never showed.
 func (s *Server) saveInstance(w http.ResponseWriter, r *http.Request) {
-	inst, ok := s.instanceFromPath(w, r)
+	st, ok := s.loadInstance(w, r)
 	if !ok {
 		return
 	}
-	st, ok := s.loadInstance(w, r, &inst)
-	if !ok {
-		return
-	}
+	inst := &st.inst
 	form := &instanceForm{Name: inst.Name, Palette: inst.Palette}
 	if !parseFormLimit(w, r, maxInstanceFormBody, func(status int, msg string) { s.renderInstance(w, r, status, st, form, st.source(nil), msg) }) {
 		return
@@ -154,10 +170,7 @@ func (s *Server) saveInstance(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, recipe.ErrInstanceChanged):
 		// It changed after it was read above, so the page shows it as it
 		// is now.
-		if inst, ok = s.instanceFromPath(w, r); !ok {
-			return
-		}
-		if st, ok = s.loadInstance(w, r, &inst); !ok {
+		if st, ok = s.loadInstance(w, r); !ok {
 			return
 		}
 		src = st.source(r.PostForm)

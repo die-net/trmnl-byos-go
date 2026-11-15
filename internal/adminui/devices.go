@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -155,18 +156,22 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderDevices sends the devices page, with an error message above the
-// list if msg is not "".
+// list if msg is not "". The list and the join window are read in one
+// snapshot.
 func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, status int, msg string) {
-	rows, err := device.ListStatus(r.Context(), s.db.Read)
+	ctx := r.Context()
+	var rows []db.ListDeviceStatusRow
+	var until time.Time
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if rows, err = device.ListStatus(ctx, q); err != nil {
+			return err
+		}
+		until, err = device.JoinUntil(ctx, q)
+		return err
+	})
 	if err != nil {
-		slog.Error("admin ui: list devices", "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
-		return
-	}
-	until, err := device.JoinUntil(r.Context(), s.db.Read)
-	if err != nil {
-		slog.Error("admin ui: read join window", "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+		serverError(w, r, "read devices", err)
 		return
 	}
 	now := s.now()
@@ -356,11 +361,7 @@ func (s *Server) deviceFromPath(w http.ResponseWriter, r *http.Request) (db.Devi
 }
 
 func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
-	dev, ok := s.deviceFromPath(w, r)
-	if !ok {
-		return
-	}
-	s.renderDevice(w, r, http.StatusOK, &dev, nil, "", "")
+	s.renderDevice(w, r, http.StatusOK, r.PathValue("id"), nil, "", "")
 }
 
 // updateDevice saves the settings form. It checks the name and the pin
@@ -371,7 +372,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !parseForm(w, r, func(status int, msg string) { s.renderDevice(w, r, status, &dev, nil, msg, "") }) {
+	if !parseForm(w, r, func(status int, msg string) { s.renderDevice(w, r, status, dev.FriendlyID, nil, msg, "") }) {
 		return
 	}
 	form := deviceForm{
@@ -385,7 +386,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/devices/"+dev.FriendlyID, http.StatusSeeOther)
 	case errors.Is(err, errkind.ErrInvalid):
 		msg := strings.TrimPrefix(err.Error(), errkind.ErrInvalid.Error()+": ")
-		s.renderDevice(w, r, http.StatusBadRequest, &dev, &form, capitalize(msg)+".", "")
+		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, &form, capitalize(msg)+".", "")
 	default:
 		slog.Error("admin ui: save device", "device", dev.FriendlyID, "err", err)
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
@@ -414,26 +415,31 @@ func capitalize(msg string) string {
 	return strings.ToUpper(msg[:1]) + msg[1:]
 }
 
-// renderDevice sends the page of dev. A nil form shows the device's stored
-// settings, and a form is what was submitted. msg is an error to show above
-// the settings form, and listMsg one to show in the playlists panel, or "".
-// The page's reads are one snapshot, so the playlist it would show and the
-// playlists it lists agree.
-func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int, dev *db.Device, form *deviceForm, msg, listMsg string) {
+// renderDevice sends the page of the device that ref names, a friendly ID or
+// a MAC. A device that does not exist gets the not-found page. A nil form
+// shows the device's stored settings, and a form is what was submitted. msg
+// is an error to show above the settings form, and listMsg one to show in the
+// playlists panel, or "". The page's reads, the device's own row among them,
+// are one snapshot, so the playlist it would show and the playlists it lists
+// agree.
+func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int, ref string, form *deviceForm, msg, listMsg string) {
 	ctx := r.Context()
 	var row db.GetDeviceStatusRow
 	var items []db.ListDeviceItemsRow
 	var linked []db.Playlist
 	var catalog []firmware.Entry
 	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
-		var err error
-		if row, err = q.GetDeviceStatus(ctx, dev.ID); err != nil {
-			return fmt.Errorf("get device status: %w", err)
-		}
-		if items, err = playlist.ListDeviceItems(ctx, q, dev.ID); err != nil {
+		d, err := device.FindDevice(ctx, q, ref)
+		if err != nil {
 			return err
 		}
-		if linked, err = q.ListDevicePlaylists(ctx, dev.ID); err != nil {
+		if row, err = q.GetDeviceStatus(ctx, d.ID); err != nil {
+			return fmt.Errorf("get device status: %w", err)
+		}
+		if items, err = playlist.ListDeviceItems(ctx, q, d.ID); err != nil {
+			return err
+		}
+		if linked, err = q.ListDevicePlaylists(ctx, d.ID); err != nil {
 			return fmt.Errorf("list device playlists: %w", err)
 		}
 		if catalog, err = firmware.List(ctx, q); err != nil {
@@ -441,11 +447,15 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		}
 		return nil
 	})
-	if err != nil {
-		slog.Error("admin ui: read device page", "device", dev.FriendlyID, "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+	switch {
+	case errors.Is(err, device.ErrNoDevice) || errors.Is(err, sql.ErrNoRows):
+		s.renderNotFound(w, r, noDevice)
+		return
+	case err != nil:
+		serverError(w, r, "read device page", err)
 		return
 	}
+	dev := &row.Device
 	now := s.now().In(s.zone)
 	d := &deviceDetail{
 		View:        s.newDeviceView((*db.ListDeviceStatusRow)(&row), now),
@@ -522,7 +532,7 @@ func (s *Server) moveDevicePlaylist(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	refuse := func(status int, msg string) { s.renderDevice(w, r, status, &dev, nil, "", msg) }
+	refuse := func(status int, msg string) { s.renderDevice(w, r, status, dev.FriendlyID, nil, "", msg) }
 	if !parseForm(w, r, refuse) {
 		return
 	}
