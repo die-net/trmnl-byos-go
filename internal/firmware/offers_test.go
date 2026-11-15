@@ -316,3 +316,122 @@ func TestOfferableCaps(t *testing.T) {
 		}
 	}
 }
+
+// TestDeviceOffersBuilds checks the listing of each of several builds of a
+// model against Offer and OfferAndRecord, which send the device the newest
+// build that qualifies and has its file, whichever build is listed.
+func TestDeviceOffersBuilds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// setup adds 1.8.18 and 1.8.19, and returns them with the device to
+		// look at.
+		setup func(f *fixture) (older, newer db.Firmware, target string)
+		// want is the reason for each build, and insteadNewer is whether the
+		// older build's listing names the newer one.
+		wantOlder, wantNewer Reason
+		insteadNewer         bool
+		// sent is the build that is offered: "older", "newer" or "".
+		sent string
+	}{
+		{"both active", func(f *fixture) (db.Firmware, db.Firmware, string) {
+			older, newer := f.add("1.8.18"), f.add("1.8.19")
+			f.start(older)
+			f.start(newer)
+			return older, newer, canaryID
+		}, ReasonNewerBuild, "", true, "newer"},
+		{"newer file missing", func(f *fixture) (db.Firmware, db.Firmware, string) {
+			older, newer := f.add("1.8.18"), f.add("1.8.19")
+			f.start(older)
+			f.start(newer)
+			if err := os.Remove(Path(f.dir, newer.Sha256)); err != nil {
+				f.t.Fatal(err)
+			}
+			return older, newer, canaryID
+		}, "", ReasonFileMissing, false, "older"},
+		{"offer cap reached on the newer", func(f *fixture) (db.Firmware, db.Firmware, string) {
+			older, newer := f.add("1.8.18"), f.add("1.8.19")
+			f.start(older)
+			f.start(newer)
+			f.setVersion(canaryID, "1.8.19")
+			f.offered(otherID, newer, MaxOffers)
+			return older, newer, otherID
+		}, "", ReasonCapReached, false, "older"},
+		{"newer canceled", func(f *fixture) (db.Firmware, db.Firmware, string) {
+			older, newer := f.add("1.8.18"), f.add("1.8.19")
+			f.start(older)
+			f.start(newer)
+			if err := CancelRollout(f.t.Context(), f.client, newer.ID); err != nil {
+				f.t.Fatal(err)
+			}
+			return older, newer, canaryID
+		}, "", ReasonCanceled, false, "older"},
+		{"newer waits for its canary", func(f *fixture) (db.Firmware, db.Firmware, string) {
+			older, newer := f.add("1.8.18"), f.add("1.8.19")
+			if _, err := StartRollout(f.t.Context(), f.client, older.ID, otherID, testNow); err != nil {
+				f.t.Fatal(err)
+			}
+			f.start(newer)
+			return older, newer, otherID
+		}, "", ReasonWaitingForCanary, false, "older"},
+		{"newer never rolled out", func(f *fixture) (db.Firmware, db.Firmware, string) {
+			older, newer := f.add("1.8.18"), f.add("1.8.19")
+			f.start(older)
+			return older, newer, canaryID
+		}, "", ReasonNoRollout, false, "older"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
+			f.device(otherID, "AA:00:00:00:00:02", testModel, "1.8.17")
+			older, newer, target := tc.setup(f)
+			dev, err := device.FindDevice(t.Context(), f.client.Read, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			offer, err := Offer(t.Context(), f.client.Read, f.dir, &dev, dev.FwModel, dev.FwVersion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent := map[string]*db.Firmware{"older": &older, "newer": &newer, "": nil}[tc.sent]
+			if (offer == nil) != (sent == nil) || (offer != nil && offer.ID != sent.ID) {
+				t.Fatalf("Offer = %v, want the %q build", offer, tc.sent)
+			}
+
+			for _, b := range []struct {
+				fw      db.Firmware
+				want    Reason
+				instead int64
+			}{{older, tc.wantOlder, map[bool]int64{true: newer.ID}[tc.insteadNewer]}, {newer, tc.wantNewer, 0}} {
+				rows, err := DeviceOffers(t.Context(), f.client.Read, f.dir, b.fw.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got *DeviceOffer
+				for i := range rows {
+					if rows[i].FriendlyID == target {
+						got = &rows[i]
+					}
+				}
+				if got == nil {
+					t.Fatalf("%s is not listed for %s", target, b.fw.Version)
+				}
+				if got.Reason != b.want || got.Instead != b.instead {
+					t.Errorf("%s: reason %q instead %d (%s), want %q and %d", b.fw.Version, got.Reason, got.Instead, got.Why, b.want, b.instead)
+				}
+				if offered := offer != nil && offer.ID == b.fw.ID; offered != (got.Reason == "") {
+					t.Errorf("%s: Offer sends it = %v, but the reason is %q", b.fw.Version, offered, got.Reason)
+				}
+			}
+
+			rec, err := OfferAndRecord(t.Context(), f.client, f.dir, &dev, dev.FwModel, dev.FwVersion, testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (rec == nil) != (offer == nil) || (rec != nil && rec.ID != offer.ID) {
+				t.Errorf("OfferAndRecord = %v, Offer = %v", rec, offer)
+			}
+		})
+	}
+}

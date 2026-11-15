@@ -60,6 +60,21 @@ LEFT JOIN firmware_offer co ON co.firmware_id = firmware.id AND co.device_id = r
 LEFT JOIN firmware_offer o ON o.firmware_id = firmware.id AND o.device_id = sqlc.arg(device_id)
 WHERE firmware.fw_model = sqlc.arg(fw_model);
 
+-- name: ListActiveFirmwareOffers :many
+-- The builds of a model in an active rollout, with the canary device's
+-- model, version and offer count, once for each device that was offered the
+-- build, with its offer count. A build nobody was offered has one row with no
+-- device.
+SELECT sqlc.embed(firmware), r.canary_device_id, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  CAST(COALESCE(co.offers, 0) AS INTEGER) AS canary_offers,
+  o.device_id AS offered_device_id, o.offers AS offered_offers
+FROM firmware
+JOIN firmware_rollout r ON r.firmware_id = firmware.id AND r.state = 'active'
+JOIN device c ON c.id = r.canary_device_id
+LEFT JOIN firmware_offer co ON co.firmware_id = firmware.id AND co.device_id = r.canary_device_id
+LEFT JOIN firmware_offer o ON o.firmware_id = firmware.id
+WHERE firmware.fw_model = ?;
+
 -- name: RecordFirmwareOffer :exec
 INSERT INTO firmware_offer (device_id, firmware_id, offers, last_offered_at)
 VALUES (?, ?, 1, ?)
