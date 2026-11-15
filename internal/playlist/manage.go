@@ -6,24 +6,69 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
+// MaxNameBytes is the longest a playlist's name may be.
+const MaxNameBytes = 64
+
 // CleanName returns a playlist name without the space around it, or an error
-// of kind errkind.ErrInvalid if it is empty, or is too long, is not UTF-8 or
-// has a control character, as device.CleanName checks.
+// of kind errkind.ErrInvalid if it is empty, is over MaxNameBytes, is not
+// UTF-8, or has a control character such as a newline.
 func CleanName(name string) (string, error) {
-	name, err := device.CleanName(name)
-	if err != nil {
-		return "", err
-	}
-	if name == "" {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "":
 		return "", fmt.Errorf("%w: name is empty", errkind.ErrInvalid)
+	case len(name) > MaxNameBytes:
+		return "", fmt.Errorf("%w: name is over %d bytes", errkind.ErrInvalid, MaxNameBytes)
+	case !utf8.ValidString(name):
+		return "", fmt.Errorf("%w: name is not valid UTF-8", errkind.ErrInvalid)
+	case strings.ContainsFunc(name, unicode.IsControl):
+		return "", fmt.Errorf("%w: name has a control character", errkind.ErrInvalid)
 	}
 	return name, nil
+}
+
+// Ref names a playlist by its ID, or by its name when ID is 0. It is resolved
+// inside the transaction that uses it, so the playlist it means is the one
+// that is changed.
+type Ref struct {
+	ID   int64
+	Name string
+}
+
+// ByID returns a Ref to the playlist with the ID.
+func ByID(id int64) Ref { return Ref{ID: id} }
+
+// ByName returns a Ref to the playlist with the name, as it is stored.
+func ByName(name string) Ref { return Ref{Name: name} }
+
+// resolve returns the playlist r names, or an error wrapping ErrNoPlaylist. It
+// runs with q inside a transaction.
+func (r Ref) resolve(ctx context.Context, q *db.Queries) (db.Playlist, error) {
+	var pl db.Playlist
+	var err error
+	label := strconv.FormatInt(r.ID, 10)
+	if r.ID != 0 {
+		pl, err = q.GetPlaylist(ctx, r.ID)
+	} else {
+		label = strconv.Quote(r.Name)
+		pl, err = q.GetPlaylistByName(ctx, r.Name)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.Playlist{}, fmt.Errorf("%w: %s", ErrNoPlaylist, label)
+	} else if err != nil {
+		return db.Playlist{}, fmt.Errorf("get playlist: %w", err)
+	}
+	return pl, nil
 }
 
 // CreatePlaylist makes an empty playlist with the name, checked by CleanName.
@@ -70,12 +115,12 @@ type Update struct {
 	Schedule *ScheduleEdit
 }
 
-// UpdatePlaylist applies the update to a playlist in one transaction.
+// UpdatePlaylist applies the update to the playlist ref names in one transaction.
 // Nothing changes if any part of it is refused. It returns an error wrapping
 // ErrNoPlaylist if there is no such playlist, ErrNameTaken if another
 // playlist has the new name, and one wrapping errkind.ErrInvalid if a part of
 // the update is not acceptable. Renaming a playlist to its own name is fine.
-func UpdatePlaylist(ctx context.Context, client *db.Client, id int64, u Update) error {
+func UpdatePlaylist(ctx context.Context, client *db.Client, ref Ref, u Update) error {
 	var name string
 	if u.Name != nil {
 		var err error
@@ -84,7 +129,7 @@ func UpdatePlaylist(ctx context.Context, client *db.Client, id int64, u Update) 
 		}
 	}
 	return client.InTx(ctx, func(q *db.Queries) error {
-		pl, err := getPlaylist(ctx, q, id)
+		pl, err := ref.resolve(ctx, q)
 		if err != nil {
 			return err
 		}
@@ -96,10 +141,10 @@ func UpdatePlaylist(ctx context.Context, client *db.Client, id int64, u Update) 
 			}
 		}
 		if u.Name != nil {
-			if err := checkNameFree(ctx, q, name, id); err != nil {
+			if err := checkNameFree(ctx, q, name, pl.ID); err != nil {
 				return err
 			}
-			if err := q.UpdatePlaylistName(ctx, db.UpdatePlaylistNameParams{Name: name, ID: id}); err != nil {
+			if err := q.UpdatePlaylistName(ctx, db.UpdatePlaylistNameParams{Name: name, ID: pl.ID}); err != nil {
 				return fmt.Errorf("rename playlist: %w", err)
 			}
 		}
@@ -107,7 +152,7 @@ func UpdatePlaylist(ctx context.Context, client *db.Client, id int64, u Update) 
 			return nil
 		}
 		err = q.UpdatePlaylistSchedule(ctx, db.UpdatePlaylistScheduleParams{
-			Days: s.Days, WindowStart: s.WindowStart, WindowEnd: s.WindowEnd, StartsAt: s.StartsAt, EndsAt: s.EndsAt, ID: id,
+			Days: s.Days, WindowStart: s.WindowStart, WindowEnd: s.WindowEnd, StartsAt: s.StartsAt, EndsAt: s.EndsAt, ID: pl.ID,
 		})
 		if err != nil {
 			return fmt.Errorf("update playlist: %w", err)
@@ -116,26 +161,17 @@ func UpdatePlaylist(ctx context.Context, client *db.Client, id int64, u Update) 
 	})
 }
 
-// getPlaylist returns the playlist, or an error wrapping ErrNoPlaylist.
-func getPlaylist(ctx context.Context, q *db.Queries, id int64) (db.Playlist, error) {
-	pl, err := q.GetPlaylist(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return db.Playlist{}, fmt.Errorf("%w: %d", ErrNoPlaylist, id)
-	} else if err != nil {
-		return db.Playlist{}, fmt.Errorf("get playlist: %w", err)
-	}
-	return pl, nil
-}
-
 // DeletePlaylist removes a playlist with its items, slots and device links,
 // and renumbers the priorities of every device that was linked to it so they
 // stay 0 to n-1. It returns an error wrapping ErrNoPlaylist if there is no
 // such playlist.
-func DeletePlaylist(ctx context.Context, client *db.Client, id int64) error {
+func DeletePlaylist(ctx context.Context, client *db.Client, ref Ref) error {
 	return client.InTx(ctx, func(q *db.Queries) error {
-		if _, err := getPlaylist(ctx, q, id); err != nil {
+		pl, err := ref.resolve(ctx, q)
+		if err != nil {
 			return err
 		}
+		id := pl.ID
 		// The links of the devices on it close up around it: one statement
 		// moves their priorities out of range, and one ranks the rest.
 		if err := q.NegatePlaylistDevicesPriorities(ctx, id); err != nil {
@@ -168,24 +204,25 @@ func renumberLinks(ctx context.Context, q *db.Queries, deviceID, moved, from, to
 	return nil
 }
 
-// LinkDevice links a device to a playlist, last in the device's order, if it
+// LinkDevice links a device, named by friendly ID or MAC, to a playlist, last in the device's order, if it
 // is not linked, and then, if priority is not nil, moves the link to that
 // index in the device's order, which shifts the links between its old and new
 // place by one. A device that is linked already and a nil priority leave
 // everything as it is. It returns an error wrapping ErrNoPlaylist or
-// device.ErrNoDevice for an ID that matches nothing, and one wrapping
+// device.ErrNoDevice for a name that matches nothing, and one wrapping
 // errkind.ErrInvalid if priority is not in 0 to n-1 for the n links the
 // device has once this one is added, in which case no link is made.
-func LinkDevice(ctx context.Context, client *db.Client, playlistID, deviceID int64, priority *int64) error {
+func LinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName string, priority *int64) error {
 	return client.InTx(ctx, func(q *db.Queries) error {
-		if _, err := getPlaylist(ctx, q, playlistID); err != nil {
+		pl, err := ref.resolve(ctx, q)
+		if err != nil {
 			return err
 		}
-		if _, err := q.GetDevice(ctx, deviceID); errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: %d", device.ErrNoDevice, deviceID)
-		} else if err != nil {
-			return fmt.Errorf("get device: %w", err)
+		dev, err := device.FindDevice(ctx, q, deviceName)
+		if err != nil {
+			return err
 		}
+		playlistID, deviceID := pl.ID, dev.ID
 		ids, err := q.ListDevicePlaylistIDs(ctx, deviceID)
 		if err != nil {
 			return fmt.Errorf("list links: %w", err)
@@ -211,12 +248,22 @@ func LinkDevice(ctx context.Context, client *db.Client, playlistID, deviceID int
 	})
 }
 
-// UnlinkDevice removes a device's link to a playlist and renumbers the
-// device's remaining links so priorities stay 0 to n-1. It returns an error
-// wrapping ErrNotLinked if there is no such link, which includes an ID that
-// matches nothing.
-func UnlinkDevice(ctx context.Context, client *db.Client, playlistID, deviceID int64) error {
+// UnlinkDevice removes the link between a playlist and a device, named by
+// friendly ID or MAC, and renumbers the device's remaining links so
+// priorities stay 0 to n-1. It returns an error wrapping ErrNoPlaylist or
+// device.ErrNoDevice for a name that matches nothing, and one wrapping
+// ErrNotLinked if there is no such link.
+func UnlinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName string) error {
 	return client.InTx(ctx, func(q *db.Queries) error {
+		pl, err := ref.resolve(ctx, q)
+		if err != nil {
+			return err
+		}
+		dev, err := device.FindDevice(ctx, q, deviceName)
+		if err != nil {
+			return err
+		}
+		playlistID, deviceID := pl.ID, dev.ID
 		n, err := q.DeletePlaylistDevice(ctx, db.DeletePlaylistDeviceParams{DeviceID: deviceID, PlaylistID: playlistID})
 		if err != nil {
 			return fmt.Errorf("unlink device: %w", err)

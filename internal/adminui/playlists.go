@@ -234,42 +234,49 @@ func idFromPath(r *http.Request) (int64, bool) {
 }
 
 // playlistViews describes every playlist with its devices and items, from
-// three list queries however many there are.
+// three list queries however many there are, read in one snapshot.
 func (s *Server) playlistViews(ctx context.Context) ([]playlistView, error) {
-	lists, err := s.db.Read.ListPlaylists(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list playlists: %w", err)
-	}
-	devs, err := s.db.Read.ListPlaylistDevices(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list playlist devices: %w", err)
-	}
-	items, err := s.db.Read.ListPlaylistItems(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list playlist items: %w", err)
-	}
+	var views []playlistView
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		lists, err := q.ListPlaylists(ctx)
+		if err != nil {
+			return fmt.Errorf("list playlists: %w", err)
+		}
+		devs, err := q.ListPlaylistDevices(ctx)
+		if err != nil {
+			return fmt.Errorf("list playlist devices: %w", err)
+		}
+		items, err := q.ListPlaylistItems(ctx)
+		if err != nil {
+			return fmt.Errorf("list playlist items: %w", err)
+		}
+		views = s.buildPlaylistViews(lists, devs, items)
+		return nil
+	})
+	return views, err
+}
+
+// buildPlaylistViews describes the playlists, each with the device and item
+// rows that name it by ID. A row whose playlist is not in lists is skipped.
+func (s *Server) buildPlaylistViews(lists []db.Playlist, devs []db.ListPlaylistDevicesRow, items []db.ListPlaylistItemsRow) []playlistView {
 	out := make([]playlistView, len(lists))
-	byName := make(map[string]*playlistView, len(lists))
+	byID := make(map[int64]*playlistView, len(lists))
 	for i, l := range lists {
 		sc := playlist.Schedule{Days: l.Days, WindowStart: l.WindowStart, WindowEnd: l.WindowEnd, StartsAt: l.StartsAt, EndsAt: l.EndsAt}
 		out[i] = playlistView{ID: l.ID, Name: l.Name, Schedule: s.describeSchedule(sc), Href: "/playlists/" + strconv.FormatInt(l.ID, 10)}
-		byName[l.Name] = &out[i]
+		byID[l.ID] = &out[i]
 	}
 	for _, d := range devs {
 		name := d.DeviceName
 		if name == "" {
 			name = d.FriendlyID
 		}
-		// The three reads are not one snapshot, so a row may name a playlist
-		// made after the first.
-		p := byName[d.Playlist]
-		if p == nil {
-			continue
+		if p := byID[d.PlaylistID]; p != nil {
+			p.Devices = append(p.Devices, playlistDeviceView{Name: name, Href: "/devices/" + d.FriendlyID})
 		}
-		p.Devices = append(p.Devices, playlistDeviceView{Name: name, Href: "/devices/" + d.FriendlyID})
 	}
 	for _, it := range items {
-		p := byName[it.Playlist]
+		p := byID[it.PlaylistID]
 		if p == nil {
 			continue
 		}
@@ -289,7 +296,7 @@ func (s *Server) playlistViews(ctx context.Context) ([]playlistView, error) {
 			out[i].Items[j].CanDown = j < len(out[i].Items)-1
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (s *Server) playlists(w http.ResponseWriter, r *http.Request) {
@@ -517,7 +524,7 @@ func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	sched, edit, err := s.scheduleFromPost(r)
 	if err == nil {
-		err = playlist.UpdatePlaylist(r.Context(), s.db, pl.ID, playlist.Update{Schedule: edit})
+		err = playlist.UpdatePlaylist(r.Context(), s.db, playlist.ByID(pl.ID), playlist.Update{Schedule: edit})
 	}
 	switch {
 	case err == nil:
@@ -553,7 +560,7 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) {
 		dur, err = parseSeconds(add.Duration)
 	}
 	if err == nil {
-		_, _, err = playlist.AddItem(r.Context(), s.db, pl.Name, 0, instance, dur)
+		_, _, err = playlist.AddItem(r.Context(), s.db, pl.Name, "", instance, dur)
 	}
 	switch {
 	case err == nil:

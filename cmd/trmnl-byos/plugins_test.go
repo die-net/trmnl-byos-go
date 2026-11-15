@@ -43,7 +43,7 @@ func playlistFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	for range 3 {
-		if _, _, err := playlist.AddItem(t.Context(), client, "p", 0, inst.ID, playlist.DefaultDuration); err != nil {
+		if _, _, err := playlist.AddItem(t.Context(), client, "p", "", inst.ID, playlist.DefaultDuration); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -318,6 +318,9 @@ func TestPlaylistManage(t *testing.T) {
 		{"link missing playlist", []string{"link", "nope", "ABC001"}, playlist.ErrNoPlaylist},
 		{"link missing device", []string{"link", "p", "ZZZ999"}, device.ErrNoDevice},
 		{"link bad priority", []string{"link", "p", "ABC001", "-priority", "3"}, errkind.ErrInvalid},
+		{"unlink missing device", []string{"unlink", "p", "ZZZ999"}, device.ErrNoDevice},
+		{"unlink missing playlist", []string{"unlink", "nope", "ABC001"}, playlist.ErrNoPlaylist},
+		{"schedule missing playlist", []string{"schedule", "nope", "-days", "mon"}, playlist.ErrNoPlaylist},
 		{"unlink not linked", []string{"unlink", "p", "ABC002"}, playlist.ErrNotLinked},
 	} {
 		_, err := runPlaylist(t, dir, tc.args...)

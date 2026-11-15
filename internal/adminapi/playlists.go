@@ -2,11 +2,12 @@ package adminapi
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
 
-	"github.com/die-net/trmnl-byos-go/internal/device"
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 )
 
@@ -99,42 +100,100 @@ func (s *Server) listPlaylists(_ http.ResponseWriter, r *http.Request) ([]playli
 	return s.playlistsJSON(r.Context())
 }
 
-// playlistsJSON describes every playlist, with its devices and items.
+// playlistsJSON describes every playlist, with its devices and items, from
+// one snapshot of the database.
 func (s *Server) playlistsJSON(ctx context.Context) ([]playlistJSON, error) {
-	lists, err := s.db.Read.ListPlaylists(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list playlists: %w", err)
+	var out []playlistJSON
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		lists, err := q.ListPlaylists(ctx)
+		if err != nil {
+			return fmt.Errorf("list playlists: %w", err)
+		}
+		devs, err := q.ListPlaylistDevices(ctx)
+		if err != nil {
+			return fmt.Errorf("list playlist devices: %w", err)
+		}
+		items, err := q.ListPlaylistItems(ctx)
+		if err != nil {
+			return fmt.Errorf("list playlist items: %w", err)
+		}
+		out = buildPlaylists(lists, devs, items)
+		return nil
+	})
+	return out, err
+}
+
+// playlistOf describes one playlist, with its devices and items, as of the
+// transaction q reads in. It returns an error wrapping playlist.ErrNoPlaylist
+// if there is none.
+func playlistOf(ctx context.Context, q *db.Queries, id int64) (playlistJSON, error) {
+	pl, err := q.GetPlaylist(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return playlistJSON{}, fmt.Errorf("%w: %d", playlist.ErrNoPlaylist, id)
+	} else if err != nil {
+		return playlistJSON{}, fmt.Errorf("get playlist: %w", err)
 	}
-	devs, err := s.db.Read.ListPlaylistDevices(ctx)
+	devRows, err := q.ListPlaylistDevicesOf(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("list playlist devices: %w", err)
+		return playlistJSON{}, fmt.Errorf("list playlist devices: %w", err)
 	}
-	items, err := s.db.Read.ListPlaylistItems(ctx)
+	devs := make([]db.ListPlaylistDevicesRow, len(devRows))
+	for i, d := range devRows {
+		devs[i] = db.ListPlaylistDevicesRow(d)
+	}
+	itemRows, err := q.ListPlaylistItemsOf(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("list playlist items: %w", err)
+		return playlistJSON{}, fmt.Errorf("list playlist items: %w", err)
 	}
+	items := make([]db.ListPlaylistItemsRow, len(itemRows))
+	for i, it := range itemRows {
+		items[i] = db.ListPlaylistItemsRow(it)
+	}
+	return buildPlaylists([]db.Playlist{pl}, devs, items)[0], nil
+}
+
+// playlistByID describes one playlist from one snapshot, or returns an error
+// wrapping playlist.ErrNoPlaylist if there is none.
+func (s *Server) playlistByID(ctx context.Context, id int64) (playlistJSON, error) {
+	var out playlistJSON
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		out, err = playlistOf(ctx, q, id)
+		return err
+	})
+	return out, err
+}
+
+// buildPlaylists describes the playlists, each with the device and item rows
+// that name it by ID. A row whose playlist is not in lists is skipped, which
+// is what a snapshot that is not one would give.
+func buildPlaylists(lists []db.Playlist, devs []db.ListPlaylistDevicesRow, items []db.ListPlaylistItemsRow) []playlistJSON {
 	out := make([]playlistJSON, 0, len(lists))
-	byName := make(map[string]*playlistJSON, len(lists))
 	for _, l := range lists {
 		sched := playlist.Schedule{Days: l.Days, WindowStart: l.WindowStart, WindowEnd: l.WindowEnd, StartsAt: l.StartsAt, EndsAt: l.EndsAt}
 		out = append(out, playlistJSON{ID: l.ID, Name: l.Name, Schedule: newScheduleJSON(sched), Devices: []playlistDeviceJSON{}, Items: []playlistItemJSON{}})
 	}
+	byID := make(map[int64]*playlistJSON, len(out))
 	for i := range out {
-		byName[out[i].Name] = &out[i]
+		byID[out[i].ID] = &out[i]
 	}
 	for _, d := range devs {
-		p := byName[d.Playlist]
-		p.Devices = append(p.Devices, playlistDeviceJSON{Device: d.FriendlyID, Priority: d.Priority})
+		if p := byID[d.PlaylistID]; p != nil {
+			p.Devices = append(p.Devices, playlistDeviceJSON{Device: d.FriendlyID, Priority: d.Priority})
+		}
 	}
 	for _, it := range items {
-		p := byName[it.Playlist]
+		p := byID[it.PlaylistID]
+		if p == nil {
+			continue
+		}
 		sched := playlist.Schedule{Days: it.Days, WindowStart: it.WindowStart, WindowEnd: it.WindowEnd, StartsAt: it.StartsAt, EndsAt: it.EndsAt}
 		p.Items = append(p.Items, playlistItemJSON{
 			ID: it.ID, Position: it.Position, DurationSeconds: it.Duration, Hidden: it.Hidden != 0, Schedule: newScheduleJSON(sched),
 			InstanceID: it.InstanceID, InstanceName: it.InstanceName,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // addItemRequest is the body of a playlist item create request. It needs a
@@ -171,15 +230,7 @@ func (s *Server) addPlaylistItem(w http.ResponseWriter, r *http.Request) (addIte
 		}
 	}
 	ctx := r.Context()
-	var deviceID int64
-	if req.Device != "" {
-		dev, err := device.FindDevice(ctx, s.db.Read, req.Device)
-		if err != nil {
-			return addItemResponse{}, err
-		}
-		deviceID = dev.ID
-	}
-	item, name, err := playlist.AddItem(ctx, s.db, req.Playlist, deviceID, req.InstanceID, dur)
+	item, name, err := playlist.AddItem(ctx, s.db, req.Playlist, req.Device, req.InstanceID, dur)
 	if err != nil {
 		return addItemResponse{}, err
 	}
@@ -192,21 +243,6 @@ func (s *Server) deletePlaylistItem(r *http.Request) error {
 		return err
 	}
 	return playlist.DeleteItem(r.Context(), s.db, id)
-}
-
-// playlistByID describes one playlist, or returns an error wrapping
-// playlist.ErrNoPlaylist if there is none.
-func (s *Server) playlistByID(ctx context.Context, id int64) (playlistJSON, error) {
-	lists, err := s.playlistsJSON(ctx)
-	if err != nil {
-		return playlistJSON{}, err
-	}
-	for i := range lists {
-		if lists[i].ID == id {
-			return lists[i], nil
-		}
-	}
-	return playlistJSON{}, fmt.Errorf("%w: %d", playlist.ErrNoPlaylist, id)
 }
 
 // createPlaylistRequest is the body of a playlist create request.
@@ -232,7 +268,7 @@ func (s *Server) deletePlaylist(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return playlist.DeletePlaylist(r.Context(), s.db, id)
+	return playlist.DeletePlaylist(r.Context(), s.db, playlist.ByID(id))
 }
 
 // patchPlaylistRequest is the body of a playlist update request. A field
@@ -259,7 +295,7 @@ func (s *Server) patchPlaylist(w http.ResponseWriter, r *http.Request) (playlist
 			return playlistJSON{}, err
 		}
 	}
-	if err := playlist.UpdatePlaylist(r.Context(), s.db, id, u); err != nil {
+	if err := playlist.UpdatePlaylist(r.Context(), s.db, playlist.ByID(id), u); err != nil {
 		return playlistJSON{}, err
 	}
 	return s.playlistByID(r.Context(), id)
@@ -282,28 +318,18 @@ func (s *Server) linkPlaylistDevice(w http.ResponseWriter, r *http.Request) (pla
 		return playlistJSON{}, err
 	}
 	ctx := r.Context()
-	dev, err := device.FindDevice(ctx, s.db.Read, r.PathValue("device"))
-	if err != nil {
-		return playlistJSON{}, err
-	}
-	if err := playlist.LinkDevice(ctx, s.db, id, dev.ID, req.Priority); err != nil {
+	if err := playlist.LinkDevice(ctx, s.db, playlist.ByID(id), r.PathValue("device"), req.Priority); err != nil {
 		return playlistJSON{}, err
 	}
 	return s.playlistByID(ctx, id)
 }
 
 func (s *Server) unlinkPlaylistDevice(r *http.Request) error {
-	id, err := pathID(r, playlist.ErrNotLinked)
+	id, err := pathID(r, playlist.ErrNoPlaylist)
 	if err != nil {
 		return err
 	}
-	dev, err := device.FindDevice(r.Context(), s.db.Read, r.PathValue("device"))
-	if errors.Is(err, device.ErrNoDevice) {
-		return fmt.Errorf("%w: %s", playlist.ErrNotLinked, r.PathValue("device"))
-	} else if err != nil {
-		return err
-	}
-	return playlist.UnlinkDevice(r.Context(), s.db, id, dev.ID)
+	return playlist.UnlinkDevice(r.Context(), s.db, playlist.ByID(id), r.PathValue("device"))
 }
 
 // patchItemRequest is the body of a playlist item update request. A field
@@ -342,16 +368,25 @@ func (s *Server) patchPlaylistItem(w http.ResponseWriter, r *http.Request) (play
 	if err := playlist.UpdateItem(r.Context(), s.db, id, u); err != nil {
 		return playlistItemJSON{}, err
 	}
-	lists, err := s.playlistsJSON(r.Context())
-	if err != nil {
-		return playlistItemJSON{}, err
-	}
-	for i := range lists {
-		for j := range lists[i].Items {
-			if lists[i].Items[j].ID == id {
-				return lists[i].Items[j], nil
+	var out playlistItemJSON
+	err = s.db.ReadTx(r.Context(), func(q *db.Queries) error {
+		item, err := q.GetPlaylistItem(r.Context(), id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %d", playlist.ErrNoItem, id)
+		} else if err != nil {
+			return fmt.Errorf("get item: %w", err)
+		}
+		pl, err := playlistOf(r.Context(), q, item.PlaylistID)
+		if err != nil {
+			return err
+		}
+		for i := range pl.Items {
+			if pl.Items[i].ID == id {
+				out = pl.Items[i]
+				return nil
 			}
 		}
-	}
-	return playlistItemJSON{}, fmt.Errorf("%w: %d", playlist.ErrNoItem, id)
+		return fmt.Errorf("%w: %d", playlist.ErrNoItem, id)
+	})
+	return out, err
 }
