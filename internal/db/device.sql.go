@@ -179,7 +179,7 @@ func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDevic
 }
 
 const getDeviceStatus = `-- name: GetDeviceStatus :one
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 WHERE device.id = ?
@@ -193,6 +193,9 @@ type GetDeviceStatusRow struct {
 	WakeTimeMs          *int64   `json:"wake_time_ms"`
 	UpdateSource        *string  `json:"update_source"`
 	LastRefreshRateSent *int64   `json:"last_refresh_rate_sent"`
+	LastImage           *string  `json:"last_image"`
+	Width               *int64   `json:"width"`
+	Height              *int64   `json:"height"`
 }
 
 func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatusRow, error) {
@@ -217,12 +220,15 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 		&i.WakeTimeMs,
 		&i.UpdateSource,
 		&i.LastRefreshRateSent,
+		&i.LastImage,
+		&i.Width,
+		&i.Height,
 	)
 	return i, err
 }
 
 const listDeviceStatus = `-- name: ListDeviceStatus :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 ORDER BY device.name, device.id
@@ -236,6 +242,9 @@ type ListDeviceStatusRow struct {
 	WakeTimeMs          *int64   `json:"wake_time_ms"`
 	UpdateSource        *string  `json:"update_source"`
 	LastRefreshRateSent *int64   `json:"last_refresh_rate_sent"`
+	LastImage           *string  `json:"last_image"`
+	Width               *int64   `json:"width"`
+	Height              *int64   `json:"height"`
 }
 
 func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, error) {
@@ -266,6 +275,9 @@ func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, 
 			&i.WakeTimeMs,
 			&i.UpdateSource,
 			&i.LastRefreshRateSent,
+			&i.LastImage,
+			&i.Width,
+			&i.Height,
 		); err != nil {
 			return nil, err
 		}
@@ -312,6 +324,20 @@ type SetDeviceCursorParams struct {
 // says nothing about whether the device has woken.
 func (q *Queries) SetDeviceCursor(ctx context.Context, arg SetDeviceCursorParams) error {
 	_, err := q.db.ExecContext(ctx, setDeviceCursor, arg.DeviceID, arg.ItemID, arg.ItemStartedAt)
+	return err
+}
+
+const setDeviceName = `-- name: SetDeviceName :exec
+UPDATE device SET name = ? WHERE id = ?
+`
+
+type SetDeviceNameParams struct {
+	Name string `json:"name"`
+	ID   int64  `json:"id"`
+}
+
+func (q *Queries) SetDeviceName(ctx context.Context, arg SetDeviceNameParams) error {
+	_, err := q.db.ExecContext(ctx, setDeviceName, arg.Name, arg.ID)
 	return err
 }
 

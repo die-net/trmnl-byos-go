@@ -26,7 +26,7 @@ DELETE FROM playlist_item WHERE id = ?;
 -- name: ListDeviceItems :many
 -- The items of the playlist a device shows, in order, with the instance in
 -- each item's first slot.
-SELECT playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette
+SELECT playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette, plugin_instance.name AS instance_name
 FROM playlist_item
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id

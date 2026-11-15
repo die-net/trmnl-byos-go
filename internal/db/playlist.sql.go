@@ -107,7 +107,7 @@ func (q *Queries) LinkPlaylistDevice(ctx context.Context, arg LinkPlaylistDevice
 }
 
 const listDeviceItems = `-- name: ListDeviceItems :many
-SELECT playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette
+SELECT playlist_item.id, playlist_item.duration, playlist_slot.instance_id, plugin_instance.palette, plugin_instance.name AS instance_name
 FROM playlist_item
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
@@ -121,10 +121,11 @@ ORDER BY playlist_item.position
 `
 
 type ListDeviceItemsRow struct {
-	ID         int64  `json:"id"`
-	Duration   int64  `json:"duration"`
-	InstanceID int64  `json:"instance_id"`
-	Palette    string `json:"palette"`
+	ID           int64  `json:"id"`
+	Duration     int64  `json:"duration"`
+	InstanceID   int64  `json:"instance_id"`
+	Palette      string `json:"palette"`
+	InstanceName string `json:"instance_name"`
 }
 
 // The items of the playlist a device shows, in order, with the instance in
@@ -143,6 +144,7 @@ func (q *Queries) ListDeviceItems(ctx context.Context, deviceID int64) ([]ListDe
 			&i.Duration,
 			&i.InstanceID,
 			&i.Palette,
+			&i.InstanceName,
 		); err != nil {
 			return nil, err
 		}

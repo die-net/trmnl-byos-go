@@ -1,0 +1,58 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<a class="back" href="/devices"><span aria-hidden="true">←</span> Devices</a>
+<div class="page-head">
+<h1>{{.Heading}}</h1>
+<span class="badge {{.Detail.View.BadgeClass}}">{{.Detail.View.Badge}}</span>
+</div>{{end}}
+{{define "when"}}{{if .ISO}}<time datetime="{{.ISO}}">{{.Text}}</time>{{if .Rel}} <span class="rel">({{.Rel}})</span>{{end}}{{else}}{{.Text}}{{end}}{{end}}
+{{define "content"}}{{with .Detail}}<div class="detail-layout">
+<div class="detail-main">
+{{template "screen" .View}}
+<section class="panel" aria-labelledby="facts-title">
+<h2 id="facts-title">Details</h2>
+<dl class="facts">
+<div><dt>Friendly ID</dt><dd>{{.ID}}</dd></div>
+<div><dt>Model</dt><dd>{{.Model}}</dd></div>
+<div class="wide"><dt>MAC</dt><dd>{{.MAC}}</dd></div>
+<div><dt>Firmware</dt><dd>{{.View.Firmware}}</dd></div>
+<div><dt>Panel size</dt><dd>{{.PanelSize}}</dd></div>
+<div class="wide"><dt>Last seen</dt><dd>{{template "when" .LastSeen}}</dd></div>
+<div class="wide"><dt>Next wake expected</dt><dd>{{template "when" .NextWake}}</dd></div>
+<div><dt>Battery</dt><dd>{{.View.Battery}}</dd></div>
+<div><dt>Wi-Fi signal</dt><dd>{{.View.RSSI}}</dd></div>
+<div><dt>Last wake took</dt><dd>{{.WakeTime}}</dd></div>
+<div><dt>Last wake cause</dt><dd>{{.WakeCause}}</dd></div>
+<div class="wide"><dt>Registered</dt><dd>{{template "when" .Registered}}</dd></div>
+</dl>
+</section>
+</div>
+<div class="detail-side">
+<section class="panel" aria-labelledby="settings-title">
+<h2 id="settings-title">Settings</h2>
+{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
+<form method="post" action="/devices/{{.ID}}">
+<div class="field">
+<label for="name">Name</label>
+<input id="name" name="name" type="text" value="{{.Form.Name}}" autocomplete="off" placeholder="{{.ID}}">
+<p class="hint">Leave empty to show the friendly ID.</p>
+</div>
+<label class="check"><input type="checkbox" name="updates_enabled" value="1"{{if .Form.Updates}} checked{{end}}><span>Install firmware updates</span></label>
+<div class="field">
+<label for="fw_pin">Pin firmware version</label>
+<select id="fw_pin" name="fw_pin">
+<option value="">No pin</option>
+{{range .Form.Pins}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}</option>
+{{end}}</select>
+<p class="hint">A pinned device is offered no firmware.</p>
+</div>
+<button class="btn btn-primary" type="submit">Save</button>
+</form>
+</section>
+<section class="panel" aria-labelledby="playlist-title">
+<h2 id="playlist-title">Playlist</h2>
+{{if .Playlist}}<ol class="playlist">
+{{range .Playlist}}<li><span class="playlist-name">{{.Name}}</span><span class="rel">{{.Duration}}</span></li>
+{{end}}</ol>{{else}}<p class="rel">This device has no playlist items.</p>{{end}}
+</section>
+</div>
+</div>{{end}}{{end}}

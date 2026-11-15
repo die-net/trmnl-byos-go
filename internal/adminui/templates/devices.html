@@ -1,8 +1,15 @@
 {{define "title"}}{{.Heading}}{{end}}
-{{define "content"}}{{if .Devices}}<ul class="grid">
+{{define "content"}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+<form class="notice" method="post" action="/join">
+{{if .Join.Open}}<p>New devices can register until <time datetime="{{.Join.Until.ISO}}">{{.Join.Until.Text}}</time>.</p>
+<button class="btn btn-secondary" type="submit" name="action" value="close">Close</button>{{else}}<p>New devices cannot register.</p>
+<button class="btn btn-secondary" type="submit" name="action" value="open">Open for 10 minutes</button>{{end}}
+</form>
+{{if .Devices}}<ul class="grid">
 {{range .Devices}}<li class="device">
+{{template "screen" .}}
 <div class="device-head">
-<h2>{{.Name}}</h2>
+<h2><a class="device-link" href="{{.Href}}">{{.Name}}</a></h2>
 <span class="badge {{.BadgeClass}}">{{.Badge}}</span>
 </div>
 {{if .Detail}}<p class="detail">{{.Detail}}</p>{{end}}
@@ -15,5 +22,5 @@
 </li>
 {{end}}</ul>{{else}}<div class="empty">
 <h2>No devices yet</h2>
-<p>Open the join window with <code>trmnl-byos join</code>, then set up the device.</p>
+<p>Use Open for 10 minutes above, then set up the device.</p>
 </div>{{end}}{{end}}

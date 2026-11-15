@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net/http"
 
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
 )
 
@@ -117,6 +118,8 @@ func (s *Server) cancelRollout(r *http.Request) error {
 // devicePatch is the body of a device change. A field left out is not
 // changed.
 type devicePatch struct {
+	// Name is the device's name, or "" for none.
+	Name *string `json:"name"`
 	// UpdatesEnabled turns on or off offering the device firmware.
 	UpdatesEnabled *bool `json:"updates_enabled"`
 	// FWPin is a firmware version the device stays on, or "" for none.
@@ -128,9 +131,22 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) (deviceJSON
 	if err := decode(w, r, &req, false); err != nil {
 		return deviceJSON{}, err
 	}
-	dev, err := firmware.SetPolicy(r.Context(), s.db, r.PathValue("id"), firmware.Policy{UpdatesEnabled: req.UpdatesEnabled, Pin: req.FWPin})
+	// Check the name before the policy is written, so a bad name changes
+	// nothing. SetPolicy checks the pin the same way.
+	if req.Name != nil {
+		if _, err := device.CleanName(*req.Name); err != nil {
+			return deviceJSON{}, err
+		}
+	}
+	id := r.PathValue("id")
+	dev, err := firmware.SetPolicy(r.Context(), s.db, id, firmware.Policy{UpdatesEnabled: req.UpdatesEnabled, Pin: req.FWPin})
 	if err != nil {
 		return deviceJSON{}, err
+	}
+	if req.Name != nil {
+		if _, err := device.SetName(r.Context(), s.db, id, *req.Name); err != nil {
+			return deviceJSON{}, err
+		}
 	}
 	return s.deviceStatus(r.Context(), dev.ID)
 }

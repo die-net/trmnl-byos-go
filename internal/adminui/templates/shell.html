@@ -12,6 +12,6 @@
 </div>
 </header>
 <main id="main" class="page">
-<h1>{{.Heading}}</h1>
+{{block "heading" .}}<h1>{{.Heading}}</h1>{{end}}
 {{template "content" .}}
 </main>{{end}}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
@@ -276,7 +277,34 @@ func TestPatchDevice(t *testing.T) {
 		t.Errorf("stored %+v", got)
 	}
 	ta.wantError(t, "PATCH", "/api/v1/devices/"+testFriend, `{"fw_pin": "latest"}`, 400, "dotted numbers")
-	ta.wantError(t, "PATCH", "/api/v1/devices/"+testFriend, `{"name": "x"}`, 400, "unknown field")
+	ta.wantError(t, "PATCH", "/api/v1/devices/"+testFriend, `{"nickname": "x"}`, 400, "unknown field")
 	ta.wantError(t, "PATCH", "/api/v1/devices/"+testFriend, ``, 400, "bad request body")
 	ta.wantError(t, "PATCH", "/api/v1/devices/ZZZ999", `{"updates_enabled": true}`, 404, "no such device")
+}
+
+func TestPatchDeviceName(t *testing.T) {
+	ta := newTestAPI(t, false)
+	ta.addDevice(t)
+	path := "/api/v1/devices/" + testFriend
+	var d deviceJSON
+	ta.call(t, "PATCH", path, `{"name": "  Kitchen "}`, 200, &d)
+	if d.Name != "Kitchen" {
+		t.Errorf("name %q, want Kitchen", d.Name)
+	}
+	// A field left out is kept, and the name stays.
+	ta.call(t, "PATCH", path, `{"updates_enabled": true}`, 200, &d)
+	if d.Name != "Kitchen" || !d.UpdatesEnabled {
+		t.Errorf("device %+v", d)
+	}
+	// A bad name changes nothing, the other fields included.
+	ta.wantError(t, "PATCH", path, `{"name": "`+strings.Repeat("x", 65)+`", "updates_enabled": false}`, 400, "name is over 64 bytes")
+	ta.call(t, "GET", path, "", 200, &d)
+	if d.Name != "Kitchen" || !d.UpdatesEnabled {
+		t.Errorf("a refused patch changed the device: %+v", d)
+	}
+	ta.wantError(t, "PATCH", path, `{"name": "a\nb"}`, 400, "control character")
+	ta.call(t, "PATCH", path, `{"name": ""}`, 200, &d)
+	if d.Name != "" {
+		t.Errorf("name %q, want none", d.Name)
+	}
 }

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
@@ -109,6 +111,47 @@ func FindDevice(ctx context.Context, q *db.Queries, device string) (db.Device, e
 		return db.Device{}, fmt.Errorf("get device: %w", err)
 	}
 	return dev, nil
+}
+
+// MaxNameBytes is the longest a device's name may be.
+const MaxNameBytes = 64
+
+// CleanName returns name without the space around it, or an error of kind
+// errkind.ErrInvalid if it is too long, is not UTF-8, or has a control
+// character such as a newline. An empty name is valid and means none.
+func CleanName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	switch {
+	case len(name) > MaxNameBytes:
+		return "", fmt.Errorf("%w: name is over %d bytes", errkind.ErrInvalid, MaxNameBytes)
+	case !utf8.ValidString(name):
+		return "", fmt.Errorf("%w: name is not valid UTF-8", errkind.ErrInvalid)
+	case strings.ContainsFunc(name, unicode.IsControl):
+		return "", fmt.Errorf("%w: name has a control character", errkind.ErrInvalid)
+	}
+	return name, nil
+}
+
+// SetName gives the device named by its friendly ID or MAC a name, checked
+// by CleanName, and returns the device. An empty name clears it.
+func SetName(ctx context.Context, client *db.Client, device, name string) (db.Device, error) {
+	name, err := CleanName(name)
+	if err != nil {
+		return db.Device{}, err
+	}
+	var dev db.Device
+	err = client.InTx(ctx, func(q *db.Queries) error {
+		var err error
+		if dev, err = FindDevice(ctx, q, device); err != nil {
+			return err
+		}
+		dev.Name = name
+		if err := q.SetDeviceName(ctx, db.SetDeviceNameParams{Name: name, ID: dev.ID}); err != nil {
+			return fmt.Errorf("set name: %w", err)
+		}
+		return nil
+	})
+	return dev, err
 }
 
 // SetJoinWindow lets devices with unknown MACs register through /api/setup
