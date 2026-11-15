@@ -6,11 +6,11 @@
 <p class="hint setting-key"><code>{{.Key}}</code></p>
 {{if .Help}}<p>{{range .Help}}{{if .Code}}<code>{{.Text}}</code>{{else}}{{.Text}}{{end}}{{end}}</p>
 {{end}}<form method="post" action="/settings">
-{{if .Error}}<p class="error" role="alert" id="error-{{.Key}}">{{.Error}}</p>{{end}}
+{{if .Error}}<p class="error" role="alert" id="error-{{.Key}}">{{.Error}}</p>{{else if .Bad}}<p class="error" role="alert" id="error-{{.Key}}">{{.Bad}}</p>{{end}}
 <input type="hidden" name="key" value="{{.Key}}">
 <div class="field">
 <label for="value-{{.Key}}">Value{{if .Unit}} in {{.Unit}}{{end}}</label>
-<input id="value-{{.Key}}" name="value" type="number" min="{{.Min}}" max="{{.Max}}" step="1" inputmode="numeric" required value="{{.Value}}" aria-describedby="{{if .Error}}error-{{.Key}} {{end}}hint-{{.Key}}"{{if .Error}} aria-invalid="true"{{end}}>
+<input id="value-{{.Key}}" name="value" type="number" min="{{.Min}}" max="{{.Max}}" step="1" inputmode="numeric" required value="{{.Value}}" aria-describedby="{{if or .Error .Bad}}error-{{.Key}} {{end}}hint-{{.Key}}"{{if .Error}} aria-invalid="true"{{end}}>
 <p class="hint" id="hint-{{.Key}}">{{.Range}}{{if .Words}} Currently {{.Words}}.{{end}} {{.State}}</p>
 </div>
 <button class="btn btn-primary" type="submit">Save</button>

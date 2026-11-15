@@ -14,6 +14,18 @@ type settingsJSON struct {
 	RefreshSeconds int64 `json:"refresh_seconds"`
 	// MinPasswordLength is the fewest bytes a new admin password may have.
 	MinPasswordLength int64 `json:"min_password_length"`
+	// Bad has the stored text of each setting whose stored value is not
+	// usable, for which the number above is the default. It is left out
+	// when none is.
+	Bad *settingsBad `json:"bad,omitempty"`
+}
+
+// settingsBad is the stored text of the settings whose stored value is not
+// usable. A pointer is nil for a setting that is fine, and the text can be
+// empty.
+type settingsBad struct {
+	RefreshSeconds    *string `json:"refresh_seconds,omitempty"`
+	MinPasswordLength *string `json:"min_password_length,omitempty"`
 }
 
 // settingsPatch is the body of a settings change. A field left out keeps
@@ -24,16 +36,25 @@ type settingsPatch struct {
 }
 
 func (s *Server) getSettings(_ http.ResponseWriter, r *http.Request) (settingsJSON, error) {
-	ctx := r.Context()
-	refresh, err := settings.RefreshInterval(ctx, s.db.Read)
+	list, err := settings.List(r.Context(), s.db.Read)
 	if err != nil {
 		return settingsJSON{}, err
 	}
-	minLen, err := settings.MinPasswordLength(ctx, s.db.Read)
-	if err != nil {
-		return settingsJSON{}, err
+	var out settingsJSON
+	var bad settingsBad
+	for i := range list {
+		st := &list[i]
+		switch st.Key {
+		case settings.KeyRefreshSeconds:
+			out.RefreshSeconds, bad.RefreshSeconds = st.Value, st.Bad
+		case settings.KeyMinPasswordLength:
+			out.MinPasswordLength, bad.MinPasswordLength = st.Value, st.Bad
+		}
 	}
-	return settingsJSON{RefreshSeconds: int64(refresh.Seconds()), MinPasswordLength: int64(minLen)}, nil
+	if bad != (settingsBad{}) {
+		out.Bad = &bad
+	}
+	return out, nil
 }
 
 func (s *Server) patchSettings(w http.ResponseWriter, r *http.Request) (settingsJSON, error) {

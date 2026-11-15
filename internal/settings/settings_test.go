@@ -220,17 +220,93 @@ func TestCorruptValue(t *testing.T) {
 			if def != want {
 				t.Errorf("value with the error = %d, want the default %d", def, want)
 			}
-			if _, err := List(t.Context(), client.Read); err == nil || !strings.Contains(err.Error(), tc.key) {
-				t.Errorf("List err = %v, want one naming %s", err, tc.key)
-			}
 			// A reset repairs it.
 			if err := Reset(t.Context(), client, tc.key); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := List(t.Context(), client.Read); err != nil {
-				t.Errorf("List after reset: %v", err)
+			if _, err := RefreshInterval(t.Context(), client.Read); err != nil {
+				t.Errorf("RefreshInterval after reset: %v", err)
 			}
 		})
+	}
+}
+
+// TestListBadRow checks that List reports a row that is not usable, and
+// that Set and Reset each repair it.
+func TestListBadRow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, key, value string
+	}{
+		{"not a number", KeyRefreshSeconds, "soon"},
+		{"zero", KeyRefreshSeconds, "0"},
+		{"over the maximum", KeyMinPasswordLength, "5000"},
+		{"empty", KeyMinPasswordLength, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := openTest(t)
+			putRaw(t, client, tc.key, tc.value)
+			check := func(wantBad bool) {
+				t.Helper()
+				rows, err := List(t.Context(), client.Read)
+				if err != nil || len(rows) != 2 {
+					t.Fatalf("List = %v, %v", rows, err)
+				}
+				for _, r := range rows {
+					switch {
+					case r.Key == tc.key && wantBad:
+						if r.Bad == nil || *r.Bad != tc.value || !r.Set || r.Value != r.Default {
+							t.Errorf("%+v: want bad %q, set, the default in effect", r, tc.value)
+						}
+					case r.Bad != nil || r.Value != r.Default || (r.Set && r.Key != tc.key):
+						t.Errorf("%+v: want a clean setting at its default", r)
+					}
+				}
+			}
+			check(true)
+			// The other readers still fail on it.
+			if _, err := RefreshInterval(t.Context(), client.Read); (err != nil) != (tc.key == KeyRefreshSeconds) {
+				t.Errorf("RefreshInterval err = %v", err)
+			}
+			if err := Reset(t.Context(), client, tc.key); err != nil {
+				t.Fatal(err)
+			}
+			check(false)
+			putRaw(t, client, tc.key, tc.value)
+			if err := Set(t.Context(), client, tc.key, "20", t0); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := List(t.Context(), client.Read)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range rows {
+				if r.Key == tc.key && (r.Bad != nil || !r.Set || r.Value != 20) {
+					t.Errorf("after Set: %+v", r)
+				}
+			}
+		})
+	}
+}
+
+// TestListOneBadRow checks that a bad row does not hide a good one.
+func TestListOneBadRow(t *testing.T) {
+	t.Parallel()
+	client := openTest(t)
+	putRaw(t, client, KeyRefreshSeconds, "abc")
+	if err := Set(t.Context(), client, KeyMinPasswordLength, "30", t0); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := List(t.Context(), client.Read)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("List = %v, %v", rows, err)
+	}
+	if r := rows[0]; r.Bad == nil || *r.Bad != "abc" || r.Value != 900 || !r.Set {
+		t.Errorf("refresh: %+v", r)
+	}
+	if r := rows[1]; r.Bad != nil || r.Value != 30 || !r.Set {
+		t.Errorf("min length: %+v", r)
 	}
 }
 

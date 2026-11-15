@@ -78,20 +78,39 @@ func TestSettingsRefused(t *testing.T) {
 	}
 }
 
-func TestSettingsCorruptValue(t *testing.T) {
+func TestSettingsBadRow(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, false)
+	if body := ta.call(t, "GET", "/api/v1/settings", "", 200, nil).Body.String(); strings.Contains(body, "bad") {
+		t.Errorf("body %q has bad with no bad row", body)
+	}
 	ta.call(t, "PATCH", "/api/v1/settings", `{"refresh_seconds": 60}`, 200, nil)
-	if err := ta.db.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyMinPasswordLength, Value: "lots", UpdatedAt: 1}); err != nil {
+	if err := ta.db.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyMinPasswordLength, Value: "", UpdatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	// A stored value that is bad is the server's fault, not the caller's.
-	ta.wantError(t, "GET", "/api/v1/settings", "", 500, "internal error")
-	// A patch repairs it.
+	// The number is the default in effect, and bad has the stored text,
+	// which here is empty.
+	body := ta.call(t, "GET", "/api/v1/settings", "", 200, nil).Body.String()
+	if want := `{"refresh_seconds":60,"min_password_length":12,"bad":{"min_password_length":""}}`; strings.TrimSpace(body) != want {
+		t.Errorf("body %q, want %q", body, want)
+	}
+	if err := ta.db.Write.SetSetting(t.Context(), db.SetSettingParams{Key: settings.KeyRefreshSeconds, Value: "abc", UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	body = ta.call(t, "GET", "/api/v1/settings", "", 200, nil).Body.String()
+	if want := `{"refresh_seconds":900,"min_password_length":12,"bad":{"refresh_seconds":"abc","min_password_length":""}}`; strings.TrimSpace(body) != want {
+		t.Errorf("body %q, want %q", body, want)
+	}
+	// A patch repairs one, and the answer shows the other still bad.
 	var got settingsJSON
 	ta.call(t, "PATCH", "/api/v1/settings", `{"min_password_length": 20}`, 200, &got)
-	if got.MinPasswordLength != 20 || got.RefreshSeconds != 60 {
-		t.Errorf("after repair = %+v", got)
+	if got.MinPasswordLength != 20 || got.Bad == nil || got.Bad.MinPasswordLength != nil || got.Bad.RefreshSeconds == nil || *got.Bad.RefreshSeconds != "abc" {
+		t.Errorf("after repairing one = %+v", got)
+	}
+	var fixed settingsJSON
+	ta.call(t, "PATCH", "/api/v1/settings", `{"refresh_seconds": 120}`, 200, &fixed)
+	if fixed != (settingsJSON{RefreshSeconds: 120, MinPasswordLength: 20}) {
+		t.Errorf("after repairing both = %+v", fixed)
 	}
 }
 

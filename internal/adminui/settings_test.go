@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
@@ -222,6 +223,97 @@ func TestSaveSettingRefusedKeepsStored(t *testing.T) {
 		`id="min_password_length"`, `required value="12" aria-describedby="hint-min_password_length">`)
 	if st := storedSettings(t, tu)["refresh_seconds"]; !st.Set || st.Value != 300 {
 		t.Errorf("stored %+v after a refusal, want 300", st)
+	}
+}
+
+// putBadSetting stores a value the settings package would refuse.
+func putBadSetting(t *testing.T, tu *testUI, key, value string) {
+	t.Helper()
+	if err := tu.db.Write.SetSetting(t.Context(), db.SetSettingParams{Key: key, Value: value, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// badMessage is what a panel says about a stored value that is not usable.
+const badMessage = `The stored value &#34;&lt;b&gt;abc&#34;`
+
+func TestSettingsBadRow(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	c := tu.signIn(t)
+	putBadSetting(t, tu, "refresh_seconds", `<b>abc"`)
+	w := tu.get(t, c, "/settings")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	// The message is escaped, in the bad setting's panel only, above its
+	// form, and the input holds the default. The hint does not say the
+	// value is the default, and the reset button is there.
+	wantSequence(t, body, `id="refresh_seconds"`,
+		`<p class="error" role="alert" id="error-refresh_seconds">`+badMessage,
+		`is not usable, so the default is in effect. Save a value or reset to the default.</p>`,
+		`required value="900" aria-describedby="error-refresh_seconds hint-refresh_seconds">`,
+		`The default is 900.`, "Reset to default",
+		`id="min_password_length"`, `required value="12" aria-describedby="hint-min_password_length">`, `This is the default.`)
+	if n := strings.Count(body, `role="alert"`); n != 1 {
+		t.Errorf("%d messages, want 1", n)
+	}
+	if n := strings.Count(body, "Reset to default"); n != 1 {
+		t.Errorf("%d reset buttons, want 1", n)
+	}
+	if strings.Contains(body, "<b>abc") || strings.Contains(body, `aria-invalid`) {
+		t.Error("the stored text is not escaped, or the input is marked invalid")
+	}
+}
+
+func TestSettingsBadRowRepaired(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, path string
+		form       url.Values
+	}{
+		{"reset", "/settings/reset", url.Values{"key": {"refresh_seconds"}}},
+		{"save", "/settings", url.Values{"key": {"refresh_seconds"}, "value": {"600"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			c := tu.signIn(t)
+			putBadSetting(t, tu, "refresh_seconds", "abc")
+			w := tu.post(t, c, tc.path, tc.form)
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/settings#refresh_seconds" {
+				t.Fatalf("status %d to %q, want 303 to /settings#refresh_seconds", w.Code, w.Header().Get("Location"))
+			}
+			w = tu.get(t, c, "/settings")
+			if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `role="alert"`) || strings.Contains(w.Body.String(), "not usable") {
+				t.Errorf("status %d; the page still has a message: %s", w.Code, w.Body)
+			}
+			if st := storedSettings(t, tu)["refresh_seconds"]; st.Bad != nil {
+				t.Errorf("still bad: %+v", st)
+			}
+		})
+	}
+}
+
+func TestSettingsBadRowRefusedSave(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	putBadSetting(t, tu, "refresh_seconds", "abc")
+	w := tu.post(t, tu.signIn(t), "/settings", url.Values{"key": {"refresh_seconds"}, "value": {"0"}})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", w.Code)
+	}
+	body := w.Body.String()
+	// Only the refusal, not the stored-value message too.
+	wantSequence(t, body, `id="refresh_seconds"`,
+		`<p class="error" role="alert" id="error-refresh_seconds">Enter a whole number from 1 to 31536000.</p>`,
+		`required value="0" aria-describedby="error-refresh_seconds hint-refresh_seconds" aria-invalid="true">`, "Reset to default")
+	if n := strings.Count(body, `role="alert"`); n != 1 || strings.Contains(body, "not usable") {
+		t.Errorf("%d messages, want only the refusal: %s", n, body)
+	}
+	if st := storedSettings(t, tu)["refresh_seconds"]; st.Bad == nil || *st.Bad != "abc" {
+		t.Errorf("stored %+v, want the bad row left alone", st)
 	}
 }
 
