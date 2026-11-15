@@ -17,6 +17,9 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 )
 
+// dayLayout is how a date is shown, such as "2 Jan 2006".
+const dayLayout = "2 Jan 2006"
+
 // dayLabels are the weekday names the schedule form shows, in the order of
 // the Days bits, so a label's index is the bit and playlist.DayNames(1<<i)
 // is its form value.
@@ -204,6 +207,8 @@ type playlistEdit struct {
 
 // notFoundView says what the not-found page could not find.
 type notFoundView struct {
+	// Nav is the nav destination the page belongs to, such as "devices".
+	Nav string
 	// What is the heading, such as "No such device".
 	What string
 	// BackHref and BackName are the page the link goes back to.
@@ -211,13 +216,13 @@ type notFoundView struct {
 }
 
 // renderNotFound sends the not-found page with a 404.
-func (s *Server) renderNotFound(w http.ResponseWriter, r *http.Request, nav string, nf notFoundView) {
-	s.render(w, r, http.StatusNotFound, "notfound", pageData{Nav: nav, Heading: "Not found", NotFound: nf})
+func (s *Server) renderNotFound(w http.ResponseWriter, r *http.Request, nf notFoundView) {
+	s.render(w, r, http.StatusNotFound, "notfound", pageData{Nav: nf.Nav, Heading: "Not found", NotFound: nf})
 }
 
 var (
-	noPlaylist = notFoundView{What: "No such playlist", BackHref: "/playlists", BackName: "Playlists"}
-	noItem     = notFoundView{What: "No such playlist item", BackHref: "/playlists", BackName: "Playlists"}
+	noPlaylist = notFoundView{Nav: "playlists", What: "No such playlist", BackHref: "/playlists", BackName: "Playlists"}
+	noItem     = notFoundView{Nav: "playlists", What: "No such playlist item", BackHref: "/playlists", BackName: "Playlists"}
 )
 
 // serverError logs err and sends a generic 500.
@@ -322,12 +327,12 @@ func (s *Server) itemAction(do func(ctx context.Context, post map[string][]strin
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := idFromPath(r)
 		if !ok {
-			s.renderNotFound(w, r, "playlists", noItem)
+			s.renderNotFound(w, r, noItem)
 			return
 		}
 		item, err := s.db.Read.GetPlaylistItem(r.Context(), id)
 		if errors.Is(err, sql.ErrNoRows) {
-			s.renderNotFound(w, r, "playlists", noItem)
+			s.renderNotFound(w, r, noItem)
 			return
 		} else if err != nil {
 			serverError(w, "get playlist item", err)
@@ -341,7 +346,7 @@ func (s *Server) itemAction(do func(ctx context.Context, post map[string][]strin
 		case err == nil:
 			http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(item.PlaylistID, 10), http.StatusSeeOther)
 		case errors.Is(err, playlist.ErrNoItem):
-			s.renderNotFound(w, r, "playlists", noItem)
+			s.renderNotFound(w, r, noItem)
 		case errors.Is(err, errkind.ErrInvalid):
 			s.renderPlaylists(w, r, http.StatusBadRequest, invalidText(err))
 		default:
@@ -383,12 +388,12 @@ func (s *Server) deleteItem(ctx context.Context, _ map[string][]string, id int64
 
 // fromPath returns what the numeric {id} of the route names, which get
 // reads. A path that is not a number, or an ID with no row, gets the
-// not-found page, and any other failure a plain error, and both return false.
+// not-found page nf, and any other failure a plain error, and both return false.
 func fromPath[T any](s *Server, w http.ResponseWriter, r *http.Request, what string, nf notFoundView, get func(ctx context.Context, id int64) (T, error)) (T, bool) {
 	var zero T
 	id, ok := idFromPath(r)
 	if !ok {
-		s.renderNotFound(w, r, "playlists", nf)
+		s.renderNotFound(w, r, nf)
 		return zero, false
 	}
 	row, err := get(r.Context(), id)
@@ -396,7 +401,7 @@ func fromPath[T any](s *Server, w http.ResponseWriter, r *http.Request, what str
 	case err == nil:
 		return row, true
 	case errors.Is(err, sql.ErrNoRows):
-		s.renderNotFound(w, r, "playlists", nf)
+		s.renderNotFound(w, r, nf)
 	default:
 		serverError(w, what, err)
 	}
@@ -463,7 +468,7 @@ func (s *Server) saveItem(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(row.PlaylistItem.PlaylistID, 10), http.StatusSeeOther)
 	case errors.Is(err, playlist.ErrNoItem):
-		s.renderNotFound(w, r, "playlists", noItem)
+		s.renderNotFound(w, r, noItem)
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderItem(w, r, http.StatusBadRequest, &row, &form, invalidText(err))
 	default:
@@ -530,7 +535,7 @@ func (s *Server) savePlaylist(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		http.Redirect(w, r, "/playlists#playlist-"+strconv.FormatInt(pl.ID, 10), http.StatusSeeOther)
 	case errors.Is(err, playlist.ErrNoPlaylist):
-		s.renderNotFound(w, r, "playlists", noPlaylist)
+		s.renderNotFound(w, r, noPlaylist)
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderPlaylist(w, r, http.StatusBadRequest, &pl, &sched, add, invalidText(err))
 	default:
@@ -588,7 +593,6 @@ func (s *Server) describeSchedule(sc playlist.Schedule) string {
 	default:
 		parts = append(parts, playlist.FormatClock(sc.WindowStart)+" to "+playlist.FormatClock(sc.WindowEnd))
 	}
-	const dayLayout = "2 Jan 2006"
 	var from, until string
 	if sc.StartsAt != 0 {
 		from = time.Unix(sc.StartsAt, 0).In(s.zone).Format(dayLayout)

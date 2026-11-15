@@ -31,3 +31,21 @@ SELECT * FROM recipe WHERE id = ?;
 -- name: DeleteInstance :execrows
 -- Also deletes the instance's renders and its playlist slots, by cascade.
 DELETE FROM plugin_instance WHERE id = ?;
+
+-- name: ListInstancePlaylists :many
+-- For every instance, the playlists that show it in any slot, each once, for
+-- listing.
+SELECT DISTINCT playlist_slot.instance_id, playlist.id AS playlist_id, playlist.name AS playlist_name
+FROM playlist_slot
+JOIN playlist_item ON playlist_item.id = playlist_slot.item_id
+JOIN playlist ON playlist.id = playlist_item.playlist_id
+ORDER BY playlist_slot.instance_id, playlist.name;
+
+-- name: ListPlaylistsOfInstance :many
+-- The playlists that show one instance in any slot, each once.
+SELECT DISTINCT playlist.id AS playlist_id, playlist.name AS playlist_name
+FROM playlist_slot
+JOIN playlist_item ON playlist_item.id = playlist_slot.item_id
+JOIN playlist ON playlist.id = playlist_item.playlist_id
+WHERE playlist_slot.instance_id = ?
+ORDER BY playlist.name;

@@ -1,0 +1,23 @@
+{{define "title"}}{{.Heading}}{{end}}
+{{define "heading"}}<a class="back" href="/recipes"><span aria-hidden="true">←</span> Recipes</a>
+<div class="page-head">
+<h1>{{.Heading}}</h1>
+</div>{{end}}
+{{define "content"}}{{with .RecipeEdit}}{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
+<section class="panel form-panel" aria-labelledby="add-title">
+<h2 id="add-title">Add an instance</h2>
+<form method="post" action="{{.Action}}">
+<div class="field">
+<label for="name">Name</label>
+<input id="name" name="name" type="text" autocomplete="off" placeholder="{{.Name}}" value="{{.Form.Name}}">
+<p class="hint">Leave empty to use the recipe's name.</p>
+</div>
+<div class="field">
+<label for="palette">Palette</label>
+<select id="palette" name="palette">
+{{range .Palettes}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+</div>
+<button class="btn btn-primary" type="submit">Add</button>
+</form>
+</section>{{end}}{{end}}

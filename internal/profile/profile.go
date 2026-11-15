@@ -46,6 +46,8 @@ type Palette struct {
 type registry struct {
 	models   map[string]Model
 	palettes map[string]Palette
+	// paletteList is the palettes in the registry file's order.
+	paletteList []Palette
 }
 
 // loadRegistry parses the embedded registry on first use. A broken embedded
@@ -63,6 +65,7 @@ var loadRegistry = sync.OnceValue(func() *registry {
 	for _, model := range m.Data {
 		r.models[model.Name] = model
 	}
+	r.paletteList = p.Data
 	for _, pal := range p.Data {
 		r.palettes[pal.ID] = pal
 	}
@@ -217,4 +220,10 @@ func (p Profile) RenderPalette(want string) string {
 func KnownPalette(id string) bool {
 	_, ok := loadRegistry().palettes[id]
 	return ok
+}
+
+// Palettes returns every palette in TRMNL's registry, in the order of the
+// registry file. The caller must not change the result.
+func Palettes() []Palette {
+	return loadRegistry().paletteList
 }

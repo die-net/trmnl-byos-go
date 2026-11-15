@@ -172,6 +172,26 @@ code {
   font-size: 1rem;
 }
 
+/* A file input is the browser's own button and file name in one box. The
+   button fills the box's height, so the whole control is a tap target. */
+.field input[type="file"] {
+  padding: 0;
+  cursor: pointer;
+}
+
+.field input[type="file"]::file-selector-button {
+  min-height: calc(var(--tap) - 2px);
+  margin: 0 var(--space-3) 0 0;
+  padding: 0 var(--space-4);
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 0;
+  border-right: 1px solid var(--border);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .field input::placeholder {
   color: var(--muted);
 }
@@ -651,8 +671,11 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.list-head .btn {
+.list-head .btn,
+.page-head .btn {
+  flex: none;
   width: auto;
+  white-space: nowrap;
 }
 
 .panel .facts + .items,
@@ -796,6 +819,11 @@ a.btn {
 
 .form-panel {
   max-width: 32rem;
+}
+
+.stack + .form-panel,
+.empty + .form-panel {
+  margin-top: var(--space-4);
 }
 
 /* What a page shows when it has nothing to list. */

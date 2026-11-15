@@ -198,7 +198,7 @@ func serve(ctx context.Context, args []string) error {
 	mux := http.NewServeMux()
 	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
 	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data)}).Register(mux)
-	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone}).Register(mux)
+	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone, RecipesDir: recipesDir(*data)}).Register(mux)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,
