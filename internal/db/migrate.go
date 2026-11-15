@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -29,6 +31,7 @@ var steps = []step{
 	{"add playlist schedules and hidden items", addPlaylistSchedules},
 	{"make playlist priorities a unique index per device", addPlaylistPriorityIndex},
 	{"add settings_at to instances and renders, and secret marks to instances", addSettingsAt},
+	{"never reuse a surrogate ID", useAutoincrement},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -38,34 +41,109 @@ var steps = []step{
 // A new database, with no tables and version 0, gets schema.sql and is
 // stamped with the latest version. A database with a version above the latest
 // came from a newer server, and is refused.
-func (c *Client) migrate(ctx context.Context) error {
-	return c.InTx(ctx, func(q *Queries) error {
-		var version, tables int
-		if err := q.db.QueryRowContext(ctx, `SELECT user_version FROM pragma_user_version`).Scan(&version); err != nil {
-			return fmt.Errorf("read schema version: %w", err)
+//
+// It runs with foreign keys off, as SQLite documents for a step that rebuilds
+// a table. PRAGMA foreign_keys cannot change inside a transaction, and with
+// it on, DROP TABLE does an implicit DELETE that fires ON DELETE CASCADE on
+// the rows of every child table. So it takes the writer's one connection,
+// turns foreign keys off, runs the steps in a transaction, and, when a step
+// ran, runs PRAGMA foreign_key_check before it commits, refusing a database
+// where any row has no parent. The check reads every row of every child
+// table, so it is not run on the usual start, when there is nothing to do. Foreign keys go back on before the connection returns to
+// the pool, on every path. If that fails, the connection is discarded, and
+// the pool opens a new one from the DSN, which has them on.
+func (c *Client) migrate(ctx context.Context) (err error) {
+	conn, err := c.Writer.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("take migration connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("turn foreign keys off: %w", err)
+	}
+	defer func() {
+		// A canceled ctx must not leave foreign keys off.
+		if _, rerr := conn.ExecContext(context.WithoutCancel(ctx), `PRAGMA foreign_keys = ON`); rerr != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			err = errors.Join(err, fmt.Errorf("turn foreign keys on: %w", rerr))
 		}
-		if version > len(steps) {
-			return fmt.Errorf("database schema version %d is newer than this server's %d", version, len(steps))
+	}()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stepped, err := migrateTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if stepped {
+		if err := checkForeignKeys(ctx, tx); err != nil {
+			return err
 		}
-		if version == 0 {
-			err := q.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\'`).Scan(&tables)
-			if err != nil {
-				return fmt.Errorf("inspect schema: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// migrateTx applies schema.sql to a new database, or the steps after its
+// version to an old one, and stamps the latest version. stepped is whether
+// any step ran.
+func migrateTx(ctx context.Context, tx DBTX) (stepped bool, err error) {
+	var version, tables int
+	if err := tx.QueryRowContext(ctx, `SELECT user_version FROM pragma_user_version`).Scan(&version); err != nil {
+		return false, fmt.Errorf("read schema version: %w", err)
+	}
+	if version > len(steps) {
+		return false, fmt.Errorf("database schema version %d is newer than this server's %d", version, len(steps))
+	}
+	if version == len(steps) {
+		return false, nil
+	}
+	if version == 0 {
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\'`).Scan(&tables)
+		if err != nil {
+			return false, fmt.Errorf("inspect schema: %w", err)
+		}
+		if tables == 0 {
+			if _, err := tx.ExecContext(ctx, schema); err != nil {
+				return false, fmt.Errorf("apply schema: %w", err)
 			}
-			if tables == 0 {
-				if _, err := q.db.ExecContext(ctx, schema); err != nil {
-					return fmt.Errorf("apply schema: %w", err)
-				}
-				return stamp(ctx, q.db, len(steps))
-			}
+			return false, stamp(ctx, tx, len(steps))
 		}
-		for i := version; i < len(steps); i++ {
-			if err := steps[i].run(ctx, q.db); err != nil {
-				return fmt.Errorf("migrate to version %d (%s): %w", i+1, steps[i].name, err)
-			}
+	}
+	for i := version; i < len(steps); i++ {
+		if err := steps[i].run(ctx, tx); err != nil {
+			return false, fmt.Errorf("migrate to version %d (%s): %w", i+1, steps[i].name, err)
 		}
-		return stamp(ctx, q.db, len(steps))
-	})
+	}
+	return true, stamp(ctx, tx, len(steps))
+}
+
+// checkForeignKeys fails if any row refers to a parent that is not there. It
+// runs after the steps, with foreign keys off, so it finds what the steps
+// broke or what the database already had.
+func checkForeignKeys(ctx context.Context, tx DBTX) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fkid int
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return fmt.Errorf("check foreign keys: %w", err)
+		}
+		return fmt.Errorf("foreign key check failed: row %d of %s has no row in %s", rowid.Int64, table, parent)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("check foreign keys: %w", err)
+	}
+	return nil
 }
 
 // stamp records version. PRAGMA takes no bound parameters, so the number is
@@ -268,6 +346,203 @@ ALTER TABLE render ADD COLUMN settings_at INTEGER NOT NULL DEFAULT 0`
 func addSettingsAt(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addSettingsAtSQL); err != nil {
 		return fmt.Errorf("add settings_at and secret_keys: %w", err)
+	}
+	return nil
+}
+
+// useAutoincrementSQL is step 7. It rebuilds every table with a surrogate
+// id INTEGER PRIMARY KEY as the same table with AUTOINCREMENT, so an ID is
+// never handed out twice and a stale page, API client or script holding a
+// deleted ID cannot reach a newer row. Without AUTOINCREMENT, SQLite gives
+// a new row the highest ID plus one, which reuses the ID of a deleted
+// highest row. SQLite cannot add AUTOINCREMENT to a table, so each is made
+// anew, filled with the old rows and their IDs, and renamed over the old one,
+// the way the SQLite documentation describes. The column lists are explicit
+// because a migrated table's column order can differ from a new one's.
+// Every table's definition is as in schema.sql at this version. Tables whose
+// key is a foreign key or is composite have no surrogate ID and are not
+// touched.
+//
+// The trigger goes first because ALTER TABLE RENAME fails while a trigger
+// body names a table that is dropped, and is created again at the end. Each
+// table's indexes go with its DROP TABLE and are made again after its rename.
+// migrate runs the step with foreign keys off, so the drops do not cascade.
+//
+// Inserting the old rows with their IDs sets each table's sqlite_sequence
+// entry to its highest ID, so new rows start above it. An ID that was deleted
+// before the migration, and was above the highest ID then, was never recorded
+// and can be handed out once more.
+//
+// sqlc cannot take this, because it is a migration (CLAUDE.md).
+const useAutoincrementSQL = `DROP TRIGGER IF EXISTS render_device_deleted;
+
+CREATE TABLE device_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mac TEXT NOT NULL UNIQUE,
+  api_key_hash BLOB NOT NULL UNIQUE,
+  friendly_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL DEFAULT '',
+  fw_model TEXT NOT NULL DEFAULT '',
+  fw_version TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  screen_override TEXT NOT NULL DEFAULT '',
+  screen_override_until INTEGER NOT NULL DEFAULT 0,
+  updates_enabled INTEGER NOT NULL DEFAULT 0,
+  fw_pin TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO device_new (id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin)
+  SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin FROM device;
+DROP TABLE device;
+ALTER TABLE device_new RENAME TO device;
+
+CREATE TABLE device_log_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id INTEGER NOT NULL REFERENCES device (id) ON DELETE CASCADE,
+  received_at INTEGER NOT NULL,
+  device_at INTEGER NOT NULL,
+  level TEXT NOT NULL,
+  message TEXT NOT NULL,
+  detail TEXT NOT NULL
+);
+INSERT INTO device_log_new (id, device_id, received_at, device_at, level, message, detail)
+  SELECT id, device_id, received_at, device_at, level, message, detail FROM device_log;
+DROP TABLE device_log;
+ALTER TABLE device_log_new RENAME TO device_log;
+CREATE INDEX device_log_device ON device_log (device_id, id);
+
+CREATE TABLE recipe_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  refresh_interval INTEGER NOT NULL,
+  installed_at INTEGER NOT NULL
+);
+INSERT INTO recipe_new (id, name, source, refresh_interval, installed_at)
+  SELECT id, name, source, refresh_interval, installed_at FROM recipe;
+DROP TABLE recipe;
+ALTER TABLE recipe_new RENAME TO recipe;
+
+CREATE TABLE plugin_instance_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id INTEGER NOT NULL REFERENCES recipe (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  field_values TEXT NOT NULL DEFAULT '{}',
+  secret_values BLOB,
+  palette TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  settings_at INTEGER NOT NULL DEFAULT 0,
+  secret_keys TEXT NOT NULL DEFAULT '[]'
+);
+INSERT INTO plugin_instance_new (id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at, secret_keys)
+  SELECT id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at, secret_keys FROM plugin_instance;
+DROP TABLE plugin_instance;
+ALTER TABLE plugin_instance_new RENAME TO plugin_instance;
+
+CREATE TABLE playlist_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  days INTEGER NOT NULL DEFAULT 127,
+  window_start INTEGER NOT NULL DEFAULT 0,
+  window_end INTEGER NOT NULL DEFAULT 0,
+  starts_at INTEGER NOT NULL DEFAULT 0,
+  ends_at INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO playlist_new (id, name, days, window_start, window_end, starts_at, ends_at)
+  SELECT id, name, days, window_start, window_end, starts_at, ends_at FROM playlist;
+DROP TABLE playlist;
+ALTER TABLE playlist_new RENAME TO playlist;
+
+CREATE TABLE playlist_item_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playlist_id INTEGER NOT NULL REFERENCES playlist (id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  layout TEXT NOT NULL DEFAULT 'full',
+  duration INTEGER NOT NULL DEFAULT 0,
+  hidden INTEGER NOT NULL DEFAULT 0,
+  days INTEGER NOT NULL DEFAULT 127,
+  window_start INTEGER NOT NULL DEFAULT 0,
+  window_end INTEGER NOT NULL DEFAULT 0,
+  starts_at INTEGER NOT NULL DEFAULT 0,
+  ends_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (playlist_id, position)
+);
+INSERT INTO playlist_item_new (id, playlist_id, position, layout, duration, hidden, days, window_start, window_end, starts_at, ends_at)
+  SELECT id, playlist_id, position, layout, duration, hidden, days, window_start, window_end, starts_at, ends_at FROM playlist_item;
+DROP TABLE playlist_item;
+ALTER TABLE playlist_item_new RENAME TO playlist_item;
+
+CREATE TABLE render_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id INTEGER NOT NULL REFERENCES plugin_instance (id) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  palette TEXT NOT NULL,
+  rendered_at INTEGER NOT NULL DEFAULT 0,
+  attempted_at INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  log TEXT NOT NULL DEFAULT '',
+  data_at INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  settings_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (instance_id, device_id, width, height, palette)
+);
+INSERT INTO render_new (id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at)
+  SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at FROM render;
+DROP TABLE render;
+ALTER TABLE render_new RENAME TO render;
+
+CREATE TABLE api_token_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  token_hash BLOB NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO api_token_new (id, name, token_hash, created_at, last_used_at)
+  SELECT id, name, token_hash, created_at, last_used_at FROM api_token;
+DROP TABLE api_token;
+ALTER TABLE api_token_new RENAME TO api_token;
+
+CREATE TABLE admin_session_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash BLOB NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+INSERT INTO admin_session_new (id, token_hash, created_at, last_seen_at, expires_at)
+  SELECT id, token_hash, created_at, last_seen_at, expires_at FROM admin_session;
+DROP TABLE admin_session;
+ALTER TABLE admin_session_new RENAME TO admin_session;
+
+CREATE TABLE firmware_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fw_model TEXT NOT NULL,
+  version TEXT NOT NULL,
+  sha256 TEXT NOT NULL UNIQUE,
+  chip TEXT NOT NULL,
+  idf_version TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  uploaded_at INTEGER NOT NULL,
+  UNIQUE (fw_model, version)
+);
+INSERT INTO firmware_new (id, fw_model, version, sha256, chip, idf_version, bytes, source, uploaded_at)
+  SELECT id, fw_model, version, sha256, chip, idf_version, bytes, source, uploaded_at FROM firmware;
+DROP TABLE firmware;
+ALTER TABLE firmware_new RENAME TO firmware;
+
+CREATE TRIGGER render_device_deleted AFTER DELETE ON device
+BEGIN
+  DELETE FROM render WHERE device_id = OLD.id;
+END`
+
+// useAutoincrement is step 7: see useAutoincrementSQL.
+func useAutoincrement(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, useAutoincrementSQL); err != nil {
+		return fmt.Errorf("use autoincrement: %w", err)
 	}
 	return nil
 }

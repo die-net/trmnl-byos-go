@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -199,14 +200,33 @@ const preColumnsRender = `CREATE TABLE render (
 )`
 
 // preColumnsSQL builds a database as it was before the columns of
-// addedColumns existed, with one row in each of three tables. The tables the
-// render table refers to are not made, so the foreign keys are off to insert
-// a row.
+// addedColumns existed, with a row in each of its tables and the render's
+// parents. Migration refuses a row whose parent is missing, so the render
+// has an instance and a recipe. The foreign keys are off to create tables in
+// any order.
 var preColumnsSQL = []string{
 	`PRAGMA foreign_keys = OFF`,
 	preColumnsDevice,
 	preColumnsState,
 	preColumnsRender,
+	`CREATE TABLE recipe (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  refresh_interval INTEGER NOT NULL,
+  installed_at INTEGER NOT NULL
+)`,
+	`CREATE TABLE plugin_instance (
+  id INTEGER PRIMARY KEY,
+  recipe_id INTEGER NOT NULL REFERENCES recipe (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  field_values TEXT NOT NULL DEFAULT '{}',
+  secret_values BLOB,
+  palette TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+)`,
+	`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
+	`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
 	`INSERT INTO device (mac, api_key_hash, friendly_id, created_at) VALUES ('m', x'00', 'F', 1)`,
 	`INSERT INTO device_state (device_id, last_seen, last_refresh_rate_sent, last_image) VALUES (1, 5, 900, 'img')`,
 	`INSERT INTO render (instance_id, width, height, palette, rendered_at, attempted_at, duration_ms) VALUES (1, 800, 480, 'bw', 5, 5, 1)`,
@@ -705,6 +725,7 @@ func TestMigrateAdminSessions(t *testing.T) {
 	}
 	// Make the database look like one from before step 3, which is also from
 	// before step 4.
+	dropAutoincrement(t, old.Writer)
 	for _, stmt := range append(slices.Concat(dropSettingsAt, dropPlaylistPriorityIndex, dropPlaylistSchedules),
 		`DROP TABLE admin_session`,
 		`INSERT INTO setting (key, value, updated_at) VALUES ('kept', 'yes', 1)`,
@@ -789,6 +810,7 @@ func TestMigratePlaylistSchedules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropAutoincrement(t, old.Writer)
 	stmts := slices.Concat(dropSettingsAt, dropPlaylistPriorityIndex, dropPlaylistSchedules)
 	stmts = append(stmts,
 		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
@@ -858,6 +880,7 @@ func TestMigratePlaylistPriorityIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropAutoincrement(t, old.Writer)
 	stmts := slices.Concat(dropSettingsAt, dropPlaylistPriorityIndex, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (1, 'D8:3B:DA:12:34:01', x'01', 'ABC001', 1), (2, 'D8:3B:DA:12:34:02', x'02', 'ABC002', 1), (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
 		`INSERT INTO playlist (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')`,
@@ -933,6 +956,7 @@ func TestMigrateSettingsAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropAutoincrement(t, old.Writer)
 	stmts := slices.Concat(dropSettingsAt, []string{
 		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
 		`INSERT INTO plugin_instance (id, recipe_id, name, field_values, created_at) VALUES (1, 1, 'i', '{"a":"b"}', 7)`,
@@ -966,6 +990,391 @@ func TestMigrateSettingsAt(t *testing.T) {
 	rows, err := client.Read.ListRenderRows(ctx)
 	if err != nil || len(rows) != 1 || rows[0].SettingsAt != 0 || rows[0].DataAt != 4 || rows[0].RenderedAt != 5 {
 		t.Errorf("render after migration: %+v, %v", rows, err)
+	}
+}
+
+// autoincrementTables are the tables with a surrogate id, which are
+// AUTOINCREMENT, each with an INSERT of one row whose unique values come from
+// ?1, an integer, a DELETE of the row with an id, and a query for all the ids. A row that has a parent refers to the parent rows of
+// insertParents.
+var autoincrementTables = []struct{ table, insert, del, ids string }{
+	{"device", `INSERT INTO device (mac, api_key_hash, friendly_id, created_at) VALUES ('m' || ?1, CAST(?1 AS BLOB), 'F' || ?1, 1)`, `DELETE FROM device WHERE id = ?`, `SELECT id FROM device ORDER BY id`},
+	{"device_log", `INSERT INTO device_log (device_id, received_at, device_at, level, message, detail) VALUES (9001, ?1, 1, 'info', 'm', 'd')`, `DELETE FROM device_log WHERE id = ?`, `SELECT id FROM device_log ORDER BY id`},
+	{"recipe", `INSERT INTO recipe (name, source, refresh_interval, installed_at) VALUES ('r' || ?1, 's', 900, 1)`, `DELETE FROM recipe WHERE id = ?`, `SELECT id FROM recipe ORDER BY id`},
+	{"plugin_instance", `INSERT INTO plugin_instance (recipe_id, name, created_at) VALUES (9001, 'i' || ?1, 1)`, `DELETE FROM plugin_instance WHERE id = ?`, `SELECT id FROM plugin_instance ORDER BY id`},
+	{"playlist", `INSERT INTO playlist (name) VALUES ('p' || ?1)`, `DELETE FROM playlist WHERE id = ?`, `SELECT id FROM playlist ORDER BY id`},
+	{"playlist_item", `INSERT INTO playlist_item (playlist_id, position) VALUES (9001, ?1)`, `DELETE FROM playlist_item WHERE id = ?`, `SELECT id FROM playlist_item ORDER BY id`},
+	{"render", `INSERT INTO render (instance_id, width, height, palette, attempted_at, duration_ms) VALUES (9001, ?1, 1, 'bw', 1, 1)`, `DELETE FROM render WHERE id = ?`, `SELECT id FROM render ORDER BY id`},
+	{"api_token", `INSERT INTO api_token (name, token_hash, created_at) VALUES ('t' || ?1, CAST(?1 AS BLOB), 1)`, `DELETE FROM api_token WHERE id = ?`, `SELECT id FROM api_token ORDER BY id`},
+	{"admin_session", `INSERT INTO admin_session (token_hash, created_at, last_seen_at, expires_at) VALUES (CAST(?1 AS BLOB), 1, 1, 2)`, `DELETE FROM admin_session WHERE id = ?`, `SELECT id FROM admin_session ORDER BY id`},
+	{"firmware", `INSERT INTO firmware (fw_model, version, sha256, chip, idf_version, bytes, source, uploaded_at) VALUES ('og', 'v' || ?1, 's' || ?1, 'esp32c3', '5', 1, 'upload', 1)`, `DELETE FROM firmware WHERE id = ?`, `SELECT id FROM firmware ORDER BY id`},
+}
+
+// idQueries is the query for all the ids of each table of autoincrementTables.
+var idQueries = func() map[string]string {
+	m := make(map[string]string)
+	for _, tc := range autoincrementTables {
+		m[tc.table] = tc.ids
+	}
+	return m
+}()
+
+// insertParents adds the rows, all with ID 9001, that the rows of
+// autoincrementTables refer to.
+func insertParents(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (9001, 'parent', x'9001', 'PARENT', 1)`,
+		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (9001, 'parent', 's', 900, 1)`,
+		`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (9001, 9001, 'parent', 1)`,
+		`INSERT INTO playlist (id, name) VALUES (9001, 'parent')`,
+	} {
+		if _, err := db.ExecContext(t.Context(), stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+}
+
+// checkNoIDReuse checks that every table of autoincrementTables is
+// AUTOINCREMENT, by what the table does: a row inserted after the highest
+// row was deleted gets an ID above it, and by what sqlite_master says of it.
+func checkNoIDReuse(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := t.Context()
+	insertParents(t, db)
+	for i, tc := range autoincrementTables {
+		var tableSQL string
+		if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, tc.table).Scan(&tableSQL); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(tableSQL, "AUTOINCREMENT") {
+			t.Errorf("%s is not AUTOINCREMENT: %s", tc.table, tableSQL)
+		}
+		n := 7000 + i*10
+		ids := make([]int64, 0, 3)
+		for j := range 3 {
+			res, err := db.ExecContext(ctx, tc.insert, n+j)
+			if err != nil {
+				t.Fatalf("%s: insert %d: %v", tc.table, j, err)
+			}
+			id, err := res.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		// Delete the highest row, then insert again.
+		if _, err := db.ExecContext(ctx, tc.del, ids[2]); err != nil {
+			t.Fatalf("%s: delete: %v", tc.table, err)
+		}
+		res, err := db.ExecContext(ctx, tc.insert, n+3)
+		if err != nil {
+			t.Fatalf("%s: insert after delete: %v", tc.table, err)
+		}
+		if id, err := res.LastInsertId(); err != nil || id <= ids[2] {
+			t.Errorf("%s: a new row got ID %d after ID %d was deleted, %v", tc.table, id, ids[2], err)
+		}
+	}
+}
+
+// tableNamePrefix finds the start of a table's CREATE TABLE statement as
+// SQLite stores it, whether it was made from schema.sql or renamed.
+var tableNamePrefix = regexp.MustCompile(`^CREATE TABLE (IF NOT EXISTS )?("?)(\w+)("?)`)
+
+// dropAutoincrement rebuilds every table of autoincrementTables without
+// AUTOINCREMENT, as it was before step 7, in a database made from
+// schema.sql that holds no rows yet. It reads each table's SQL, because a
+// test may do that, and uses the same rebuild as step 7. A migration test
+// for an older version calls it first.
+func dropAutoincrement(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := t.Context()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	exec := func(stmt string) {
+		t.Helper()
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	exec(`PRAGMA foreign_keys = OFF`)
+	exec(`DROP TRIGGER render_device_deleted`)
+	for _, tc := range autoincrementTables {
+		var tableSQL string
+		if err := conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, tc.table).Scan(&tableSQL); err != nil {
+			t.Fatal(err)
+		}
+		if !tableNamePrefix.MatchString(tableSQL) {
+			t.Fatalf("unexpected SQL for %s: %s", tc.table, tableSQL)
+		}
+		old := tableNamePrefix.ReplaceAllString(tableSQL, "CREATE TABLE "+tc.table+"_old")
+		old = strings.Replace(old, " AUTOINCREMENT", "", 1)
+		exec(old)
+		exec(`INSERT INTO ` + tc.table + `_old SELECT * FROM ` + tc.table)
+		exec(`DROP TABLE ` + tc.table)
+		exec(`ALTER TABLE ` + tc.table + `_old RENAME TO ` + tc.table)
+	}
+	exec(`CREATE INDEX device_log_device ON device_log (device_id, id)`)
+	exec(`CREATE TRIGGER render_device_deleted AFTER DELETE ON device
+BEGIN
+  DELETE FROM render WHERE device_id = OLD.id;
+END`)
+	exec(`PRAGMA foreign_keys = ON`)
+	exec(`PRAGMA user_version = 6`)
+}
+
+// TestAutoincrementFresh checks that a new database never hands out an ID
+// twice, in every table with a surrogate ID.
+func TestAutoincrementFresh(t *testing.T) {
+	t.Parallel()
+	checkNoIDReuse(t, openTest(t).Writer)
+}
+
+// TestMigrateAutoincrement checks step 7: a database at version 6, with rows
+// in the tables it rebuilds and in their children, keeps every row and ID,
+// its foreign keys, its cascades and its trigger, ends with the shape of
+// schema.sql, and no longer reuses an ID.
+func TestMigrateAutoincrement(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	fresh := openTest(t)
+	want := shapeOf(t, fresh.Writer)
+
+	path := filepath.Join(t.TempDir(), "v6.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropAutoincrement(t, old.Writer)
+	for _, stmt := range []string{
+		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (1, 'D8:3B:DA:12:34:01', x'01', 'ABC001', 1), (5, 'D8:3B:DA:12:34:05', x'05', 'ABC005', 1)`,
+		`INSERT INTO device_state (device_id, last_seen, last_refresh_rate_sent) VALUES (1, 100, 900), (5, 100, 900)`,
+		`INSERT INTO device_cursor (device_id, item_id, item_started_at) VALUES (1, 10, 90)`,
+		`INSERT INTO device_log (id, device_id, received_at, device_at, level, message, detail) VALUES (2, 1, 1, 1, 'info', 'a', 'x'), (6, 5, 2, 2, 'warn', 'b', 'y')`,
+		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1), (4, 'r4', 's4', 60, 2)`,
+		`INSERT INTO plugin_instance (id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at, secret_keys) VALUES (3, 1, 'i', '{"a":"b"}', x'0102', 'bw', 7, 8, '["k"]'), (8, 4, 'j', '{}', NULL, '', 9, 0, '[]')`,
+		`INSERT INTO instance_data (instance_id, data, updated_at) VALUES (3, '{"d":1}', 5)`,
+		`INSERT INTO playlist (id, name, days) VALUES (2, 'a', 62), (7, 'b', 127)`,
+		`INSERT INTO playlist_device (device_id, playlist_id, priority) VALUES (1, 2, 0), (1, 7, 1), (5, 7, 0)`,
+		`INSERT INTO playlist_item (id, playlist_id, position, duration, hidden) VALUES (10, 2, 0, 60, 0), (12, 2, 1, 30, 1), (20, 7, 0, 60, 0)`,
+		`INSERT INTO playlist_slot (item_id, slot, instance_id) VALUES (10, 0, 3), (12, 0, 8), (20, 0, 3)`,
+		// Render 2 is built for device 5 and renders 1 and 3 for every device.
+		`INSERT INTO render (id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, settings_at) VALUES
+		  (1, 3, 0, 800, 480, 'bw', 5, 6, 10, 8), (2, 3, 5, 800, 480, 'bw', 5, 6, 10, 8), (3, 8, 0, 800, 480, 'bw', 5, 6, 10, 0)`,
+		`INSERT INTO render_image (render_id, layout, image, bytes) VALUES (1, 'full', 'img1', 3), (2, 'full', 'img2', 3), (3, 'full', 'img3', 3)`,
+		`INSERT INTO api_token (id, name, token_hash, created_at, last_used_at) VALUES (3, 'tok', x'aa', 1, 2)`,
+		`INSERT INTO admin_session (id, token_hash, created_at, last_seen_at, expires_at) VALUES (4, x'bb', 1, 2, 3)`,
+		`INSERT INTO firmware (id, fw_model, version, sha256, chip, idf_version, bytes, source, uploaded_at) VALUES (9, 'og', '1.9.0', 'abc', 'esp32c3', '5.1', 100, 'upload', 3)`,
+		`INSERT INTO firmware_offer (device_id, firmware_id, offers, last_offered_at) VALUES (1, 9, 2, 4)`,
+		`INSERT INTO firmware_rollout (firmware_id, canary_device_id, state, started_at) VALUES (9, 1, 'active', 5)`,
+	} {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if v := userVersion(t, old.Writer); v != 6 {
+		t.Fatalf("fixture version = %d, want 6", v)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	db := client.Writer
+	if v := userVersion(t, db); v != len(steps) || v < 7 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, db); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// Every row is there, with its ID.
+	for _, tc := range []struct {
+		table string
+		ids   []int64
+	}{
+		{"device", []int64{1, 5}},
+		{"device_log", []int64{2, 6}},
+		{"recipe", []int64{1, 4}},
+		{"plugin_instance", []int64{3, 8}},
+		{"playlist", []int64{2, 7}},
+		{"playlist_item", []int64{10, 12, 20}},
+		{"render", []int64{1, 2, 3}},
+		{"api_token", []int64{3}},
+		{"admin_session", []int64{4}},
+		{"firmware", []int64{9}},
+	} {
+		rows, err := db.QueryContext(ctx, idQueries[tc.table])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, id)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(got, tc.ids) {
+			t.Errorf("%s IDs %v, want %v", tc.table, got, tc.ids)
+		}
+	}
+	for table, want := range map[string]int{
+		"device_state": 2, "device_cursor": 1, "instance_data": 1, "playlist_device": 3, "playlist_slot": 3,
+		"render_image": 3, "firmware_offer": 1, "firmware_rollout": 1,
+	} {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil || n != want {
+			t.Errorf("%s has %d rows, want %d, %v", table, n, want, err)
+		}
+	}
+	// Columns came across, including ones whose order differs from schema.sql.
+	inst, err := client.Read.GetInstance(ctx, 3)
+	if err != nil || inst.RecipeID != 1 || inst.FieldValues != `{"a":"b"}` || !slices.Equal(inst.SecretValues, []byte{1, 2}) ||
+		inst.Palette != "bw" || inst.CreatedAt != 7 || inst.SettingsAt != 8 || inst.SecretKeys != `["k"]` {
+		t.Errorf("instance 3 after migration: %+v, %v", inst, err)
+	}
+	pl, err := client.Read.GetPlaylist(ctx, 2)
+	if err != nil || pl.Name != "a" || pl.Days != 62 {
+		t.Errorf("playlist 2 after migration: %+v, %v", pl, err)
+	}
+
+	// Foreign keys are on and nothing is orphaned.
+	var fk, orphans int
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil || fk != 1 {
+		t.Errorf("foreign_keys = %d, %v", fk, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&orphans); err != nil || orphans != 0 {
+		t.Errorf("foreign_key_check found %d rows, %v", orphans, err)
+	}
+
+	// A highest ID that is deleted is not handed out again.
+	for _, tc := range []struct {
+		table, del, insert string
+		high               int64
+	}{
+		{"playlist", `DELETE FROM playlist WHERE id = 7`, `INSERT INTO playlist (name) VALUES ('c')`, 7},
+		{"device", `DELETE FROM device WHERE id = 5`, `INSERT INTO device (mac, api_key_hash, friendly_id, created_at) VALUES ('m', x'07', 'F', 1)`, 5},
+	} {
+		if _, err := db.ExecContext(ctx, tc.del); err != nil {
+			t.Fatal(err)
+		}
+		if tc.table == "device" {
+			// The trigger removed the device's render and, by cascade, its image.
+			var renders, images int
+			err := db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM render WHERE device_id = 5), (SELECT COUNT(*) FROM render_image WHERE render_id = 2)`).Scan(&renders, &images)
+			if err != nil || renders != 0 || images != 0 {
+				t.Errorf("after deleting device 5: %d renders, %d images, %v; the trigger did not run", renders, images, err)
+			}
+		}
+		res, err := db.ExecContext(ctx, tc.insert)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id, err := res.LastInsertId(); err != nil || id != tc.high+1 {
+			t.Errorf("%s: new row got ID %d after ID %d was deleted, want %d, %v", tc.table, id, tc.high, tc.high+1, err)
+		}
+	}
+
+	// A cascade still works: deleting device 1 takes its children.
+	if _, err := db.ExecContext(ctx, `DELETE FROM device WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM device_state WHERE device_id = 1`,
+		`SELECT COUNT(*) FROM device_cursor WHERE device_id = 1`,
+		`SELECT COUNT(*) FROM device_log WHERE device_id = 1`,
+		`SELECT COUNT(*) FROM playlist_device WHERE device_id = 1`,
+		`SELECT COUNT(*) FROM firmware_offer WHERE device_id = 1`,
+		`SELECT COUNT(*) FROM firmware_rollout WHERE canary_device_id = 1`,
+	} {
+		var n int
+		if err := db.QueryRowContext(ctx, q).Scan(&n); err != nil || n != 0 {
+			t.Errorf("after deleting device 1, %q = %d, %v; want 0", q, n, err)
+		}
+	}
+	// So does deleting a recipe, down to the render images.
+	if _, err := db.ExecContext(ctx, `DELETE FROM recipe WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	err = db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM plugin_instance WHERE id = 3) + (SELECT COUNT(*) FROM playlist_slot WHERE instance_id = 3) + (SELECT COUNT(*) FROM instance_data) + (SELECT COUNT(*) FROM render WHERE instance_id = 3) + (SELECT COUNT(*) FROM render_image WHERE render_id = 1)`).Scan(&left)
+	if err != nil || left != 0 {
+		t.Errorf("after deleting recipe 1, %d dependent rows are left, %v", left, err)
+	}
+
+	checkNoIDReuse(t, db)
+}
+
+// TestMigrateForeignKeys checks that migrate leaves foreign keys on, whether
+// it succeeds, fails, or refuses a database whose row has no parent, and that
+// the refusal rolls back.
+func TestMigrateForeignKeys(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	for _, tc := range []struct {
+		name    string
+		prepare []string
+		want    string // A part of the error, or empty for success.
+		version int
+		v6      bool // Whether the database is rebuilt as version 6 first.
+	}{
+		{"succeeds", nil, "", len(steps), false},
+		{"newer database", []string{`PRAGMA user_version = 99`}, "newer", 99, false},
+		{"orphan row", []string{`PRAGMA foreign_keys = OFF`, `INSERT INTO device_log (device_id, received_at, device_at, level, message, detail) VALUES (42, 1, 1, 'i', 'm', 'd')`, `PRAGMA user_version = 6`}, "foreign key", 6, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "trmnl.db")
+			seed, err := Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.v6 {
+				dropAutoincrement(t, seed.Writer)
+			}
+			conn, err := seed.Writer.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stmt := range tc.prepare {
+				if _, err := conn.ExecContext(ctx, stmt); err != nil {
+					t.Fatalf("%s: %v", stmt, err)
+				}
+			}
+			if err := errors.Join(conn.Close(), seed.Close()); err != nil {
+				t.Fatal(err)
+			}
+
+			writer, err := openPool(ctx, path, writerDSN(path, busyTimeout), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writer.Close()
+			client := &Client{Writer: writer, Write: New(writer)}
+			err = client.migrate(ctx)
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("migrate = %v, want an error with %q", err, tc.want)
+			}
+			if v := userVersion(t, writer); v != tc.version {
+				t.Errorf("version = %d, want %d", v, tc.version)
+			}
+			var fk int
+			if err := writer.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil || fk != 1 {
+				t.Errorf("foreign_keys = %d after migrate, %v; want 1", fk, err)
+			}
+		})
 	}
 }
 
