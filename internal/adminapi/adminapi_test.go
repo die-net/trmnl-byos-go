@@ -640,6 +640,103 @@ func TestPlaylists(t *testing.T) {
 	ta.wantError(t, "DELETE", "/api/v1/playlists/items/x", "", 404, "no such playlist item")
 }
 
+// TestPlaylistCRUD checks creating, renaming, deleting and linking playlists:
+// the statuses and bodies, and that a refused request changes nothing.
+func TestPlaylistCRUD(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, false)
+	ta.addDevice(t)
+	var a, b playlistJSON
+	ta.call(t, "POST", "/api/v1/playlists", `{"name": " Mornings "}`, 201, &a)
+	ta.call(t, "POST", "/api/v1/playlists", `{"name": "Evenings"}`, 201, &b)
+	if a.ID == 0 || a.Name != "Mornings" || a.Items == nil || a.Devices == nil || a.Schedule.Days == nil {
+		t.Errorf("created %+v", a)
+	}
+	pa := "/api/v1/playlists/" + strconv.FormatInt(a.ID, 10)
+	pb := "/api/v1/playlists/" + strconv.FormatInt(b.ID, 10)
+
+	for _, tc := range []struct {
+		name, method, path, body string
+		status                   int
+		contains                 string
+	}{
+		{"create empty name", "POST", "/api/v1/playlists", `{"name": " "}`, 400, "empty"},
+		{"create no name", "POST", "/api/v1/playlists", `{}`, 400, "empty"},
+		{"create unknown field", "POST", "/api/v1/playlists", `{"name": "x", "id": 4}`, 400, "unknown field"},
+		{"create duplicate", "POST", "/api/v1/playlists", `{"name": "Mornings"}`, 409, "a playlist has that name"},
+		{"rename to another's", "PATCH", pa, `{"name": "Evenings"}`, 409, "a playlist has that name"},
+		{"rename empty", "PATCH", pa, `{"name": ""}`, 400, "empty"},
+		{"rename with bad schedule", "PATCH", pa, `{"name": "Fresh", "schedule": {"days": []}}`, 400, "at least one weekday"},
+		{"rename unknown", "PATCH", "/api/v1/playlists/999", `{"name": "Fresh"}`, 404, "no such playlist"},
+		{"delete unknown", "DELETE", "/api/v1/playlists/999", "", 404, "no such playlist"},
+		{"delete malformed", "DELETE", "/api/v1/playlists/x", "", 404, "no such playlist"},
+		{"link unknown playlist", "PUT", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "no such playlist"},
+		{"link unknown device", "PUT", pa + "/devices/ZZZ999", "", 404, "no such device"},
+		{"link priority too big", "PUT", pa + "/devices/" + testFriend, `{"priority": 1}`, 400, "priority 1"},
+		{"link negative priority", "PUT", pa + "/devices/" + testFriend, `{"priority": -1}`, 400, "priority -1"},
+		{"link unknown field", "PUT", pa + "/devices/" + testFriend, `{"order": 1}`, 400, "unknown field"},
+		{"link priority not a number", "PUT", pa + "/devices/" + testFriend, `{"priority": "first"}`, 400, "bad request body"},
+		{"unlink not linked", "DELETE", pa + "/devices/" + testFriend, "", 404, "not linked"},
+		{"unlink unknown device", "DELETE", pa + "/devices/ZZZ999", "", 404, "not linked"},
+		{"unlink unknown playlist", "DELETE", "/api/v1/playlists/999/devices/" + testFriend, "", 404, "not linked"},
+	} {
+		ta.wantError(t, tc.method, tc.path, tc.body, tc.status, tc.contains)
+	}
+	var lists []playlistJSON
+	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
+	if len(lists) != 2 || lists[0].Name != "Evenings" || lists[1].Name != "Mornings" || len(lists[0].Devices)+len(lists[1].Devices) != 0 {
+		t.Fatalf("a refused request changed the playlists: %+v", lists)
+	}
+
+	// Rename keeps the schedule, and a schedule patch keeps the name.
+	var got playlistJSON
+	ta.call(t, "PATCH", pa, `{"schedule": {"days": ["sat"]}}`, 200, &got)
+	ta.call(t, "PATCH", pa, `{"name": "Early"}`, 200, &got)
+	if got.Name != "Early" || !reflect.DeepEqual(got.Schedule.Days, []string{"sat"}) {
+		t.Errorf("renamed %+v", got)
+	}
+	ta.call(t, "PATCH", pa, `{"name": "Early"}`, 200, &got)
+
+	// Link by friendly ID with an empty body, then by MAC with a priority.
+	ta.call(t, "PUT", pa+"/devices/"+testFriend, "", 200, &got)
+	if len(got.Devices) != 1 || got.Devices[0] != (playlistDeviceJSON{Device: testFriend, Priority: 0}) {
+		t.Errorf("linked %+v", got.Devices)
+	}
+	ta.call(t, "PUT", pb+"/devices/"+testMAC, `{"priority": 0}`, 200, &got)
+	if len(got.Devices) != 1 || got.Devices[0].Priority != 0 {
+		t.Errorf("linked at the front %+v", got.Devices)
+	}
+	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
+	// Playlists list by name: Early, then Evenings.
+	if lists[0].Devices[0].Priority != 1 || lists[1].Devices[0].Priority != 0 {
+		t.Errorf("priorities after the move: %+v", lists)
+	}
+	// Linking again with no priority leaves it, and with one moves it.
+	ta.call(t, "PUT", pa+"/devices/"+testFriend, `{}`, 200, &got)
+	if got.Devices[0].Priority != 1 {
+		t.Errorf("relinked %+v", got.Devices)
+	}
+	ta.call(t, "PUT", pa+"/devices/"+testFriend, `{"priority": 0}`, 200, &got)
+	if got.Devices[0].Priority != 0 {
+		t.Errorf("moved %+v", got.Devices)
+	}
+
+	// Unlinking and deleting close the gap.
+	ta.call(t, "DELETE", pa+"/devices/"+testFriend, "", 204, nil)
+	ta.wantError(t, "DELETE", pa+"/devices/"+testFriend, "", 404, "not linked")
+	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
+	if len(lists[0].Devices) != 0 || lists[1].Devices[0].Priority != 0 {
+		t.Errorf("after unlink: %+v", lists)
+	}
+	ta.call(t, "PUT", pa+"/devices/"+testFriend, "", 200, nil)
+	ta.call(t, "DELETE", pb, "", 204, nil)
+	ta.call(t, "GET", "/api/v1/playlists", "", 200, &lists)
+	if len(lists) != 1 || lists[0].ID != a.ID || len(lists[0].Devices) != 1 || lists[0].Devices[0].Priority != 0 {
+		t.Errorf("after delete: %+v", lists)
+	}
+	ta.wantError(t, "DELETE", pb, "", 404, "no such playlist")
+}
+
 // TestPatchPlaylists checks the schedule, hidden flag, duration and position
 // of items and the schedule of playlists: what a successful PATCH answers and
 // stores, and that a refused one, whatever else it asked for, changes nothing.
@@ -733,7 +830,7 @@ func TestPatchPlaylists(t *testing.T) {
 		{"malformed item", "/api/v1/playlists/items/x", `{"hidden": true}`, 404, "no such playlist item"},
 		{"playlist unknown day", plPath, `{"schedule": {"days": ["someday"]}}`, 400, "not a weekday"},
 		{"playlist bad range", plPath, `{"schedule": {"starts_at": 9, "ends_at": 9}}`, 400, "starts_at must be before"},
-		{"playlist unknown field", plPath, `{"name": "other"}`, 400, "unknown field"},
+		{"playlist unknown field", plPath, `{"color": "red"}`, 400, "unknown field"},
 		{"unknown playlist", "/api/v1/playlists/999", `{"schedule": {}}`, 404, "no such playlist"},
 		{"malformed playlist", "/api/v1/playlists/x", `{"schedule": {}}`, 404, "no such playlist"},
 	} {

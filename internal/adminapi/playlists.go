@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -72,11 +73,12 @@ type playlistJSON struct {
 	Items    []playlistItemJSON   `json:"items"`
 }
 
-// playlistDeviceJSON is a device linked to a playlist. The device shows the
-// playlist with the lowest priority.
+// playlistDeviceJSON is a device linked to a playlist.
 type playlistDeviceJSON struct {
-	Device   string `json:"device"`
-	Priority int64  `json:"priority"`
+	Device string `json:"device"`
+	// Priority is the playlist's index in the device's order, from 0, which
+	// is tried first.
+	Priority int64 `json:"priority"`
 }
 
 // playlistItemJSON is one item of a playlist, in position order.
@@ -192,8 +194,52 @@ func (s *Server) deletePlaylistItem(r *http.Request) error {
 	return playlist.DeleteItem(r.Context(), s.db, id)
 }
 
-// patchPlaylistRequest is the body of a playlist update request.
+// playlistByID describes one playlist, or returns an error wrapping
+// playlist.ErrNoPlaylist if there is none.
+func (s *Server) playlistByID(ctx context.Context, id int64) (playlistJSON, error) {
+	lists, err := s.playlistsJSON(ctx)
+	if err != nil {
+		return playlistJSON{}, err
+	}
+	for i := range lists {
+		if lists[i].ID == id {
+			return lists[i], nil
+		}
+	}
+	return playlistJSON{}, fmt.Errorf("%w: %d", playlist.ErrNoPlaylist, id)
+}
+
+// createPlaylistRequest is the body of a playlist create request.
+type createPlaylistRequest struct {
+	// Name is the new playlist's name.
+	Name string `json:"name"`
+}
+
+func (s *Server) createPlaylist(w http.ResponseWriter, r *http.Request) (playlistJSON, error) {
+	var req createPlaylistRequest
+	if err := decode(w, r, &req, false); err != nil {
+		return playlistJSON{}, err
+	}
+	pl, err := playlist.CreatePlaylist(r.Context(), s.db, req.Name)
+	if err != nil {
+		return playlistJSON{}, err
+	}
+	return s.playlistByID(r.Context(), pl.ID)
+}
+
+func (s *Server) deletePlaylist(r *http.Request) error {
+	id, err := pathID(r, playlist.ErrNoPlaylist)
+	if err != nil {
+		return err
+	}
+	return playlist.DeletePlaylist(r.Context(), s.db, id)
+}
+
+// patchPlaylistRequest is the body of a playlist update request. A field
+// that is left out leaves that part of the playlist as it is.
 type patchPlaylistRequest struct {
+	// Name renames the playlist.
+	Name *string `json:"name"`
 	// Schedule replaces the playlist's schedule.
 	Schedule *scheduleJSON `json:"schedule"`
 }
@@ -207,27 +253,57 @@ func (s *Server) patchPlaylist(w http.ResponseWriter, r *http.Request) (playlist
 	if err := decode(w, r, &req, false); err != nil {
 		return playlistJSON{}, err
 	}
-	var edit playlist.ScheduleEdit
+	u := playlist.Update{Name: req.Name}
 	if req.Schedule != nil {
-		e, err := req.Schedule.edit()
-		if err != nil {
+		if u.Schedule, err = req.Schedule.edit(); err != nil {
 			return playlistJSON{}, err
 		}
-		edit = *e
 	}
-	if err := playlist.SetPlaylistSchedule(r.Context(), s.db, id, edit); err != nil {
+	if err := playlist.UpdatePlaylist(r.Context(), s.db, id, u); err != nil {
 		return playlistJSON{}, err
 	}
-	lists, err := s.playlistsJSON(r.Context())
+	return s.playlistByID(r.Context(), id)
+}
+
+// linkDeviceRequest is the body of a request to link a device to a playlist.
+type linkDeviceRequest struct {
+	// Priority is the playlist's index in the device's order. Left out, a
+	// new link goes last and an existing one stays where it is.
+	Priority *int64 `json:"priority"`
+}
+
+func (s *Server) linkPlaylistDevice(w http.ResponseWriter, r *http.Request) (playlistJSON, error) {
+	id, err := pathID(r, playlist.ErrNoPlaylist)
 	if err != nil {
 		return playlistJSON{}, err
 	}
-	for i := range lists {
-		if lists[i].ID == id {
-			return lists[i], nil
-		}
+	var req linkDeviceRequest
+	if err := decode(w, r, &req, true); err != nil {
+		return playlistJSON{}, err
 	}
-	return playlistJSON{}, fmt.Errorf("%w: %d", playlist.ErrNoPlaylist, id)
+	ctx := r.Context()
+	dev, err := device.FindDevice(ctx, s.db.Read, r.PathValue("device"))
+	if err != nil {
+		return playlistJSON{}, err
+	}
+	if err := playlist.LinkDevice(ctx, s.db, id, dev.ID, req.Priority); err != nil {
+		return playlistJSON{}, err
+	}
+	return s.playlistByID(ctx, id)
+}
+
+func (s *Server) unlinkPlaylistDevice(r *http.Request) error {
+	id, err := pathID(r, playlist.ErrNotLinked)
+	if err != nil {
+		return err
+	}
+	dev, err := device.FindDevice(r.Context(), s.db.Read, r.PathValue("device"))
+	if errors.Is(err, device.ErrNoDevice) {
+		return fmt.Errorf("%w: %s", playlist.ErrNotLinked, r.PathValue("device"))
+	} else if err != nil {
+		return err
+	}
+	return playlist.UnlinkDevice(r.Context(), s.db, id, dev.ID)
 }
 
 // patchItemRequest is the body of a playlist item update request. A field

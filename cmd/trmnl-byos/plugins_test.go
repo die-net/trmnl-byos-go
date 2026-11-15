@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 )
@@ -237,5 +240,92 @@ func TestServerZone(t *testing.T) {
 				t.Fatalf("TZ %q gave %v, %v; want %s", tc.tz, loc, err, tc.want)
 			}
 		})
+	}
+}
+
+// TestPlaylistManage runs create, rename, link, unlink and delete, and checks
+// what each leaves in the database and what a refused one reports.
+func TestPlaylistManage(t *testing.T) {
+	t.Parallel()
+	dir := playlistFixture(t)
+	client, err := openDB(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for _, n := range []int{1, 2} {
+		_, err := client.Write.CreateDevice(t.Context(), db.CreateDeviceParams{
+			Mac: "D8:3B:DA:12:34:0" + strconv.Itoa(n), ApiKeyHash: []byte("key " + strconv.Itoa(n)), FriendlyID: "ABC00" + strconv.Itoa(n), CreatedAt: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := runPlaylist(t, dir, args...)
+		if err != nil {
+			t.Fatalf("playlist %v: %v", args, err)
+		}
+		return out
+	}
+	run("create", "Mornings")
+	run("rename", "Mornings", "Evenings")
+	run("link", "Evenings", "ABC001")
+	run("link", "p", "d8:3b:da:12:34:01", "-priority", "0")
+	run("link", "Evenings", "ABC002")
+	devices := func(friendly string) []string {
+		t.Helper()
+		devs, err := client.Read.ListPlaylistDevices(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, d := range devs {
+			if d.FriendlyID == friendly {
+				got = append(got, d.Playlist+"@"+strconv.FormatInt(d.Priority, 10))
+			}
+		}
+		slices.Sort(got)
+		return got
+	}
+	if got := devices("ABC001"); !slices.Equal(got, []string{"Evenings@1", "p@0"}) {
+		t.Errorf("ABC001 links = %v", got)
+	}
+	run("unlink", "p", "ABC001")
+	if got := devices("ABC001"); !slices.Equal(got, []string{"Evenings@0"}) {
+		t.Errorf("ABC001 links after unlink = %v", got)
+	}
+	run("delete", "Evenings")
+	if got := devices("ABC002"); len(got) != 0 {
+		t.Errorf("ABC002 links after delete = %v", got)
+	}
+	if out := run("list"); strings.Contains(out, "Evenings") || strings.Contains(out, "Mornings") {
+		t.Errorf("list shows a deleted playlist:\n%s", out)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		kind error
+	}{
+		{"create duplicate", []string{"create", "p"}, playlist.ErrNameTaken},
+		{"create empty", []string{"create", " "}, errkind.ErrInvalid},
+		{"rename missing", []string{"rename", "nope", "x"}, playlist.ErrNoPlaylist},
+		{"rename to taken", []string{"create", "q"}, nil},
+		{"rename onto another", []string{"rename", "q", "p"}, playlist.ErrNameTaken},
+		{"delete missing", []string{"delete", "nope"}, playlist.ErrNoPlaylist},
+		{"link missing playlist", []string{"link", "nope", "ABC001"}, playlist.ErrNoPlaylist},
+		{"link missing device", []string{"link", "p", "ZZZ999"}, device.ErrNoDevice},
+		{"link bad priority", []string{"link", "p", "ABC001", "-priority", "3"}, errkind.ErrInvalid},
+		{"unlink not linked", []string{"unlink", "p", "ABC002"}, playlist.ErrNotLinked},
+	} {
+		_, err := runPlaylist(t, dir, tc.args...)
+		if tc.kind == nil && err != nil || tc.kind != nil && !errors.Is(err, tc.kind) {
+			t.Errorf("%s: %v, want %v", tc.name, err, tc.kind)
+		}
+	}
+	if devs, err := client.Read.ListPlaylistDevices(t.Context()); err != nil || len(devs) != 0 {
+		t.Errorf("a refused link left %v, %v", devs, err)
 	}
 }

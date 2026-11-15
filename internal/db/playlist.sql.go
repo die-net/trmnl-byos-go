@@ -9,6 +9,25 @@ import (
 	"context"
 )
 
+const appendPlaylistDevice = `-- name: AppendPlaylistDevice :exec
+INSERT INTO playlist_device (device_id, playlist_id, priority)
+SELECT ?1, ?2, CAST(COALESCE(MAX(priority), -1) + 1 AS INTEGER)
+FROM playlist_device WHERE device_id = ?1
+ON CONFLICT (device_id, playlist_id) DO NOTHING
+`
+
+type AppendPlaylistDeviceParams struct {
+	DeviceID   int64 `json:"device_id"`
+	PlaylistID int64 `json:"playlist_id"`
+}
+
+// Links a device to a playlist at the end of the device's order, and leaves
+// the link as it is if the device is linked already.
+func (q *Queries) AppendPlaylistDevice(ctx context.Context, arg AppendPlaylistDeviceParams) error {
+	_, err := q.db.ExecContext(ctx, appendPlaylistDevice, arg.DeviceID, arg.PlaylistID)
+	return err
+}
+
 const createPlaylist = `-- name: CreatePlaylist :one
 INSERT INTO playlist (name) VALUES (?) RETURNING id, name, days, window_start, window_end, starts_at, ends_at
 `
@@ -78,6 +97,35 @@ type CreatePlaylistSlotParams struct {
 func (q *Queries) CreatePlaylistSlot(ctx context.Context, arg CreatePlaylistSlotParams) error {
 	_, err := q.db.ExecContext(ctx, createPlaylistSlot, arg.ItemID, arg.Slot, arg.InstanceID)
 	return err
+}
+
+const deletePlaylist = `-- name: DeletePlaylist :execrows
+DELETE FROM playlist WHERE id = ?
+`
+
+func (q *Queries) DeletePlaylist(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePlaylist, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deletePlaylistDevice = `-- name: DeletePlaylistDevice :execrows
+DELETE FROM playlist_device WHERE device_id = ? AND playlist_id = ?
+`
+
+type DeletePlaylistDeviceParams struct {
+	DeviceID   int64 `json:"device_id"`
+	PlaylistID int64 `json:"playlist_id"`
+}
+
+func (q *Queries) DeletePlaylistDevice(ctx context.Context, arg DeletePlaylistDeviceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePlaylistDevice, arg.DeviceID, arg.PlaylistID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deletePlaylistItem = `-- name: DeletePlaylistItem :execrows
@@ -190,23 +238,6 @@ func (q *Queries) GetPlaylistItemView(ctx context.Context, id int64) (GetPlaylis
 	return i, err
 }
 
-const linkPlaylistDevice = `-- name: LinkPlaylistDevice :exec
-INSERT INTO playlist_device (device_id, playlist_id, priority)
-VALUES (?, ?, ?)
-ON CONFLICT (device_id, playlist_id) DO UPDATE SET priority = excluded.priority
-`
-
-type LinkPlaylistDeviceParams struct {
-	DeviceID   int64 `json:"device_id"`
-	PlaylistID int64 `json:"playlist_id"`
-	Priority   int64 `json:"priority"`
-}
-
-func (q *Queries) LinkPlaylistDevice(ctx context.Context, arg LinkPlaylistDeviceParams) error {
-	_, err := q.db.ExecContext(ctx, linkPlaylistDevice, arg.DeviceID, arg.PlaylistID, arg.Priority)
-	return err
-}
-
 const listDeviceItems = `-- name: ListDeviceItems :many
 SELECT playlist.id AS playlist_id, playlist.days AS playlist_days, playlist.window_start AS playlist_window_start,
   playlist.window_end AS playlist_window_end, playlist.starts_at AS playlist_starts_at, playlist.ends_at AS playlist_ends_at,
@@ -220,7 +251,7 @@ JOIN playlist_item ON playlist_item.playlist_id = playlist.id
 JOIN playlist_slot ON playlist_slot.item_id = playlist_item.id AND playlist_slot.slot = 0
 JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 WHERE playlist_device.device_id = ?
-ORDER BY playlist_device.priority, playlist_device.playlist_id, playlist_item.position
+ORDER BY playlist_device.priority, playlist_item.position
 `
 
 type ListDeviceItemsRow struct {
@@ -244,7 +275,7 @@ type ListDeviceItemsRow struct {
 }
 
 // The items of every playlist a device is linked to, in the order they are
-// tried (priority, then playlist ID) and then position, with each
+// tried (by priority) and then position, with each
 // playlist's and item's schedule and the instance in each item's first slot.
 func (q *Queries) ListDeviceItems(ctx context.Context, deviceID int64) ([]ListDeviceItemsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDeviceItems, deviceID)
@@ -287,6 +318,34 @@ func (q *Queries) ListDeviceItems(ctx context.Context, deviceID int64) ([]ListDe
 	return items, nil
 }
 
+const listDevicePlaylistIDs = `-- name: ListDevicePlaylistIDs :many
+SELECT playlist_id FROM playlist_device WHERE device_id = ? ORDER BY priority
+`
+
+// The IDs of the playlists a device is linked to, in the order they are tried.
+func (q *Queries) ListDevicePlaylistIDs(ctx context.Context, deviceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listDevicePlaylistIDs, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var playlist_id int64
+		if err := rows.Scan(&playlist_id); err != nil {
+			return nil, err
+		}
+		items = append(items, playlist_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInstanceItems = `-- name: ListInstanceItems :many
 SELECT DISTINCT item_id FROM playlist_slot WHERE instance_id = ? ORDER BY item_id
 `
@@ -316,7 +375,8 @@ func (q *Queries) ListInstanceItems(ctx context.Context, instanceID int64) ([]in
 }
 
 const listPlaylistDevices = `-- name: ListPlaylistDevices :many
-SELECT playlist.name AS playlist, device.friendly_id, device.name AS device_name, playlist_device.priority
+SELECT playlist.name AS playlist, playlist_device.playlist_id, playlist_device.device_id,
+  device.friendly_id, device.name AS device_name, playlist_device.priority
 FROM playlist_device
 JOIN playlist ON playlist.id = playlist_device.playlist_id
 JOIN device ON device.id = playlist_device.device_id
@@ -325,6 +385,8 @@ ORDER BY playlist.name, device.friendly_id
 
 type ListPlaylistDevicesRow struct {
 	Playlist   string `json:"playlist"`
+	PlaylistID int64  `json:"playlist_id"`
+	DeviceID   int64  `json:"device_id"`
 	FriendlyID string `json:"friendly_id"`
 	DeviceName string `json:"device_name"`
 	Priority   int64  `json:"priority"`
@@ -341,6 +403,8 @@ func (q *Queries) ListPlaylistDevices(ctx context.Context) ([]ListPlaylistDevice
 		var i ListPlaylistDevicesRow
 		if err := rows.Scan(
 			&i.Playlist,
+			&i.PlaylistID,
+			&i.DeviceID,
 			&i.FriendlyID,
 			&i.DeviceName,
 			&i.Priority,
@@ -484,6 +548,29 @@ func (q *Queries) ListPlaylists(ctx context.Context) ([]Playlist, error) {
 	return items, nil
 }
 
+const negateDevicePriorities = `-- name: NegateDevicePriorities :exec
+UPDATE playlist_device SET priority = -1 - priority WHERE device_id = ?
+`
+
+// Moves a device's priorities out of the range of indexes, so each link can
+// then be given its index without two links sharing a priority at any step.
+func (q *Queries) NegateDevicePriorities(ctx context.Context, deviceID int64) error {
+	_, err := q.db.ExecContext(ctx, negateDevicePriorities, deviceID)
+	return err
+}
+
+const negatePlaylistDevicesPriorities = `-- name: NegatePlaylistDevicesPriorities :exec
+UPDATE playlist_device SET priority = -1 - priority
+WHERE device_id IN (SELECT other.device_id FROM playlist_device AS other WHERE other.playlist_id = ?)
+`
+
+// Negates the priorities of every device linked to a playlist, the first step
+// of closing the gap that deleting the playlist leaves.
+func (q *Queries) NegatePlaylistDevicesPriorities(ctx context.Context, playlistID int64) error {
+	_, err := q.db.ExecContext(ctx, negatePlaylistDevicesPriorities, playlistID)
+	return err
+}
+
 const negatePlaylistPositions = `-- name: NegatePlaylistPositions :exec
 UPDATE playlist_item SET position = -1 - position WHERE playlist_id = ?
 `
@@ -504,20 +591,6 @@ func (q *Queries) NextItemPosition(ctx context.Context, playlistID int64) (int64
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
-}
-
-const setItemPosition = `-- name: SetItemPosition :exec
-UPDATE playlist_item SET position = ? WHERE id = ?
-`
-
-type SetItemPositionParams struct {
-	Position int64 `json:"position"`
-	ID       int64 `json:"id"`
-}
-
-func (q *Queries) SetItemPosition(ctx context.Context, arg SetItemPositionParams) error {
-	_, err := q.db.ExecContext(ctx, setItemPosition, arg.Position, arg.ID)
-	return err
 }
 
 const updatePlaylistItem = `-- name: UpdatePlaylistItem :exec
@@ -550,6 +623,20 @@ func (q *Queries) UpdatePlaylistItem(ctx context.Context, arg UpdatePlaylistItem
 		arg.EndsAt,
 		arg.ID,
 	)
+	return err
+}
+
+const updatePlaylistName = `-- name: UpdatePlaylistName :exec
+UPDATE playlist SET name = ? WHERE id = ?
+`
+
+type UpdatePlaylistNameParams struct {
+	Name string `json:"name"`
+	ID   int64  `json:"id"`
+}
+
+func (q *Queries) UpdatePlaylistName(ctx context.Context, arg UpdatePlaylistNameParams) error {
+	_, err := q.db.ExecContext(ctx, updatePlaylistName, arg.Name, arg.ID)
 	return err
 }
 

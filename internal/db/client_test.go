@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -704,7 +705,7 @@ func TestMigrateAdminSessions(t *testing.T) {
 	}
 	// Make the database look like one from before step 3, which is also from
 	// before step 4.
-	for _, stmt := range append(dropPlaylistSchedules,
+	for _, stmt := range append(slices.Concat(dropPlaylistPriorityIndex, dropPlaylistSchedules),
 		`DROP TABLE admin_session`,
 		`INSERT INTO setting (key, value, updated_at) VALUES ('kept', 'yes', 1)`,
 		`PRAGMA user_version = 2`,
@@ -758,6 +759,12 @@ var dropPlaylistSchedules = []string{
 	`ALTER TABLE playlist_item DROP COLUMN ends_at`,
 }
 
+// dropPlaylistPriorityIndex takes the index of step 5 out of a database made
+// from schema.sql, so that it has the shape from before that step.
+var dropPlaylistPriorityIndex = []string{
+	`DROP INDEX playlist_device_priority`,
+}
+
 // TestMigratePlaylistSchedules checks step 4: a database at version 3 gets
 // the schedule columns with their defaults, ends with the shape of
 // schema.sql, and has each playlist's positions compacted to 0 to n-1 in
@@ -774,7 +781,7 @@ func TestMigratePlaylistSchedules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stmts := append([]string{}, dropPlaylistSchedules...)
+	stmts := slices.Concat(dropPlaylistPriorityIndex, dropPlaylistSchedules)
 	stmts = append(stmts,
 		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
 		`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
@@ -825,5 +832,79 @@ func TestMigratePlaylistSchedules(t *testing.T) {
 	pl, err := client.Read.GetPlaylist(ctx, 1)
 	if err != nil || pl.Days != 127 || pl.WindowStart != 0 || pl.WindowEnd != 0 || pl.StartsAt != 0 || pl.EndsAt != 0 {
 		t.Errorf("playlist after migration: %+v, %v", pl, err)
+	}
+}
+
+// TestMigratePlaylistPriorityIndex checks step 5: a database at version 4,
+// whose links may have tied or far-apart priorities, gets each device's links
+// renumbered 0 to n-1 in their old order (priority, then playlist ID), the
+// unique index, and the shape of schema.sql.
+func TestMigratePlaylistPriorityIndex(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	fresh := openTest(t)
+	want := shapeOf(t, fresh.Writer)
+
+	path := filepath.Join(t.TempDir(), "v4.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := slices.Concat(dropPlaylistPriorityIndex, []string{
+		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (1, 'D8:3B:DA:12:34:01', x'01', 'ABC001', 1), (2, 'D8:3B:DA:12:34:02', x'02', 'ABC002', 1), (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
+		`INSERT INTO playlist (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')`,
+		// Device 1: all tied at 0, so the playlist ID decides: 1, 2, 3. Device 2:
+		// 4 and 2 tied at 5, 3 at 1, and 1 at -2: order 1, 3, 2, 4.
+		// Device 3: one link, far from 0.
+		`INSERT INTO playlist_device (device_id, playlist_id, priority) VALUES
+		  (1, 3, 0), (1, 1, 0), (1, 2, 0),
+		  (2, 4, 5), (2, 2, 5), (2, 3, 1), (2, 1, -2),
+		  (3, 4, 40)`,
+		`PRAGMA user_version = 4`,
+	})
+	for _, stmt := range stmts {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if v := userVersion(t, client.Writer); v != len(steps) || v < 5 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, tc := range []struct {
+		device int64
+		want   []int64
+	}{
+		{1, []int64{1, 2, 3}},
+		{2, []int64{1, 3, 2, 4}},
+		{3, []int64{4}},
+	} {
+		ids, err := client.Read.ListDevicePlaylistIDs(ctx, tc.device)
+		if err != nil || fmt.Sprint(ids) != fmt.Sprint(tc.want) {
+			t.Errorf("device %d links %v, %v; want %v", tc.device, ids, err, tc.want)
+		}
+	}
+	for _, tc := range []struct{ device, n int64 }{{1, 3}, {2, 4}, {3, 1}} {
+		var lo, hi int64
+		err := client.Writer.QueryRowContext(ctx, `SELECT MIN(priority), MAX(priority) FROM playlist_device WHERE device_id = ?`, tc.device).Scan(&lo, &hi)
+		if err != nil || lo != 0 || hi != tc.n-1 {
+			t.Errorf("device %d priorities %d to %d, %v; want 0 to %d", tc.device, lo, hi, err, tc.n-1)
+		}
+	}
+	// A second link at the same priority is refused by the new index.
+	_, err = client.Writer.ExecContext(ctx, `INSERT INTO playlist_device (device_id, playlist_id, priority) VALUES (3, 1, 0)`)
+	if err == nil {
+		t.Error("two links of one device with the same priority were accepted")
 	}
 }

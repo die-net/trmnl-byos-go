@@ -319,7 +319,8 @@ func (ts *testServer) scheduleWindow(t *testing.T, name string, start, end int64
 	}
 	s := playlist.Always
 	s.WindowStart, s.WindowEnd = start, end
-	if err := playlist.SetPlaylistSchedule(t.Context(), ts.db, pl.ID, s.Full()); err != nil {
+	edit := s.Full()
+	if err := playlist.UpdatePlaylist(t.Context(), ts.db, pl.ID, playlist.Update{Schedule: &edit}); err != nil {
 		t.Fatal(err)
 	}
 }
