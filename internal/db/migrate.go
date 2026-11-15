@@ -28,6 +28,7 @@ var steps = []step{
 	{"add admin sessions", addAdminSessions},
 	{"add playlist schedules and hidden items", addPlaylistSchedules},
 	{"make playlist priorities a unique index per device", addPlaylistPriorityIndex},
+	{"add settings_at to instances and renders", addSettingsAt},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -251,6 +252,20 @@ CREATE UNIQUE INDEX playlist_device_priority ON playlist_device (device_id, prio
 func addPlaylistPriorityIndex(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addPlaylistPrioritySQL); err != nil {
 		return fmt.Errorf("add playlist priority index: %w", err)
+	}
+	return nil
+}
+
+// addSettingsAtSQL is step 6. It adds settings_at to plugin_instance and
+// render, as in schema.sql. Every existing value is 0, so no render is made
+// stale by the step.
+const addSettingsAtSQL = `ALTER TABLE plugin_instance ADD COLUMN settings_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE render ADD COLUMN settings_at INTEGER NOT NULL DEFAULT 0`
+
+// addSettingsAt is step 6: see addSettingsAtSQL.
+func addSettingsAt(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addSettingsAtSQL); err != nil {
+		return fmt.Errorf("add settings_at: %w", err)
 	}
 	return nil
 }

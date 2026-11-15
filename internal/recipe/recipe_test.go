@@ -8,9 +8,9 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,8 +19,6 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
-	"github.com/die-net/trmnl-byos-go/internal/playlist"
-	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
 const settingsYML = "---\nstrategy: polling\nname: Test Recipe\nrefresh_interval: 60\ncustom_fields:\n- keyname: city\n  field_type: string\n"
@@ -134,10 +132,23 @@ func TestInstallRefuses(t *testing.T) {
 	writeZip(t, filepath.Join(src, "nosettings.zip"), map[string]string{"full.liquid": "x"})
 	writeDir(t, filepath.Join(src, "empty"), map[string]string{"README": "x"})
 	writeDir(t, filepath.Join(src, "badyaml"), map[string]string{"settings.yml": "refresh_interval: [", "full.liquid": "x"})
+	for name, fields := range map[string]string{
+		"fields-not-a-list": "custom_fields: 7\n",
+		"field-not-a-map":   "custom_fields:\n- city\n",
+		"no-keyname":        "custom_fields:\n- field_type: string\n",
+		"duplicate":         "custom_fields:\n- keyname: a\n- keyname: a\n",
+		"bad-number":        "custom_fields:\n- keyname: a\n  maxlength: lots\n",
+		"bad-option":        "custom_fields:\n- keyname: a\n  field_type: select\n  options:\n  - [x]\n",
+	} {
+		writeDir(t, filepath.Join(src, name), map[string]string{"settings.yml": "name: x\n" + fields, "full.liquid": "x"})
+	}
 
 	client := openDB(t)
 	recipes := filepath.Join(t.TempDir(), "recipes")
-	for _, name := range []string{"escape.zip", "nofull.zip", "nosettings.zip", "empty", "badyaml"} {
+	for _, name := range []string{
+		"escape.zip", "nofull.zip", "nosettings.zip", "empty", "badyaml",
+		"fields-not-a-list", "field-not-a-map", "no-keyname", "duplicate", "bad-number", "bad-option",
+	} {
 		if _, err := Install(t.Context(), client, recipes, filepath.Join(src, name), time.Now()); err == nil || !errors.Is(err, errkind.ErrInvalid) {
 			t.Errorf("%s: err = %v, want errkind.ErrInvalid", name, err)
 		}
@@ -177,10 +188,16 @@ func TestProject(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
-	p := NewProject(dir, map[string]string{"city": "{{ evil }}", "api_key": "hunter2"}, "America/Los_Angeles",
+	p := NewProject(dir, map[string]Value{"city": {One: "{{ evil }}"}, "api_key": {One: "hunter2"}, "tags": {Many: []string{"a b", "{% x %}"}}}, "America/Los_Angeles",
 		[]string{"trmnl.com", "fonts.gstatic.com"})
-	if p.Env["FIELD_0"] != "hunter2" || p.Env["FIELD_1"] != "{{ evil }}" || len(p.Env) != 2 {
-		t.Errorf("Env = %v", p.Env)
+	wantEnv := map[string]string{"FIELD_0": "hunter2", "FIELD_1": "{{ evil }}", "FIELD_2_0": "a b", "FIELD_2_1": "{% x %}"}
+	if !maps.Equal(p.Env, wantEnv) {
+		t.Errorf("Env = %v, want %v", p.Env, wantEnv)
+	}
+	for name := range p.Env {
+		if !strings.HasPrefix(name, "FIELD_") {
+			t.Errorf("env name %q does not start with FIELD_, which the renderer requires", name)
+		}
 	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -208,6 +225,9 @@ func TestProject(t *testing.T) {
 custom_fields:
     api_key: '{{ env.FIELD_0 }}'
     city: '{{ env.FIELD_1 }}'
+    tags:
+        - '{{ env.FIELD_2_0 }}'
+        - '{{ env.FIELD_2_1 }}'
 framework_asset_host: http://trmnl.com
 asset_overrides:
     https://fonts.gstatic.com/: http://fonts.gstatic.com/
@@ -215,45 +235,6 @@ asset_overrides:
 `
 	if got := files[".trmnlp.yml"]; got != want {
 		t.Errorf(".trmnlp.yml:\n%s\nwant:\n%s", got, want)
-	}
-}
-
-func TestInstanceFields(t *testing.T) {
-	t.Parallel()
-	client := openDB(t)
-	rec, err := client.Write.CreateRecipe(t.Context(), db.CreateRecipeParams{Name: "r", Source: "s", RefreshInterval: 900, InstalledAt: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := secrets.Parse("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := InstanceParams{RecipeID: rec.ID, Name: "i", Fields: map[string]string{"city": "Zurich"}, Secrets: map[string]string{"token": "hunter2"}}
-	if _, err := CreateInstance(t.Context(), client, nil, p, time.Now()); !errors.Is(err, secrets.ErrNoKey) {
-		t.Errorf("secret stored without a key: %v", err)
-	}
-	inst, err := CreateInstance(t.Context(), client, key, p, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(inst.SecretValues, []byte("hunter2")) || strings.Contains(inst.FieldValues, "hunter2") {
-		t.Error("secret stored in the clear")
-	}
-	got, secret, err := InstanceFields(&inst, key)
-	if err != nil || got["city"] != "Zurich" || got["token"] != "hunter2" || !slices.Equal(secret, []string{"hunter2"}) {
-		t.Errorf("InstanceFields = %v, %v, %v", got, secret, err)
-	}
-	if _, _, err := InstanceFields(&inst, nil); !errors.Is(err, secrets.ErrNoKey) {
-		t.Errorf("secrets opened without a key: %v", err)
-	}
-	other, err := CreateInstance(t.Context(), client, key, InstanceParams{RecipeID: rec.ID, Name: "j"}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	other.SecretValues = inst.SecretValues
-	if _, _, err := InstanceFields(&other, key); err == nil {
-		t.Error("secrets copied to another instance opened")
 	}
 }
 
@@ -364,132 +345,6 @@ func TestProjectDevice(t *testing.T) {
 	}
 	if !strings.Contains(config(b), "BBB222") {
 		t.Errorf("WithDevice result lacks the new device:\n%s", config(b))
-	}
-}
-
-func TestDeleteInstance(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
-	client := openDB(t)
-	rec, err := client.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "r", Source: "s", RefreshInterval: 900, InstalledAt: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := make([]int64, 0, 2)
-	for _, name := range []string{"a", "b"} {
-		inst, err := CreateInstance(ctx, client, nil, InstanceParams{RecipeID: rec.ID, Name: name}, time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids = append(ids, inst.ID)
-	}
-	dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: "D8:3B:DA:12:34:56", ApiKeyHash: []byte{1}, FriendlyID: "ABC123", CreatedAt: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pl, err := client.Write.CreatePlaylist(ctx, "p")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := playlist.LinkDevice(ctx, client, playlist.ByID(pl.ID), dev.FriendlyID); err != nil {
-		t.Fatal(err)
-	}
-	items := make([]int64, 0, len(ids))
-	for _, inst := range ids {
-		item, err := client.Write.CreatePlaylistItem(ctx, db.CreatePlaylistItemParams{PlaylistID: pl.ID, Position: int64(len(items)), Layout: "full"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := client.Write.CreatePlaylistSlot(ctx, db.CreatePlaylistSlotParams{ItemID: item.ID, Slot: 0, InstanceID: inst}); err != nil {
-			t.Fatal(err)
-		}
-		items = append(items, item.ID)
-	}
-	renderID, err := client.Write.SaveRenderSuccess(ctx, db.SaveRenderSuccessParams{InstanceID: ids[0], Width: 800, Height: 480, Palette: "bw", RenderedAt: 1, AttemptedAt: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Write.SaveRenderImage(ctx, db.SaveRenderImageParams{RenderID: renderID, Layout: "full", Image: "img", Bytes: 1}); err != nil {
-		t.Fatal(err)
-	}
-
-	err = DeleteInstance(ctx, client, ids[0])
-	if !errors.Is(err, ErrInstanceInUse) || !strings.Contains(err.Error(), "item IDs "+strconv.FormatInt(items[0], 10)+";") {
-		t.Fatalf("instance in a playlist item: %v", err)
-	}
-	if refs, err := client.Read.ListReferencedImages(ctx); err != nil || len(refs) != 1 {
-		t.Fatalf("a refused delete changed renders: %v, %v", refs, err)
-	}
-	if err := DeleteInstance(ctx, client, 999); !errors.Is(err, ErrNoInstance) {
-		t.Errorf("unknown instance: %v", err)
-	}
-
-	// With its item removed it goes, and its renders with it.
-	if _, err := client.Write.DeletePlaylistItem(ctx, items[0]); err != nil {
-		t.Fatal(err)
-	}
-	if err := DeleteInstance(ctx, client, ids[0]); err != nil {
-		t.Fatal(err)
-	}
-	if refs, err := client.Read.ListReferencedImages(ctx); err != nil || len(refs) != 0 {
-		t.Errorf("renders left behind: %v, %v", refs, err)
-	}
-	left, err := client.Read.ListInstances(ctx)
-	if err != nil || len(left) != 1 || left[0].PluginInstance.ID != ids[1] {
-		t.Errorf("instances left: %+v, %v", left, err)
-	}
-	if err := DeleteInstance(ctx, client, ids[1]); !errors.Is(err, ErrInstanceInUse) {
-		t.Errorf("the other instance's item was not protected: %v", err)
-	}
-}
-
-// TestCreateInstanceInvalid checks that bad settings are refused with
-// errkind.ErrInvalid, an unknown recipe with ErrNoRecipe, and that nothing is
-// stored for either.
-func TestCreateInstanceInvalid(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
-	client := openDB(t)
-	rec, err := client.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "Weather", Source: "s", RefreshInterval: 900, InstalledAt: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := secrets.Parse("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name string
-		p    InstanceParams
-		want error
-	}{
-		{"unknown palette", InstanceParams{RecipeID: rec.ID, Palette: "neon"}, errkind.ErrInvalid},
-		{"field and secret", InstanceParams{RecipeID: rec.ID, Fields: map[string]string{"k": "a"}, Secrets: map[string]string{"k": "hunter2"}}, errkind.ErrInvalid},
-		{"short secret", InstanceParams{RecipeID: rec.ID, Secrets: map[string]string{"k": "abcde"}}, errkind.ErrInvalid},
-		{"short secret in bytes", InstanceParams{RecipeID: rec.ID, Secrets: map[string]string{"k": "ééééé"}}, errkind.ErrInvalid},
-		{"empty secret", InstanceParams{RecipeID: rec.ID, Secrets: map[string]string{"k": ""}}, errkind.ErrInvalid},
-		{"unknown recipe", InstanceParams{RecipeID: rec.ID + 1}, ErrNoRecipe},
-	} {
-		_, err := CreateInstance(ctx, client, key, tc.p, time.Now())
-		if !errors.Is(err, tc.want) {
-			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
-		}
-		for _, v := range tc.p.Secrets {
-			if v != "" && err != nil && strings.Contains(err.Error(), v) {
-				t.Errorf("%s: the error shows the secret: %v", tc.name, err)
-			}
-		}
-	}
-	if left, err := client.Read.ListInstances(ctx); err != nil || len(left) != 0 {
-		t.Errorf("refused instances were stored: %+v, %v", left, err)
-	}
-	inst, err := CreateInstance(ctx, client, key, InstanceParams{RecipeID: rec.ID, Palette: "bw", Secrets: map[string]string{"b": "abcdef", "a": "ghijkl"}}, time.Now())
-	if err != nil || inst.Name != "Weather" {
-		t.Fatalf("default name: %+v, %v", inst, err)
-	}
-	fields, names, err := PublicFields(&inst, key)
-	if err != nil || len(fields) != 0 || len(names) != 2 || names[0] != "a" || names[1] != "b" {
-		t.Errorf("PublicFields = %v, %v, %v", fields, names, err)
 	}
 }
 

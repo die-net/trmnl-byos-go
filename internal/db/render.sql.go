@@ -274,7 +274,7 @@ func (q *Queries) ListRenderKeys(ctx context.Context) ([]ListRenderKeysRow, erro
 }
 
 const listRenderRows = `-- name: ListRenderRows :many
-SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, data_at, failures
+SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, data_at, settings_at, failures
 FROM render
 `
 
@@ -290,6 +290,7 @@ type ListRenderRowsRow struct {
 	DurationMs  int64  `json:"duration_ms"`
 	Error       string `json:"error"`
 	DataAt      int64  `json:"data_at"`
+	SettingsAt  int64  `json:"settings_at"`
 	Failures    int64  `json:"failures"`
 }
 
@@ -316,6 +317,7 @@ func (q *Queries) ListRenderRows(ctx context.Context) ([]ListRenderRowsRow, erro
 			&i.DurationMs,
 			&i.Error,
 			&i.DataAt,
+			&i.SettingsAt,
 			&i.Failures,
 		); err != nil {
 			return nil, err
@@ -335,7 +337,8 @@ const listRenderTargets = `-- name: ListRenderTargets :many
 SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
   recipe.refresh_interval, device.id AS device_id, device.fw_model, device_state.width, device_state.height,
   device_state.device_id IS NOT NULL AS woken,
-  CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at
+  CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at,
+  plugin_instance.settings_at
 FROM playlist_device
 JOIN device ON device.id = playlist_device.device_id
 LEFT JOIN device_state ON device_state.device_id = device.id
@@ -358,13 +361,15 @@ type ListRenderTargetsRow struct {
 	Height          *int64 `json:"height"`
 	Woken           bool   `json:"woken"`
 	DataAt          int64  `json:"data_at"`
+	SettingsAt      int64  `json:"settings_at"`
 }
 
 // Every instance in a visible item of a playlist linked to a device, with what the device
 // reported about itself, from which its render size and palette follow.
 // A recipe's device_id is the device the render is for, which the caller
 // drops for a recipe whose renders every device shares. data_at is when
-// the instance's pushed data last changed, 0 if it has none.
+// the instance's pushed data last changed, 0 if it has none. settings_at is
+// when its field values last changed.
 func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listRenderTargets)
 	if err != nil {
@@ -385,6 +390,7 @@ func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow
 			&i.Height,
 			&i.Woken,
 			&i.DataAt,
+			&i.SettingsAt,
 		); err != nil {
 			return nil, err
 		}
@@ -542,14 +548,15 @@ func (q *Queries) ListShownItems(ctx context.Context) ([]ListShownItemsRow, erro
 }
 
 const saveRenderFailure = `-- name: SaveRenderFailure :exec
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, failures)
-VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
+VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
   error = excluded.error,
   log = excluded.log,
   data_at = excluded.data_at,
+  settings_at = excluded.settings_at,
   failures = render.failures + excluded.failures
 `
 
@@ -564,6 +571,7 @@ type SaveRenderFailureParams struct {
 	Error       string `json:"error"`
 	Log         string `json:"log"`
 	DataAt      int64  `json:"data_at"`
+	SettingsAt  int64  `json:"settings_at"`
 	Failures    int64  `json:"failures"`
 }
 
@@ -583,6 +591,7 @@ func (q *Queries) SaveRenderFailure(ctx context.Context, arg SaveRenderFailurePa
 		arg.Error,
 		arg.Log,
 		arg.DataAt,
+		arg.SettingsAt,
 		arg.Failures,
 	)
 	return err
@@ -612,8 +621,8 @@ func (q *Queries) SaveRenderImage(ctx context.Context, arg SaveRenderImageParams
 }
 
 const saveRenderSuccess = `-- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
 ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
@@ -621,6 +630,7 @@ ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   error = '',
   log = excluded.log,
   data_at = excluded.data_at,
+  settings_at = excluded.settings_at,
   failures = 0
 RETURNING id
 `
@@ -636,6 +646,7 @@ type SaveRenderSuccessParams struct {
 	DurationMs  int64  `json:"duration_ms"`
 	Log         string `json:"log"`
 	DataAt      int64  `json:"data_at"`
+	SettingsAt  int64  `json:"settings_at"`
 }
 
 func (q *Queries) SaveRenderSuccess(ctx context.Context, arg SaveRenderSuccessParams) (int64, error) {
@@ -650,6 +661,7 @@ func (q *Queries) SaveRenderSuccess(ctx context.Context, arg SaveRenderSuccessPa
 		arg.DurationMs,
 		arg.Log,
 		arg.DataAt,
+		arg.SettingsAt,
 	)
 	var id int64
 	err := row.Scan(&id)

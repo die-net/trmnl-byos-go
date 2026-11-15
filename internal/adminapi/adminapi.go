@@ -21,6 +21,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/apitoken"
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
@@ -91,6 +92,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET /api/v1/instances", handle(http.StatusOK, s.listInstances)},
 		{"GET /api/v1/instances/{id}", handle(http.StatusOK, s.getInstance)},
 		{"POST /api/v1/instances", handle(http.StatusCreated, s.createInstance)},
+		{"PATCH /api/v1/instances/{id}", handle(http.StatusOK, s.patchInstance)},
 		{"DELETE /api/v1/instances/{id}", handleNoContent(s.deleteInstance)},
 		{"GET /api/v1/playlists", handle(http.StatusOK, s.listPlaylists)},
 		{"POST /api/v1/playlists", handle(http.StatusCreated, s.createPlaylist)},
@@ -118,6 +120,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 // errorBody is the body of every error response.
 type errorBody struct {
 	Error string `json:"error"`
+	// Fields says what is wrong with each field of a request that has bad
+	// custom field values, by keyname.
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -177,6 +182,7 @@ func (e *statusError) Error() string { return e.msg }
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	var tooBig *http.MaxBytesError
 	var status *statusError
+	var fieldErrs recipe.FieldErrors
 	switch {
 	case errors.As(err, &status):
 		maps.Copy(w.Header(), status.header)
@@ -185,6 +191,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body is over %d bytes", tooBig.Limit))
 	case errors.Is(err, errkind.ErrTooBig):
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+	case errors.As(err, &fieldErrs):
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error(), Fields: fieldErrs})
 	case errors.Is(err, errkind.ErrInvalid):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, errkind.ErrNotFound):

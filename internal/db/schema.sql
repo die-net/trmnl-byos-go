@@ -116,7 +116,12 @@ CREATE TABLE IF NOT EXISTS plugin_instance (
   -- partial refreshes. Empty, or one the device cannot show, means the
   -- device's default.
   palette TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- settings_at is when the instance's field values or secrets last changed,
+  -- 0 if they never have. It rises with every change, by at least a second,
+  -- so a render that read the settings can tell newer ones from the ones it
+  -- read. A rename or a palette change leaves it alone.
+  settings_at INTEGER NOT NULL DEFAULT 0
 );
 
 -- playlist is a list of items that devices rotate through.
@@ -230,6 +235,10 @@ CREATE TABLE IF NOT EXISTS render (
   -- failures is how many builds in a row have failed, 0 after a success.
   -- The scheduler waits longer to retry the more there are.
   failures INTEGER NOT NULL DEFAULT 0,
+  -- settings_at is the settings_at of the plugin_instance row the latest
+  -- build read. The instance's settings are newer than the render when its
+  -- settings_at is greater.
+  settings_at INTEGER NOT NULL DEFAULT 0,
   UNIQUE (instance_id, device_id, width, height, palette)
 );
 

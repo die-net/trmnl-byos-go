@@ -12,19 +12,20 @@ import (
 )
 
 // instanceJSON is a plugin instance. It has the values of its plain
-// fields, but of its secret fields only the names, never the values.
+// fields, each a string or, for a multi-select, an array of strings, but of
+// its secret fields only the names, never the values.
 // SecretFields is null when the names cannot be read: the server has no
 // TRMNL_SECRET_KEY, or the sealed secrets do not open, as after a key
 // change. The names are sealed with the values.
 type instanceJSON struct {
-	ID           int64             `json:"id"`
-	RecipeID     int64             `json:"recipe_id"`
-	RecipeName   string            `json:"recipe_name"`
-	Name         string            `json:"name"`
-	Palette      string            `json:"palette"`
-	Fields       map[string]string `json:"fields"`
-	SecretFields []string          `json:"secret_fields"`
-	CreatedAt    int64             `json:"created_at"`
+	ID           int64                   `json:"id"`
+	RecipeID     int64                   `json:"recipe_id"`
+	RecipeName   string                  `json:"recipe_name"`
+	Name         string                  `json:"name"`
+	Palette      string                  `json:"palette"`
+	Fields       map[string]recipe.Value `json:"fields"`
+	SecretFields []string                `json:"secret_fields"`
+	CreatedAt    int64                   `json:"created_at"`
 }
 
 func (s *Server) newInstance(inst *db.PluginInstance, recipeName string) (instanceJSON, error) {
@@ -86,10 +87,10 @@ type createInstanceRequest struct {
 	Name string `json:"name"`
 	// Palette defaults to the device's.
 	Palette string `json:"palette"`
-	// Fields are custom field values by keyname.
-	Fields map[string]string `json:"fields"`
-	// Secrets are secret custom field values by keyname, stored encrypted.
-	Secrets map[string]string `json:"secrets"`
+	// Fields are custom field values by keyname: a string, or an array of
+	// strings for a multi-select. A password field's value is stored
+	// encrypted.
+	Fields map[string]recipe.Value `json:"fields"`
 }
 
 func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) (instanceJSON, error) {
@@ -98,12 +99,44 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) (instanc
 		return instanceJSON{}, err
 	}
 	ctx := r.Context()
-	inst, err := recipe.CreateInstance(ctx, s.db, s.cfg.Key, recipe.InstanceParams{
+	inst, err := recipe.CreateInstance(ctx, s.db, s.cfg.Key, s.cfg.RecipesDir, recipe.InstanceParams{
 		RecipeID: req.RecipeID,
 		Name:     req.Name,
 		Palette:  req.Palette,
-		Fields:   req.Fields,
-		Secrets:  req.Secrets,
+		Values:   req.Fields,
+	}, s.now())
+	if err != nil {
+		return instanceJSON{}, err
+	}
+	return s.instanceWithRecipe(ctx, &inst)
+}
+
+// patchInstanceRequest is the body of an instance update request. A field
+// that is left out stays as it is.
+type patchInstanceRequest struct {
+	// Name is the new name, "" for the recipe's.
+	Name *string `json:"name"`
+	// Palette is the new palette, "" for the device's.
+	Palette *string `json:"palette"`
+	// Fields are the custom field values to change by keyname. A key whose
+	// value is "" or [] clears the field, and a key left out is kept.
+	Fields map[string]recipe.Value `json:"fields"`
+}
+
+func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instanceJSON, error) {
+	id, err := pathID(r, recipe.ErrNoInstance)
+	if err != nil {
+		return instanceJSON{}, err
+	}
+	var req patchInstanceRequest
+	if err := decode(w, r, &req, false); err != nil {
+		return instanceJSON{}, err
+	}
+	ctx := r.Context()
+	inst, err := recipe.UpdateInstance(ctx, s.db, s.cfg.Key, s.cfg.RecipesDir, id, recipe.InstanceUpdate{
+		Name:    req.Name,
+		Palette: req.Palette,
+		Values:  req.Fields,
 	}, s.now())
 	if err != nil {
 		return instanceJSON{}, err

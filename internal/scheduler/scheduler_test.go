@@ -77,7 +77,7 @@ func newHarness(t *testing.T) *harness {
 	if err := os.MkdirAll(src, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for name, body := range map[string]string{"settings.yml": "name: Hourly\nrefresh_interval: 60\n", "full.liquid": "x"} {
+	for name, body := range map[string]string{"settings.yml": "name: Hourly\nrefresh_interval: 60\ncustom_fields:\n- keyname: token\n  field_type: password\n", "full.liquid": "x"} {
 		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -86,8 +86,8 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := recipe.CreateInstance(t.Context(), h.db, key, recipe.InstanceParams{
-		RecipeID: rec.ID, Name: "hourly", Secrets: map[string]string{"token": "hunter2"},
+	inst, err := recipe.CreateInstance(t.Context(), h.db, key, h.s.cfg.RecipesDir, recipe.InstanceParams{
+		RecipeID: rec.ID, Name: "hourly", Values: map[string]recipe.Value{"token": {One: "hunter2"}},
 	}, h.now)
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func (h *harness) installRecipe(t *testing.T, body string) db.PluginInstance {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := recipe.CreateInstance(t.Context(), h.db, nil, recipe.InstanceParams{RecipeID: rec.ID, Name: "i"}, h.now)
+	inst, err := recipe.CreateInstance(t.Context(), h.db, nil, h.s.cfg.RecipesDir, recipe.InstanceParams{RecipeID: rec.ID, Name: "i"}, h.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,8 +355,11 @@ func TestDue(t *testing.T) {
 		// data is the updated_at of the instance's data, and built the
 		// data_at its last render recorded. Both are 0 for none.
 		data, built int64
-		want        bool
-		by          time.Duration // Offset of the expected sort key, if want and it is wanted.
+		// settings is the instance's settings_at, and builtSettings the
+		// settings_at its last render recorded.
+		settings, builtSettings int64
+		want                    bool
+		by                      time.Duration // Offset of the expected sort key, if want and it is wanted.
 	}{
 		{name: "never rendered", r: nil, woken: true, want: true},
 		{name: "never rendered and wanted", r: nil, wanted: []time.Duration{time.Hour}, woken: true, want: true, by: time.Hour},
@@ -388,6 +391,14 @@ func TestDue(t *testing.T) {
 		{name: "data newer after a failed build, inside RetryAfter", r: failed(db.RenderRetryAfter - time.Second), data: 6, built: 5, woken: true},
 		{name: "data newer after a failed build, past RetryAfter", r: failed(db.RenderRetryAfter), data: 6, built: 5, woken: true, want: true},
 		{name: "data and never rendered", r: nil, data: 6, woken: true, want: true},
+		{name: "settings newer than the last build read", r: good(10 * time.Minute), settings: 6, builtSettings: 5, woken: true, want: true},
+		{name: "settings and nothing read", r: good(10 * time.Minute), settings: 6, woken: true, want: true},
+		{name: "settings newer, and wanted", r: good(10 * time.Minute), settings: 6, builtSettings: 5, wanted: []time.Duration{time.Hour}, woken: true, want: true, by: time.Hour},
+		{name: "build read the latest settings", r: good(10 * time.Minute), settings: 5, builtSettings: 5, woken: true},
+		{name: "build read newer settings than it has", r: good(10 * time.Minute), settings: 4, builtSettings: 5, woken: true},
+		{name: "settings newer after a failed build, inside RetryAfter", r: failed(db.RenderRetryAfter - time.Second), settings: 6, builtSettings: 5, woken: true},
+		{name: "settings newer after a failed build, past RetryAfter", r: failed(db.RenderRetryAfter), settings: 6, builtSettings: 5, woken: true, want: true},
+		{name: "settings and never rendered", r: nil, settings: 6, woken: true, want: true},
 		{name: "a device has woken but wants nothing", r: good(time.Hour), woken: true},
 		{
 			name: "a long build lengthens the lead", r: &db.Render{RenderedAt: now.Add(-59 * time.Minute).Unix(), DurationMs: 120_000},
@@ -401,10 +412,10 @@ func TestDue(t *testing.T) {
 		}
 		if tc.r != nil {
 			r := *tc.r
-			r.DataAt = tc.built
+			r.DataAt, r.SettingsAt = tc.built, tc.builtSettings
 			tc.r = &r
 		}
-		got, by := due(tgt, tc.r, wanted, tc.woken, tc.data, now)
+		got, by := due(tgt, tc.r, wanted, tc.woken, version{data: tc.data, settings: tc.settings}, now)
 		if got != tc.want {
 			t.Errorf("%s: due is %v, want %v", tc.name, got, tc.want)
 		}
@@ -672,6 +683,55 @@ func TestRenderOnPushSameSecond(t *testing.T) {
 	if r := h.render(t); r.DataAt != row.UpdatedAt {
 		t.Errorf("data_at %d, want %d", r.DataAt, row.UpdatedAt)
 	}
+}
+
+// setToken changes the harness's instance's secret token, as an update
+// at the harness's time would.
+func (h *harness) setToken(t *testing.T, token string) {
+	t.Helper()
+	_, err := recipe.UpdateInstance(t.Context(), h.db, h.s.cfg.Secrets, h.s.cfg.RecipesDir, 1,
+		recipe.InstanceUpdate{Values: map[string]recipe.Value{"token": {One: token}}}, h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRenderOnSettingsChange checks that a change to a field value reaches
+// the next build and makes the target due before its interval passes, that a
+// build that read the latest settings is not due again, and that a second
+// change in the same second as the build that read the first is built too.
+func TestRenderOnSettingsChange(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.renderDue(t, 1)
+	if r := h.render(t); r.SettingsAt != 0 {
+		t.Fatalf("settings_at %d before a change", r.SettingsAt)
+	}
+
+	h.now = h.now.Add(time.Minute)
+	h.renderDue(t, 1) // Nothing is due yet.
+	h.setToken(t, "swordfish")
+	h.renderDue(t, 2)
+	if got := h.screenBody(t, 1, 1); !strings.Contains(got, "swordfish") {
+		t.Errorf("image after a change: %q", got)
+	}
+	if r := h.render(t); r.SettingsAt != h.now.Unix() {
+		t.Errorf("settings_at %d, want %d", r.SettingsAt, h.now.Unix())
+	}
+	for range 3 {
+		h.renderDue(t, 2)
+	}
+
+	// A change in the same second, after that build read the settings.
+	h.setToken(t, "trout-fish")
+	h.renderDue(t, 3)
+	if got := h.screenBody(t, 1, 1); !strings.Contains(got, "trout-fish") {
+		t.Errorf("image after the second change: %q", got)
+	}
+	if r := h.render(t); r.SettingsAt != h.now.Unix()+1 {
+		t.Errorf("settings_at %d, want %d", r.SettingsAt, h.now.Unix()+1)
+	}
+	h.renderDue(t, 3)
 }
 
 // TestRenderOnPushAfterFailure checks that a failed build still waits

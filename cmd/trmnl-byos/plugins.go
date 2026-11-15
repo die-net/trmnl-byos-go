@@ -96,8 +96,9 @@ func recipeList(ctx context.Context, args []string, out io.Writer) error {
 	return tw.Flush()
 }
 
-// fieldFlag collects repeated name=value flags.
-type fieldFlag map[string]string
+// fieldFlag collects repeated name=value flags into custom field values. A
+// name given twice or more is a list, for a multi-select.
+type fieldFlag map[string]recipe.Value
 
 func (fieldFlag) String() string { return "" }
 
@@ -106,7 +107,27 @@ func (f fieldFlag) Set(v string) error {
 	if !ok || name == "" {
 		return fmt.Errorf("%q is not name=value", v)
 	}
-	f[name] = value
+	switch cur, seen := f[name]; {
+	case !seen:
+		f[name] = recipe.Value{One: value}
+	case cur.IsList():
+		f[name] = recipe.Value{Many: append(cur.Many, value)}
+	default:
+		f[name] = recipe.Value{Many: []string{cur.One, value}}
+	}
+	return nil
+}
+
+// clearFlag collects the names of fields to clear.
+type clearFlag []string
+
+func (clearFlag) String() string { return "" }
+
+func (c *clearFlag) Set(v string) error {
+	if v == "" {
+		return errors.New("a field name is needed")
+	}
+	*c = append(*c, v)
 	return nil
 }
 
@@ -114,6 +135,7 @@ func instances(ctx context.Context, args []string, out io.Writer) error {
 	return subcommand(ctx, "instance", args, out, map[string]func(context.Context, []string, io.Writer) error{
 		"add":    instanceAdd,
 		"list":   instanceList,
+		"set":    instanceSet,
 		"remove": instanceRemove,
 	})
 }
@@ -124,12 +146,11 @@ func instanceAdd(ctx context.Context, args []string, out io.Writer) error {
 	recipeID := fs.Int64("recipe", 0, "ID of the recipe, from recipe list")
 	name := fs.String("name", "", "name of the instance (default: the recipe's)")
 	palette := fs.String("palette", "", "palette to render with when the device takes it, such as bw (default: the device's)")
-	fields, secretFields := fieldFlag{}, fieldFlag{}
-	fs.Var(fields, "field", "custom field value as keyname=value; repeat for each field")
-	fs.Var(secretFields, "secret", "secret custom field value as keyname=value, stored encrypted with "+secrets.EnvVar+"; repeat for each")
+	fields := fieldFlag{}
+	fs.Var(fields, "field", "custom field value as keyname=value; repeat for each field, and for each choice of a multi-select. A password field is stored encrypted with "+secrets.EnvVar)
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
 	if *recipeID == 0 || fs.NArg() != 0 {
-		return errors.New("usage: trmnl-byos instance add [-data dir] -recipe ID [-name name] [-palette id] [-field k=v ...] [-secret k=v ...]")
+		return errors.New("usage: trmnl-byos instance add [-data dir] -recipe ID [-name name] [-palette id] [-field k=v ...]")
 	}
 	key, err := secrets.FromEnv()
 	if err != nil {
@@ -141,12 +162,11 @@ func instanceAdd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	inst, err := recipe.CreateInstance(ctx, client, key, recipe.InstanceParams{
+	inst, err := recipe.CreateInstance(ctx, client, key, recipesDir(*data), recipe.InstanceParams{
 		RecipeID: *recipeID,
 		Name:     *name,
 		Palette:  *palette,
-		Fields:   fields,
-		Secrets:  secretFields,
+		Values:   fields,
 	}, time.Now())
 	if err != nil {
 		return err
@@ -185,8 +205,67 @@ func instanceList(ctx context.Context, args []string, out io.Writer) error {
 	return tw.Flush()
 }
 
+func instanceSet(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("instance set", flag.ExitOnError)
+	data := dataFlag(fs)
+	name := fs.String("name", "", "new name of the instance; empty for the recipe's")
+	palette := fs.String("palette", "", "new palette to render with, such as bw; empty for the device's")
+	fields, cleared := fieldFlag{}, clearFlag{}
+	fs.Var(fields, "field", "custom field value to set as keyname=value; repeat for each field, and for each choice of a multi-select. A password field is stored encrypted with "+secrets.EnvVar)
+	fs.Var(&cleared, "clear", "name of a custom field to clear; repeat for each. A field left out is kept")
+	rest := parseInterspersed(fs, args)
+	usage := errors.New("usage: trmnl-byos instance set [-data dir] <instance ID> [-name name] [-palette id] [-field k=v ...] [-clear k ...]")
+	if len(rest) != 1 {
+		return usage
+	}
+	id, err := strconv.ParseInt(rest[0], 10, 64)
+	if err != nil {
+		return usage
+	}
+	var u recipe.InstanceUpdate
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "name":
+			u.Name = name
+		case "palette":
+			u.Palette = palette
+		}
+	})
+	for _, k := range cleared {
+		if _, ok := fields[k]; ok {
+			return fmt.Errorf("field %q is both set and cleared", k)
+		}
+		fields[k] = recipe.Value{}
+	}
+	if u.Name == nil && u.Palette == nil && len(fields) == 0 {
+		return usage
+	}
+	u.Values = fields
+	key, err := secrets.FromEnv()
+	if err != nil {
+		return err
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	inst, err := recipe.UpdateInstance(ctx, client, key, recipesDir(*data), id, u, time.Now())
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Updated instance %d, %q.\n", inst.ID, inst.Name)
+	return err
+}
+
 func instanceRemove(ctx context.Context, args []string, out io.Writer) error {
-	return removeByID(ctx, args, out, "instance remove", "instance", recipe.DeleteInstance)
+	return removeByID(ctx, args, out, "instance remove", "instance", func(ctx context.Context, client *db.Client, id int64) error {
+		err := recipe.DeleteInstance(ctx, client, id)
+		if errors.Is(err, recipe.ErrInstanceInUse) {
+			return fmt.Errorf("%w; see playlist list, and take them out with playlist remove first", err)
+		}
+		return err
+	})
 }
 
 // removeByID runs a remove command that takes the ID of what to remove.

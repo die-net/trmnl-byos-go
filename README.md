@@ -61,11 +61,11 @@ Install a recipe from a directory or a zip, such as one from TRMNL's recipe page
 
 ```
 trmnl-byos recipe add path/to/recipe.zip
-trmnl-byos instance add -recipe 1 -field city=Zurich -secret api_key=...
+trmnl-byos instance add -recipe 1 -field city=Zurich -field api_key=...
 trmnl-byos playlist add -device ABC123 -instance 1 -duration 15m
 ```
 
-In Compose, run these with `docker compose -f deploy/compose.yaml exec server trmnl-byos ...`, after copying the recipe in with `docker compose ... cp`. Each `playlist add` appends an item to the device's playlist. A timer wake moves to the next item once the current one's time is up, and a button press moves on at once. `-duration 0` keeps an item until a press. `instance add -palette bw` renders in black and white on a panel that also takes grays, which keeps its refreshes partial. `recipe list`, `instance list` and `playlist list` show what is set up. `playlist remove` takes an item out, `playlist move ITEM INDEX` reorders, `playlist set ITEM -hidden` hides an item, and `playlist set ITEM` or `playlist schedule NAME` with `-days mon,tue`, `-window 09:00-17:00`, `-from` and `-until` limit when an item or playlist is shown (a device shows its first playlist that is scheduled now, so an unscheduled one at the end is the default). `instance remove` deletes an instance and its renders once no item shows it.
+In Compose, run these with `docker compose -f deploy/compose.yaml exec server trmnl-byos ...`, after copying the recipe in with `docker compose ... cp`. Each `playlist add` appends an item to the device's playlist. A timer wake moves to the next item once the current one's time is up, and a button press moves on at once. `-duration 0` keeps an item until a press. `instance add -palette bw` renders in black and white on a panel that also takes grays, which keeps its refreshes partial. `recipe list`, `instance list` and `playlist list` show what is set up. `playlist remove` takes an item out, `playlist move ITEM INDEX` reorders, `playlist set ITEM -hidden` hides an item, and `playlist set ITEM` or `playlist schedule NAME` with `-days mon,tue`, `-window 09:00-17:00`, `-from` and `-until` limit when an item or playlist is shown (a device shows its first playlist that is scheduled now, so an unscheduled one at the end is the default). `instance add -field k=v` sets a custom field of the recipe (repeat the key for each choice of a multi-select, and the recipe's `password` fields are stored encrypted), and `instance set ID -field k=v -clear k` changes them later, which renders the instance again. `instance remove` deletes an instance and its renders once no item shows it.
 
 To run the renderer alone, build its image from the repository root and run it with an init process:
 
@@ -108,12 +108,12 @@ trmnl-byos token add -name my-script
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/devices
 curl -H "Authorization: Bearer $TOKEN" -X PUT -d '{"for_seconds": 600}' http://localhost:8080/api/v1/join
 curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/zip" --data-binary @recipe.zip http://localhost:8080/api/v1/recipes
-curl -H "Authorization: Bearer $TOKEN" -d '{"recipe_id": 1, "fields": {"city": "Zurich"}, "secrets": {"api_key": "..."}}' http://localhost:8080/api/v1/instances
+curl -H "Authorization: Bearer $TOKEN" -d '{"recipe_id": 1, "fields": {"city": "Zurich", "api_key": "..."}}' http://localhost:8080/api/v1/instances
 curl -H "Authorization: Bearer $TOKEN" -d '{"name": "Kitchen"}' http://localhost:8080/api/v1/playlists
 curl -H "Authorization: Bearer $TOKEN" -d '{"playlist": "Kitchen", "device": "ABC123", "instance_id": 1, "duration_seconds": 900}' http://localhost:8080/api/v1/playlists/items
 ```
 
-Bodies and responses are JSON, with times in Unix seconds and durations in seconds. Errors are `{"error": "..."}` with the HTTP status that fits. The routes are listed in `docs/design.md`. Secret fields are never returned, only the names of the ones that are set, in `secret_fields`. It is `null`, not a list, when the server has no `TRMNL_SECRET_KEY` and the instance has secrets, because the names cannot be read without the key.
+Bodies and responses are JSON, with times in Unix seconds and durations in seconds. Errors are `{"error": "..."}` with the HTTP status that fits, and a bad custom field value adds `"fields"`, the message for each bad field by name. `PATCH /api/v1/instances/ID` changes `name`, `palette` and `fields`, where `""` or `[]` clears a field. The routes are listed in `docs/design.md`. Secret fields are never returned, only the names of the ones that are set, in `secret_fields`. It is `null`, not a list, when the server has no `TRMNL_SECRET_KEY` and the instance has secrets, because the names cannot be read without the key.
 
 ### Admin password
 

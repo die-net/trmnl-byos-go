@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -133,7 +134,35 @@ func (ta *testAPI) addDevice(t *testing.T) db.Device {
 	return dev
 }
 
-const settingsYML = "name: Weather\nrefresh_interval: 60\n"
+// settingsYML is a recipe whose custom fields are all optional, so that an
+// instance needs no values: a string, three passwords, a multi-select, and
+// a bounded number.
+const settingsYML = `name: Weather
+refresh_interval: 60
+custom_fields:
+- keyname: city
+  field_type: string
+  name: City
+  optional: true
+- keyname: apikey
+  field_type: password
+  optional: true
+- keyname: zkey
+  field_type: password
+  optional: true
+- keyname: k
+  field_type: password
+  optional: true
+- keyname: tags
+  field_type: select
+  multiple: true
+  optional: true
+  options: [a, b, c]
+- keyname: days
+  field_type: number
+  optional: true
+  min: 1
+`
 
 func zipBytes(t *testing.T, files map[string]string) []byte {
 	t.Helper()
@@ -411,10 +440,27 @@ func TestRecipes(t *testing.T) {
 	if len(list) != 1 || list[0] != rec {
 		t.Errorf("list %+v", list)
 	}
-	var one recipeJSON
-	ta.call(t, "GET", "/api/v1/recipes/"+strconv.FormatInt(rec.ID, 10), "", 200, &one)
-	if one != rec {
+	var one recipeDetailJSON
+	w := ta.call(t, "GET", "/api/v1/recipes/"+strconv.FormatInt(rec.ID, 10), "", 200, &one)
+	if one.recipeJSON != rec || len(one.CustomFields) != 6 {
 		t.Errorf("get %+v", one)
+	}
+	if f := one.CustomFields[0]; f.Keyname != "city" || f.Label != "City" || f.Type != "string" || f.Input != "text" || f.Required || f.Secret {
+		t.Errorf("the first field %+v", f)
+	}
+	if f := one.CustomFields[1]; f.Keyname != "apikey" || f.Input != "password" || !f.Secret {
+		t.Errorf("the password field %+v", f)
+	}
+	tags := one.CustomFields[4]
+	if tags.Input != "select" || !tags.Multiple || len(tags.Options) != 3 || tags.Options[1] != (optionJSON{Label: "b", Value: "b"}) {
+		t.Errorf("the select field %+v", tags)
+	}
+	if lo := one.CustomFields[5].Min; lo == nil || *lo != 1 || !strings.Contains(w.Body.String(), `"custom_fields":[{"keyname":"city"`) {
+		t.Errorf("the number field's min %v in %s", lo, w.Body)
+	}
+	if !strings.Contains(ta.call(t, "GET", "/api/v1/recipes", "", 200, nil).Body.String(), `"source"`) ||
+		strings.Contains(ta.call(t, "GET", "/api/v1/recipes", "", 200, nil).Body.String(), "custom_fields") {
+		t.Error("the list shows the field definitions, which would read every recipe's settings.yml")
 	}
 	ta.wantError(t, "GET", "/api/v1/recipes/99", "", 404, "no such recipe")
 	ta.wantError(t, "GET", "/api/v1/recipes/abc", "", 404, "no such recipe")
@@ -500,11 +546,11 @@ func TestInstances(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)
 	rec := ta.addRecipe(t)
-	body := `{"recipe_id": ` + strconv.FormatInt(rec.ID, 10) + `, "name": "Home", "palette": "bw", "fields": {"city": "Oslo"}, "secrets": {"zkey": "` + testSecret + `", "apikey": "` + testSecret + `"}}`
+	body := `{"recipe_id": ` + strconv.FormatInt(rec.ID, 10) + `, "name": "Home", "palette": "bw", "fields": {"city": "Oslo", "tags": ["a", "c"], "zkey": "` + testSecret + `", "apikey": "` + testSecret + `"}}`
 	var created instanceJSON
 	w := ta.call(t, "POST", "/api/v1/instances", body, 201, &created)
 	if created.Name != "Home" || created.RecipeName != "Weather" || created.Palette != "bw" ||
-		created.Fields["city"] != "Oslo" || len(created.Fields) != 1 || strings.Join(created.SecretFields, ",") != "apikey,zkey" {
+		created.Fields["city"].One != "Oslo" || !slices.Equal(created.Fields["tags"].Many, []string{"a", "c"}) || len(created.Fields) != 2 || strings.Join(created.SecretFields, ",") != "apikey,zkey" {
 		t.Errorf("created %+v", created)
 	}
 	id := strconv.FormatInt(created.ID, 10)
@@ -519,11 +565,13 @@ func TestInstances(t *testing.T) {
 	// Every response is checked for the secret, including the ones for a
 	// failure.
 	for _, tc := range []struct{ name, body, contains string }{
-		{"unknown palette", `{"recipe_id": 1, "palette": "neon", "secrets": {"k": "` + testSecret + `"}}`, "unknown palette"},
-		{"field and secret", `{"recipe_id": 1, "fields": {"k": "a"}, "secrets": {"k": "` + testSecret + `"}}`, "both a field and a secret"},
-		{"unknown recipe", `{"recipe_id": 99, "secrets": {"k": "` + testSecret + `"}}`, "no such recipe"},
-		{"unknown field", `{"recipe_id": 1, "secret": {"k": "` + testSecret + `"}}`, "unknown field"},
-		{"bad json", `{"recipe_id": 1, "secrets": {"k": "` + testSecret, "bad request body"},
+		{"unknown palette", `{"recipe_id": 1, "palette": "neon", "fields": {"k": "` + testSecret + `"}}`, "unknown palette"},
+		{"short secret", `{"recipe_id": 1, "fields": {"k": "abc"}}`, "k: must be at least 6 characters"},
+		{"no such field", `{"recipe_id": 1, "fields": {"nope": "` + testSecret + `"}}`, "nope: no such field"},
+		{"unknown recipe", `{"recipe_id": 99, "fields": {"k": "` + testSecret + `"}}`, "no such recipe"},
+		{"secrets is gone", `{"recipe_id": 1, "secrets": {"k": "` + testSecret + `"}}`, "unknown field"},
+		{"bad json", `{"recipe_id": 1, "fields": {"k": "` + testSecret, "bad request body"},
+		{"a number for a value", `{"recipe_id": 1, "fields": {"k": 7}}`, "string or an array of strings"},
 	} {
 		w := ta.do(t, "POST", "/api/v1/instances", strings.NewReader(tc.body))
 		bodies = append(bodies, w.Body.String())
@@ -555,7 +603,7 @@ func TestInstances(t *testing.T) {
 	ta.call(t, "POST", "/api/v1/playlists", `{"name": "p"}`, 201, nil)
 	var item addItemResponse
 	ta.call(t, "POST", "/api/v1/playlists/items", `{"playlist": "p", "device": "`+testFriend+`", "instance_id": `+id+`}`, 201, &item)
-	ta.wantError(t, "DELETE", "/api/v1/instances/"+id, "", 409, "item IDs "+strconv.FormatInt(item.ID, 10))
+	ta.wantError(t, "DELETE", "/api/v1/instances/"+id, "", 409, "instance is in 1 playlist items")
 	ta.call(t, "DELETE", "/api/v1/playlists/items/"+strconv.FormatInt(item.ID, 10), "", 204, nil)
 	ta.call(t, "DELETE", "/api/v1/instances/"+id, "", 204, nil)
 	ta.wantError(t, "GET", "/api/v1/instances/"+id, "", 404, "no such instance")
@@ -569,7 +617,7 @@ func TestInstanceSecretsNeedKey(t *testing.T) {
 	ta := newTestAPI(t, false)
 	rec := ta.addRecipe(t)
 	recID := strconv.FormatInt(rec.ID, 10)
-	ta.wantError(t, "POST", "/api/v1/instances", `{"recipe_id": `+recID+`, "secrets": {"k": "`+testSecret+`"}}`, 400, "TRMNL_SECRET_KEY")
+	ta.wantError(t, "POST", "/api/v1/instances", `{"recipe_id": `+recID+`, "fields": {"k": "`+testSecret+`"}}`, 400, "TRMNL_SECRET_KEY")
 	var list []instanceJSON
 	ta.call(t, "GET", "/api/v1/instances", "", 200, &list)
 	if len(list) != 0 {
@@ -581,8 +629,8 @@ func TestInstanceSecretsNeedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := recipe.CreateInstance(t.Context(), ta.db, key, recipe.InstanceParams{
-		RecipeID: rec.ID, Name: "sealed", Fields: map[string]string{"city": "Oslo"}, Secrets: map[string]string{"k": testSecret},
+	sealed, err := recipe.CreateInstance(t.Context(), ta.db, key, ta.recipes, recipe.InstanceParams{
+		RecipeID: rec.ID, Name: "sealed", Values: map[string]recipe.Value{"city": {One: "Oslo"}, "k": {One: testSecret}},
 	}, ta.now)
 	if err != nil {
 		t.Fatal(err)
@@ -592,7 +640,7 @@ func TestInstanceSecretsNeedKey(t *testing.T) {
 		t.Errorf("an instance with no secrets: %s", plain.Body)
 	}
 	w := ta.call(t, "GET", "/api/v1/instances", "", 200, &list)
-	if len(list) != 2 || list[0].Name != "sealed" || list[0].Fields["city"] != "Oslo" || list[0].SecretFields != nil ||
+	if len(list) != 2 || list[0].Name != "sealed" || list[0].Fields["city"].One != "Oslo" || list[0].SecretFields != nil ||
 		list[1].SecretFields == nil || len(list[1].SecretFields) != 0 {
 		t.Errorf("list %+v", list)
 	}
@@ -936,7 +984,7 @@ func TestServerError(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)
 	rec := ta.addRecipe(t)
-	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "secrets": {"k": "hunter2"}}`, 201, nil)
+	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "fields": {"k": "hunter2"}}`, 201, nil)
 	// A closed database fails the list in a way the caller did not cause.
 	_ = ta.db.Close()
 	var e errorBody
@@ -1051,7 +1099,7 @@ func TestInstanceSecretsUnreadable(t *testing.T) {
 			t.Parallel()
 			ta := newTestAPI(t, true)
 			rec := ta.addRecipe(t)
-			good := ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "good", "secrets": {"k": "`+testSecret+`"}}`, 201, nil)
+			good := ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "good", "fields": {"k": "`+testSecret+`"}}`, 201, nil)
 			if !strings.Contains(good.Body.String(), `"secret_fields":["k"]`) {
 				t.Fatalf("good instance: %s", good.Body)
 			}
@@ -1081,7 +1129,7 @@ func TestInstanceSecretsUnreadable(t *testing.T) {
 			w := ta.call(t, "GET", "/api/v1/instances", "", 200, &list)
 			var one instanceJSON
 			w1 := ta.call(t, "GET", "/api/v1/instances/"+strconv.FormatInt(inst.ID, 10), "", 200, &one)
-			if len(list) < 2 || list[0].SecretFields == nil || one.SecretFields != nil || one.Fields["city"] != "Oslo" {
+			if len(list) < 2 || list[0].SecretFields == nil || one.SecretFields != nil || one.Fields["city"].One != "Oslo" {
 				t.Errorf("list %+v, get %+v", list, one)
 			}
 			for _, in := range list {

@@ -3,11 +3,13 @@
 -- reported about itself, from which its render size and palette follow.
 -- A recipe's device_id is the device the render is for, which the caller
 -- drops for a recipe whose renders every device shares. data_at is when
--- the instance's pushed data last changed, 0 if it has none.
+-- the instance's pushed data last changed, 0 if it has none. settings_at is
+-- when its field values last changed.
 SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
   recipe.refresh_interval, device.id AS device_id, device.fw_model, device_state.width, device_state.height,
   device_state.device_id IS NOT NULL AS woken,
-  CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at
+  CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at,
+  plugin_instance.settings_at
 FROM playlist_device
 JOIN device ON device.id = playlist_device.device_id
 LEFT JOIN device_state ON device_state.device_id = device.id
@@ -58,12 +60,12 @@ WHERE device.id = ?;
 -- name: ListRenderRows :many
 -- Every render's row without its build log, which is large, for the
 -- scheduler to decide in one read what is due.
-SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, data_at, failures
+SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, data_at, settings_at, failures
 FROM render;
 
 -- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
 ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
@@ -71,6 +73,7 @@ ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   error = '',
   log = excluded.log,
   data_at = excluded.data_at,
+  settings_at = excluded.settings_at,
   failures = 0
 RETURNING id;
 
@@ -79,14 +82,15 @@ RETURNING id;
 -- failures is 1 for a failure that counts toward the backoff and 0 for one
 -- that does not, such as an unreachable renderer. It is added to the row's
 -- count.
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, failures)
-VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
+VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
   error = excluded.error,
   log = excluded.log,
   data_at = excluded.data_at,
+  settings_at = excluded.settings_at,
   failures = render.failures + excluded.failures;
 
 -- name: SaveRenderImage :exec

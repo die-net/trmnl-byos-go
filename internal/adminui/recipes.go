@@ -302,7 +302,7 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	form.Name = strings.TrimSpace(r.PostForm.Get("name"))
 	form.Palette = r.PostForm.Get("palette")
-	_, err := recipe.CreateInstance(r.Context(), s.db, nil, recipe.InstanceParams{RecipeID: rec.ID, Name: form.Name, Palette: form.Palette}, s.now())
+	_, err := recipe.CreateInstance(r.Context(), s.db, nil, s.recipesDir, recipe.InstanceParams{RecipeID: rec.ID, Name: form.Name, Palette: form.Palette}, s.now())
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
@@ -374,8 +374,8 @@ func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, recipe.ErrNoInstance):
 		s.renderNotFound(w, r, noInstance)
 	case errors.Is(err, recipe.ErrInstanceInUse):
-		// The error's text names items and the command line, so the page
-		// shows the playlists instead.
+		// The error's text only counts the items, so the page shows the
+		// playlists instead.
 		s.renderInstanceDelete(w, r, http.StatusConflict, &inst)
 	default:
 		serverError(w, r, "remove instance", err)

@@ -159,12 +159,21 @@ type candidate struct {
 	target
 	// woken is whether any device whose playlist has the target has woken.
 	woken bool
-	// dataAt is the updated_at of the instance's pushed data, 0 if it has
-	// none.
-	dataAt int64
+	// read is what the instance has now that a build reads.
+	read version
 	// wanted is when the devices that will show the target at their next
 	// wake expect to wake.
 	wanted []time.Time
+}
+
+// version is what a build reads of an instance that can change under it,
+// each as a time that rises with every change.
+type version struct {
+	// data is the updated_at of the instance's pushed data, 0 if it has
+	// none.
+	data int64
+	// settings is the instance's settings_at.
+	settings int64
 }
 
 // dueTargets returns the targets that are due now. Those wanted by a wake
@@ -188,7 +197,7 @@ func (s *Scheduler) dueTargets(ctx context.Context) ([]target, error) {
 		r := &rows[i]
 		// Only what due and lead read. The build log is not loaded.
 		renders[renderKey{r.InstanceID, r.DeviceID, r.Width, r.Height, r.Palette}] = &db.Render{
-			RenderedAt: r.RenderedAt, AttemptedAt: r.AttemptedAt, DurationMs: r.DurationMs, Error: r.Error, DataAt: r.DataAt, Failures: r.Failures,
+			RenderedAt: r.RenderedAt, AttemptedAt: r.AttemptedAt, DurationMs: r.DurationMs, Error: r.Error, DataAt: r.DataAt, SettingsAt: r.SettingsAt, Failures: r.Failures,
 		}
 	}
 	now := s.now()
@@ -198,7 +207,7 @@ func (s *Scheduler) dueTargets(ctx context.Context) ([]target, error) {
 	}
 	var list []dueTarget
 	for _, c := range cands {
-		if ok, by := due(c.target, renders[renderKey{c.instance, c.device, int64(c.width), int64(c.height), c.palette}], c.wanted, c.woken, c.dataAt, now); ok {
+		if ok, by := due(c.target, renders[renderKey{c.instance, c.device, int64(c.width), int64(c.height), c.palette}], c.wanted, c.woken, c.read, now); ok {
 			list = append(list, dueTarget{c.target, by})
 		}
 	}
@@ -297,7 +306,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 			byTarget[t] = c
 		}
 		c.woken = c.woken || r.Woken
-		c.dataAt = r.DataAt
+		c.read = version{data: r.DataAt, settings: r.SettingsAt}
 	}
 
 	wakes, err := s.cfg.DB.Read.ListDeviceWakes(ctx)
@@ -413,9 +422,8 @@ func lead(r *db.Render) time.Duration {
 
 // due reports whether t should be built now, given its render row (nil if
 // it has none), the times devices that will show it expect to wake next,
-// whether any device showing it has ever woken, the updated_at of its
-// instance's pushed data (0 if it has none), and the time. It is due
-// when any of these holds:
+// whether any device showing it has ever woken, what its instance has now
+// that a build reads, and the time. It is due when any of these holds:
 //
 //   - it has never been rendered;
 //   - its last build failed, and retryDelay has passed since it, which
@@ -423,8 +431,10 @@ func lead(r *db.Render) time.Duration {
 //     outcome, nothing else makes it due, so a failing recipe is not built
 //     on every check);
 //   - its data is newer than what its last build read, by updated_at, which
-//     the push path makes rise with every push. A failed build is retried
-//     after retryDelay by the rule above, so a push waits for that;
+//     the push path makes rise with every push, or its settings are, by
+//     settings_at, which an update of the instance's field values or
+//     secrets makes rise. A failed build is retried after retryDelay by
+//     the rule above, so a push or a settings change waits for that;
 //   - it is wanted at a wake that its last good render would be a refresh
 //     interval old at, and that wake is within lead;
 //   - its last good render is two refresh intervals old, wanted or not,
@@ -433,8 +443,8 @@ func lead(r *db.Render) time.Duration {
 //   - no device showing it has woken, and a refresh interval has passed.
 //
 // by is the earliest wake that makes it due, which orders builds, and is
-// the zero time when only the data and the last two rules apply.
-func due(t target, r *db.Render, wanted []time.Time, woken bool, dataAt int64, now time.Time) (ok bool, by time.Time) {
+// the zero time when only the data, settings and last two rules apply.
+func due(t target, r *db.Render, wanted []time.Time, woken bool, read version, now time.Time) (ok bool, by time.Time) {
 	if r == nil {
 		return true, earliest(wanted, func(time.Time) bool { return true })
 	}
@@ -442,7 +452,7 @@ func due(t target, r *db.Render, wanted []time.Time, woken bool, dataAt int64, n
 		ok = !now.Before(time.Unix(r.AttemptedAt, 0).Add(retryDelay(r.Failures)))
 		return ok, earliest(wanted, func(time.Time) bool { return ok })
 	}
-	if dataAt > r.DataAt {
+	if read.data > r.DataAt || read.settings > r.SettingsAt {
 		return true, earliest(wanted, func(time.Time) bool { return true })
 	}
 	rendered := time.Unix(r.RenderedAt, 0)
@@ -485,7 +495,7 @@ func (s *Scheduler) render(ctx context.Context, t target) (recorded bool, err er
 	start := s.now()
 	bctx, cancel := context.WithTimeout(ctx, s.buildTimeout)
 	defer cancel()
-	images, log, dataAt, err := s.build(bctx, t)
+	images, log, read, err := s.build(bctx, t)
 	took := s.now().Sub(start)
 	slog.Info("render", "instance", t.instance, "device", t.device, "width", t.width, "height", t.height, "palette", t.palette,
 		"seconds", took.Seconds(), "err", err)
@@ -509,7 +519,8 @@ func (s *Scheduler) render(ctx context.Context, t target) (recorded bool, err er
 			DurationMs:  took.Milliseconds(),
 			Error:       describe(err, log),
 			Log:         log,
-			DataAt:      dataAt,
+			DataAt:      read.data,
+			SettingsAt:  read.settings,
 			Failures:    counted,
 		})
 		if serr != nil {
@@ -528,7 +539,8 @@ func (s *Scheduler) render(ctx context.Context, t target) (recorded bool, err er
 			AttemptedAt: start.Unix(),
 			DurationMs:  took.Milliseconds(),
 			Log:         log,
-			DataAt:      dataAt,
+			DataAt:      read.data,
+			SettingsAt:  read.settings,
 		})
 		if err != nil {
 			return fmt.Errorf("save render: %w", err)
@@ -545,35 +557,36 @@ func (s *Scheduler) render(ctx context.Context, t target) (recorded bool, err er
 }
 
 // build sends t's project to the renderer and stores the images it returns.
-// It also returns the updated_at of the instance data it read, 0 if there
-// was none, which the render records. A build that fails before it reads the
-// data returns 0.
-func (s *Scheduler) build(ctx context.Context, t target) (images map[string]stored, log string, dataAt int64, err error) {
+// It also returns what it read of the instance, which the render records. A
+// build that fails before it reads the instance, or its data, returns 0 for
+// what it did not read.
+func (s *Scheduler) build(ctx context.Context, t target) (images map[string]stored, log string, read version, err error) {
 	if t.broken != "" {
-		return nil, "", 0, errors.New(t.broken)
+		return nil, "", read, errors.New(t.broken)
 	}
 	inst, err := s.cfg.DB.Read.GetInstance(ctx, t.instance)
 	if err != nil {
-		return nil, "", 0, fmt.Errorf("get instance: %w", err)
+		return nil, "", read, fmt.Errorf("get instance: %w", err)
 	}
+	read.settings = inst.SettingsAt
 	fields, secretValues, err := recipe.InstanceFields(&inst, s.cfg.Secrets)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", read, err
 	}
 	proj := recipe.NewProject(recipe.Dir(s.cfg.RecipesDir, inst.RecipeID), fields, s.cfg.Zone.String(), s.cfg.AssetHosts)
 	data, err := s.cfg.DB.Read.GetInstanceData(ctx, t.instance)
 	if err == nil {
-		dataAt = data.UpdatedAt
+		read.data = data.UpdatedAt
 		if proj, err = proj.WithData(data.Data); err != nil {
-			return nil, "", dataAt, fmt.Errorf("instance %d data: %w", t.instance, err)
+			return nil, "", read, fmt.Errorf("instance %d data: %w", t.instance, err)
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return nil, "", 0, fmt.Errorf("get instance data: %w", err)
+		return nil, "", read, fmt.Errorf("get instance data: %w", err)
 	}
 	if t.device != 0 {
 		row, err := s.cfg.DB.Read.GetRenderDevice(ctx, t.device)
 		if err != nil {
-			return nil, "", dataAt, fmt.Errorf("get device: %w", err)
+			return nil, "", read, fmt.Errorf("get device: %w", err)
 		}
 		proj = proj.WithDevice(recipe.NewDevice(&row))
 	}
@@ -594,9 +607,9 @@ func (s *Scheduler) build(ctx context.Context, t target) (images map[string]stor
 	// line made from it are stored and shown, so the values come out here.
 	log = redact(log, secretValues)
 	if err != nil {
-		return nil, log, dataAt, err
+		return nil, log, read, err
 	}
-	return images, log, dataAt, nil
+	return images, log, read, nil
 }
 
 // redacted replaces a secret value in a build log.
