@@ -50,9 +50,11 @@ func newTestUI(t *testing.T, cfg Config, setPassword bool) *testUI {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	tu := &testUI{db: client, mux: http.NewServeMux(), now: time.Unix(1_000_000, 0)}
+	cfg.Zone = testZone
 	tu.srv = New(client, cfg)
-	tu.srv.now = func() time.Time { return tu.now }
-	tu.srv.zone = testZone
+	// In UTC, as time.Now gives the time in time.Local, so times are shown
+	// and schedules read in testZone only if the server uses Config.Zone.
+	tu.srv.now = func() time.Time { return tu.now.UTC() }
 	tu.srv.Register(tu.mux)
 	if setPassword {
 		// The setting adminauth keeps the hash in.

@@ -63,10 +63,14 @@ type harness struct {
 	now      time.Time
 }
 
+// testZone is the server's zone in these tests. It is neither UTC nor any
+// machine's local zone, so a schedule read in another zone is caught.
+var testZone = time.FixedZone("TST", 5*3600+1800)
+
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	dir := t.TempDir()
-	h := &harness{failFile: filepath.Join(dir, "fail"), leakFile: filepath.Join(dir, "leak"), now: time.Unix(1_800_000_000, 0)}
+	h := &harness{failFile: filepath.Join(dir, "fail"), leakFile: filepath.Join(dir, "leak"), now: time.Unix(1_800_000_000, 0).In(testZone)}
 	script := filepath.Join(dir, "trmnlp")
 	if err := os.WriteFile(script, []byte(fakeTrmnlp), 0o700); err != nil { //nolint:gosec // G306: the fake command must be executable.
 		t.Fatal(err)
@@ -100,6 +104,7 @@ func newHarness(t *testing.T) *harness {
 		Renderer:   &render.Client{URL: srv.URL, HTTP: srv.Client()},
 		RecipesDir: filepath.Join(dir, "recipes"),
 		Secrets:    key,
+		Zone:       testZone,
 		AssetHosts: []string{"trmnl.com"},
 	})
 	h.s.now = func() time.Time { return h.now }
@@ -573,7 +578,7 @@ func TestCandidatesWanted(t *testing.T) {
 		t.Errorf("targets %v, want %v", got, want)
 	}
 	for k, w := range want {
-		if !slices.Equal(got[k], w) {
+		if !slices.EqualFunc(got[k], w, time.Time.Equal) {
 			t.Errorf("target %+v wanted at %v, want %v", k, got[k], w)
 		}
 	}
@@ -1288,15 +1293,6 @@ func TestCursorIsNotAWake(t *testing.T) {
 	}
 }
 
-// useZone makes loc the server's local time zone for the test, since the
-// scheduler reads schedules in it.
-func useZone(t *testing.T, loc *time.Location) {
-	t.Helper()
-	old := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = old })
-}
-
 // wantedAt returns when the wakes want the render target of a shared
 // instance, as candidates reports it.
 func (h *harness) wantedAt(t *testing.T, instance int64) []time.Time {
@@ -1319,7 +1315,7 @@ func (h *harness) wantedAt(t *testing.T, instance int64) []time.Time {
 // then, which is the wake plus the slack a timer wake may come early, not
 // from those shown now.
 func TestCandidatesHonorSchedules(t *testing.T) {
-	useZone(t, time.UTC)
+	t.Parallel()
 	h := newHarness(t)
 	other := h.installRecipe(t, "y")
 	// The second playlist has the higher ID, so it is tried after p, and
@@ -1380,7 +1376,7 @@ func TestCandidatesHonorSchedules(t *testing.T) {
 // at the next scan, and an item that is only off schedule keeps its render,
 // so it is ready when its window opens.
 func TestHiddenItemsAreNotTargets(t *testing.T) {
-	useZone(t, time.UTC)
+	t.Parallel()
 	h := newHarness(t)
 	other := h.installRecipe(t, "y")
 	item, _, err := playlist.AddItem(t.Context(), h.db, "p", 0, other.ID, 15*time.Minute)

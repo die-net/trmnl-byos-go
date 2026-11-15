@@ -215,7 +215,7 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	if err != nil || len(pick.lists) == 0 {
 		return screenChoice{refresh: refresh}, err
 	}
-	now := s.now()
+	now := s.now().In(s.cfg.Zone)
 	refresh = untilChange(pick.lists, now, refresh)
 	if !pick.ok {
 		// Nothing is scheduled, so there is no cursor to move. The text is
@@ -334,7 +334,7 @@ func (s *Server) advance(ctx context.Context, deviceID int64, pressed bool) (pic
 		}
 		lists, groups := playlist.DeviceLists(rows)
 		out.lists = lists
-		now := s.now()
+		now := s.now().In(s.cfg.Zone)
 		c := playlist.Choose(lists, now.Add(playlist.WakeSlack))
 		if c < 0 {
 			return nil

@@ -344,7 +344,7 @@ func (ts *testServer) nothingScheduled(t *testing.T) string {
 // the usual refresh since nothing changes soon.
 func TestDisplaySchedule(t *testing.T) {
 	ts := newTestServer(t)
-	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, testZone)
 	key, first, second := ts.playlistDevice(t)
 	img := ts.saveRender(t, first, "")
 	ts.saveRender(t, second, "")
@@ -370,7 +370,7 @@ func TestDisplaySchedule(t *testing.T) {
 
 	// A wake at 12:05 that finds the window about to open, at 12:08, is cut
 	// to it.
-	ts.now = time.Date(2026, 11, 13, 12, 5, 0, 0, time.UTC)
+	ts.now = time.Date(2026, 11, 13, 12, 5, 0, 0, testZone)
 	ts.scheduleWindow(t, "p", 12*60+5+3, 14*60)
 	m = ts.getJSON(t, "/api/display", timer)
 	if m["filename"] != closed || m["refresh_rate"] != float64(180) {
@@ -425,7 +425,7 @@ func TestDisplayHiddenItem(t *testing.T) {
 // default, and goes back when the schedule opens.
 func TestDisplayDefaultPlaylist(t *testing.T) {
 	ts := newTestServer(t)
-	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, testZone)
 	key, first, _ := ts.playlistDevice(t)
 	dev, err := ts.db.Read.GetDeviceByMAC(t.Context(), testMAC)
 	if err != nil {
@@ -451,7 +451,7 @@ func TestDisplayDefaultPlaylist(t *testing.T) {
 	if m := ts.getJSON(t, "/api/display", timer); m["filename"] != imgP {
 		t.Fatalf("in the window: %v; want playlist p's image %s", m, imgP)
 	}
-	ts.now = time.Date(2026, 11, 13, 14, 0, 0, 0, time.UTC)
+	ts.now = time.Date(2026, 11, 13, 14, 0, 0, 0, testZone)
 	// Renders are made again, since they would be too old by now.
 	ts.saveRender(t, first, "")
 	imgDefault := ts.saveRender(t, inst.ID, "")

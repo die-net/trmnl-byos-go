@@ -68,7 +68,23 @@ func TestPlaylistMove(t *testing.T) {
 	}
 }
 
+// testTZ is the TZ the schedule tests run in. It is not UTC, so a date read
+// in any other zone than TZ is caught.
+const testTZ = "Asia/Kolkata"
+
+// testLocation returns testTZ's zone.
+func testLocation(t *testing.T) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(testTZ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loc
+}
+
 func TestPlaylistSet(t *testing.T) {
+	t.Setenv("TZ", testTZ)
+	loc := testLocation(t)
 	dir := playlistFixture(t)
 	if _, err := runPlaylist(t, dir, "set", "2", "-duration", "30m", "-hidden", "-days", "mon,fri", "-window", "22:00-06:00", "-from", "2026-11-14", "-until", "2026-11-15"); err != nil {
 		t.Fatal(err)
@@ -82,8 +98,8 @@ func TestPlaylistSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	from := time.Date(2026, 11, 14, 0, 0, 0, 0, time.Local).Unix()
-	until := time.Date(2026, 11, 16, 0, 0, 0, 0, time.Local).Unix()
+	from := time.Date(2026, 11, 14, 0, 0, 0, 0, loc).Unix()
+	until := time.Date(2026, 11, 16, 0, 0, 0, 0, loc).Unix()
 	if item.Duration != 1800 || item.Hidden != 1 || item.Days != 0b0100010 || item.WindowStart != 1320 || item.WindowEnd != 360 || item.StartsAt != from || item.EndsAt != until {
 		t.Fatalf("item = %+v; want from %d until %d", item, from, until)
 	}
@@ -164,6 +180,8 @@ func TestPlaylistSetRefused(t *testing.T) {
 }
 
 func TestPlaylistSchedule(t *testing.T) {
+	t.Setenv("TZ", testTZ)
+	loc := testLocation(t)
 	dir := playlistFixture(t)
 	if _, err := runPlaylist(t, dir, "schedule", "p", "-days", "sat,sun", "-window", "08:00-20:00", "-until", "2026-12-31"); err != nil {
 		t.Fatal(err)
@@ -174,7 +192,7 @@ func TestPlaylistSchedule(t *testing.T) {
 	}
 	defer client.Close()
 	pl, err := client.Read.GetPlaylistByName(t.Context(), "p")
-	until := time.Date(2027, 1, 1, 0, 0, 0, 0, time.Local).Unix()
+	until := time.Date(2027, 1, 1, 0, 0, 0, 0, loc).Unix()
 	if err != nil || pl.Days != 0b1000001 || pl.WindowStart != 480 || pl.WindowEnd != 1200 || pl.StartsAt != 0 || pl.EndsAt != until {
 		t.Fatalf("playlist = %+v, %v; want until %d", pl, err, until)
 	}
@@ -189,5 +207,32 @@ func TestPlaylistSchedule(t *testing.T) {
 	pl, err = client.Read.GetPlaylistByName(t.Context(), "p")
 	if err != nil || pl.Days != 0b1000001 || pl.WindowStart != 0 || pl.WindowEnd != 0 || pl.EndsAt != until {
 		t.Errorf("after window all: %+v, %v", pl, err)
+	}
+}
+
+// TestServerZone checks that the zone is TZ, that an unset TZ is UTC, and
+// that an unknown name is refused rather than read as UTC.
+func TestServerZone(t *testing.T) {
+	for _, tc := range []struct {
+		tz, want string
+		bad      bool
+	}{
+		{tz: testTZ, want: testTZ},
+		{tz: "", want: "UTC"},
+		{tz: "Mars/Olympus_Mons", bad: true},
+	} {
+		t.Run(tc.tz, func(t *testing.T) {
+			t.Setenv("TZ", tc.tz)
+			loc, err := serverZone()
+			if tc.bad {
+				if err == nil {
+					t.Fatalf("TZ %q gave %v, want an error", tc.tz, loc)
+				}
+				return
+			}
+			if err != nil || loc.String() != tc.want {
+				t.Fatalf("TZ %q gave %v, %v; want %s", tc.tz, loc, err, tc.want)
+			}
+		})
 	}
 }

@@ -69,8 +69,9 @@ type Config struct {
 	RecipesDir string
 	// Secrets opens instances' secret field values.
 	Secrets *secrets.Key
-	// TimeZone is the IANA time zone recipes render in, or "" for UTC.
-	TimeZone string
+	// Zone is the server's time zone. Schedules are read in it, and recipes
+	// render in it. Nil is UTC.
+	Zone *time.Location
 	// AssetHosts are the hosts whose assets the renderer's proxy caches.
 	AssetHosts []string
 }
@@ -90,6 +91,7 @@ type Scheduler struct {
 
 // New returns a scheduler.
 func New(cfg Config) *Scheduler {
+	cfg.Zone = cmp.Or(cfg.Zone, time.UTC)
 	return &Scheduler{cfg: cfg, now: time.Now, buildTimeout: buildTimeout, perDevice: map[int64]bool{}}
 }
 
@@ -322,7 +324,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 		})
 		// The device chooses at its wake plus the slack a wake may come
 		// early, as /api/display does.
-		next := time.Unix(w.LastSeen+w.LastRefreshRateSent, 0)
+		next := time.Unix(w.LastSeen+w.LastRefreshRateSent, 0).In(s.cfg.Zone)
 		at := next.Add(playlist.WakeSlack)
 		c := playlist.Choose(lists, at)
 		if c < 0 {
@@ -558,7 +560,7 @@ func (s *Scheduler) build(ctx context.Context, t target) (images map[string]stor
 	if err != nil {
 		return nil, "", 0, err
 	}
-	proj := recipe.NewProject(recipe.Dir(s.cfg.RecipesDir, inst.RecipeID), fields, s.cfg.TimeZone, s.cfg.AssetHosts)
+	proj := recipe.NewProject(recipe.Dir(s.cfg.RecipesDir, inst.RecipeID), fields, s.cfg.Zone.String(), s.cfg.AssetHosts)
 	data, err := s.cfg.DB.Read.GetInstanceData(ctx, t.instance)
 	if err == nil {
 		dataAt = data.UpdatedAt

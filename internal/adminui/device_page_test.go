@@ -385,6 +385,54 @@ func TestDevicePlaylist(t *testing.T) {
 	}
 }
 
+// TestDevicePlaylistZone checks that the device page reads item schedules in
+// the server's zone. The test clock reads 19:16 there and 13:46 in UTC.
+func TestDevicePlaylistZone(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	for _, tc := range []struct {
+		name       string
+		start, end int64
+		shown      bool
+	}{
+		{"open in the server's zone", 19 * 60, 20 * 60, true},
+		{"open in UTC only", 13 * 60, 14 * 60, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			if got := tu.now.In(testZone).Format("15:04"); got != "19:16" {
+				t.Fatalf("the test clock reads %s in the server's zone, want 19:16", got)
+			}
+			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+			recipe, err := tu.db.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "weather", Source: "x", RefreshInterval: 15, InstalledAt: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var item db.PlaylistItem
+			for _, name := range []string{"Weather", "News"} {
+				inst, err := tu.db.Write.CreateInstance(ctx, db.CreateInstanceParams{RecipeID: recipe.ID, Name: name, FieldValues: "{}", CreatedAt: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if item, _, err = playlist.AddItem(ctx, tu.db, "", 1, inst.ID, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := playlist.Always
+			s.WindowStart, s.WindowEnd = tc.start, tc.end
+			edit := s.Full()
+			if err := playlist.UpdateItem(ctx, tu.db, item.ID, playlist.ItemUpdate{Schedule: &edit}); err != nil {
+				t.Fatal(err)
+			}
+			body := tu.get(t, tu.signIn(t), "/devices/ABC123").Body.String()
+			if got := strings.Contains(body, `<span class="playlist-name">News</span>`); got != tc.shown {
+				t.Errorf("News listed = %v, want %v:\n%s", got, tc.shown, body)
+			}
+		})
+	}
+}
+
 func TestDeviceNameEscaping(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	const name = `<b>"x"</b>`

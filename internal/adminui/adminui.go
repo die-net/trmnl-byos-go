@@ -5,6 +5,7 @@
 package adminui
 
 import (
+	"cmp"
 	"embed"
 	"errors"
 	"fmt"
@@ -37,13 +38,16 @@ type Config struct {
 	// https one makes the session cookie Secure even when TLS ends at a
 	// proxy, which the server cannot see.
 	PublicURL string
+	// Zone is the server's time zone, which times are shown and schedules
+	// are read in. Nil is UTC.
+	Zone *time.Location
 }
 
 // Server handles admin UI requests.
 type Server struct {
 	db  *db.Client
 	now func() time.Time
-	// zone is the time zone times are shown in: the server's.
+	// zone is Config.Zone, or UTC.
 	zone *time.Location
 	// secureURL is whether PublicURL is https.
 	secureURL bool
@@ -57,7 +61,7 @@ func New(client *db.Client, cfg Config) *Server {
 	s := &Server{
 		db:    client,
 		now:   time.Now,
-		zone:  time.Local,
+		zone:  cmp.Or(cfg.Zone, time.UTC),
 		cop:   http.NewCrossOriginProtection(),
 		pages: map[string]*template.Template{},
 	}
