@@ -205,7 +205,7 @@ func TestPagesNeedSession(t *testing.T) {
 			if tc.cookie != "" {
 				h = []string{"Cookie", tc.cookie}
 			}
-			for _, path := range []string{"/", "/devices", "/recipes", "/playlists", "/firmware"} {
+			for _, path := range []string{"/", "/devices", "/recipes", "/playlists", "/firmware", "/settings"} {
 				w := tu.do(t, "GET", path, "", h...)
 				if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
 					t.Fatalf("GET %s: status %d to %q, want 303 to /login", path, w.Code, w.Header().Get("Location"))

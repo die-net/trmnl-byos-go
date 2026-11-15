@@ -7,6 +7,7 @@
 <a href="/recipes"{{if eq .Nav "recipes"}} aria-current="page"{{end}}>{{template "icon-recipes"}}<span>Recipes</span></a>
 <a href="/playlists"{{if eq .Nav "playlists"}} aria-current="page"{{end}}>{{template "icon-playlists"}}<span>Playlists</span></a>
 <a href="/firmware"{{if eq .Nav "firmware"}} aria-current="page"{{end}}>{{template "icon-firmware"}}<span>Firmware</span></a>
+<a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>{{template "icon-settings"}}<span>Settings</span></a>
 </nav>
 <form class="signout" method="post" action="/logout"><button class="btn-quiet" type="submit">Sign out</button></form>
 </div>

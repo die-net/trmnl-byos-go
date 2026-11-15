@@ -83,7 +83,7 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "notfound"} {
+	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "settings", "notfound"} {
 		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/"+name+".html"))
 	}
 	return s
@@ -130,6 +130,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /firmware/builds/{id}/rollout", page(s.requireSession(s.startRollout)))
 	mux.Handle("GET /firmware/builds/{id}/cancel", page(s.requireSession(s.confirmCancelRollout)))
 	mux.Handle("POST /firmware/builds/{id}/cancel", page(s.requireSession(s.cancelRollout)))
+	mux.Handle("GET /settings", page(s.requireSession(s.settingsPage)))
+	mux.Handle("POST /settings", page(s.requireSession(s.saveSetting)))
+	mux.Handle("POST /settings/reset", page(s.requireSession(s.resetSetting)))
 	mux.Handle("GET /static/", static())
 }
 
@@ -232,6 +235,8 @@ type pageData struct {
 	// cancel the confirm page asks about.
 	Build  *buildView
 	Cancel *cancelView
+	// Settings is what the settings page lists.
+	Settings []settingView
 	// NotFound says what the not-found page could not find.
 	NotFound notFoundView
 }
