@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"slices"
 	"strconv"
@@ -352,8 +353,8 @@ func TestPlaylistManage(t *testing.T) {
 }
 
 // TestPlaylistAddCreates checks that playlist add makes the playlist when it
-// is missing, named by -playlist or by the device's friendly ID, and adds to
-// it when it exists.
+// is missing, named by -playlist or by the device's friendly ID, adds to it
+// when it exists, and makes none when the add is refused.
 func TestPlaylistAddCreates(t *testing.T) {
 	t.Parallel()
 	dir := playlistFixture(t)
@@ -388,5 +389,21 @@ func TestPlaylistAddCreates(t *testing.T) {
 	}
 	if _, err := runPlaylist(t, dir, "add", "-instance", "1", "-device", "ZZZ999"); !errors.Is(err, device.ErrNoDevice) {
 		t.Errorf("unknown device: %v", err)
+	}
+	// A refused add with a new name makes no playlist, whatever refuses it.
+	for _, args := range [][]string{
+		{"add", "-instance", "999", "-playlist", "Typo"},
+		{"add", "-instance", "999", "-playlist", "Other", "-device", "ABC001"},
+		{"add", "-instance", "1", "-playlist", "Unknown", "-device", "ZZZ999"},
+		{"add", "-instance", "1", "-playlist", "Short", "-duration", "1s"},
+	} {
+		if _, err := runPlaylist(t, dir, args...); err == nil {
+			t.Errorf("playlist %v succeeded", args)
+		}
+	}
+	for _, name := range []string{"Typo", "Other", "Unknown", "Short"} {
+		if _, err := client.Read.GetPlaylistByName(t.Context(), name); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("a refused add left playlist %q: %v", name, err)
+		}
 	}
 }

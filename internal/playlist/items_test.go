@@ -80,3 +80,67 @@ func TestAddItem(t *testing.T) {
 		t.Errorf("item deleted twice: %v", err)
 	}
 }
+
+// TestAddItemCreating checks that AddItemCreating makes the playlist only
+// when the add succeeds: a refused add, for an unknown instance or device, a
+// bad name or a short duration, leaves no playlist, while a good one makes it
+// and a second adds to it.
+func TestAddItemCreating(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: "D8:3B:DA:12:34:56", ApiKeyHash: []byte{1}, FriendlyID: "ABC123", CreatedAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := client.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "r", Source: "s", RefreshInterval: 900, InstalledAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := client.Write.CreateInstance(ctx, db.CreateInstanceParams{RecipeID: rec.ID, Name: "i", FieldValues: "{}", CreatedAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		playlist string
+		device   string
+		instance int64
+		duration time.Duration
+		want     error
+	}{
+		{"unknown instance", "p", "", inst.ID + 1, time.Hour, errkind.ErrNotFound},
+		{"unknown instance for a device", "p", dev.FriendlyID, inst.ID + 1, time.Hour, errkind.ErrNotFound},
+		{"unknown device", "p", "ZZZ999", inst.ID, time.Hour, device.ErrNoDevice},
+		{"short duration", "p", "", inst.ID, time.Second, errkind.ErrInvalid},
+		{"empty name", " ", "", inst.ID, time.Hour, errkind.ErrInvalid},
+	} {
+		if _, err := AddItemCreating(ctx, client, tc.playlist, tc.device, tc.instance, tc.duration); !errors.Is(err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+	if lists, err := client.Read.ListPlaylists(ctx); err != nil || len(lists) != 0 {
+		t.Fatalf("a refused add made a playlist: %v, %v", lists, err)
+	}
+
+	for range 2 {
+		if _, err := AddItemCreating(ctx, client, " p ", dev.FriendlyID, inst.ID, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pl, err := client.Read.GetPlaylistByName(ctx, "p")
+	if err != nil {
+		t.Fatalf("playlist p: %v", err)
+	}
+	if ids, err := client.Read.ListPlaylistItemIDs(ctx, pl.ID); err != nil || len(ids) != 2 {
+		t.Errorf("playlist p has items %v, %v; want 2", ids, err)
+	}
+	if lists, err := client.Read.ListPlaylists(ctx); err != nil || len(lists) != 1 {
+		t.Errorf("playlists = %v, %v; want only p", lists, err)
+	}
+}
