@@ -23,32 +23,6 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
-// fakeTrmnlp stands in for trmnlp behind the real shim. Each "PNG" names
-// its layout, size, palette and first field value, and the friendly_id the
-// project's trmnl.device has, if it has one, and the headline pushed to the
-// instance, if there is one. It fails while
-// FAIL_FILE exists, and fails if a secret reached the project's files.
-const fakeTrmnlp = `#!/bin/sh
-while [ $# -gt 0 ]; do
-  case $1 in
-    -d) dir=$2; shift ;;
-    --width) w=$2; shift ;;
-    --height) h=$2; shift ;;
-    --palette) p=$2; shift ;;
-  esac
-  shift
-done
-test -f "$LEAK_FILE" && { echo "fetching https://api.example/?key=$FIELD_0"; echo "GET https://api.example/?key=$FIELD_0 failed: 401" >&2; exit 3; }
-test -f "$FAIL_FILE" && { echo "starting"; echo "data source said 401" >&2; exit 3; }
-grep -rq hunter2 "$dir" && { echo "a secret is in the project" >&2; exit 4; }
-dev=$(sed -n 's/^ *friendly_id: //p' "$dir/.trmnlp.yml")
-hl=$(sed -n 's/^ *headline: //p' "$dir/.trmnlp.yml")
-mkdir -p "$dir/_build"
-for v in full half_horizontal half_vertical quadrant; do
-  printf '%s%s %sx%s %s %s' "$v" "${dev:+@$dev}" "$w" "$h" "$p" "$FIELD_0${hl:+ hl=$hl}" > "$dir/_build/$v.png"
-done
-`
-
 type harness struct {
 	s        *Scheduler
 	db       *db.Client
@@ -57,7 +31,7 @@ type harness struct {
 	failFile string
 	// down, while set, makes the fake renderer answer 503 to every build.
 	down atomic.Bool
-	// leakFile, while it exists, makes the fake trmnlp fail with the
+	// leakFile, while it exists, makes the fake renderer fail with the
 	// first field's value in its output.
 	leakFile string
 	now      time.Time
@@ -71,19 +45,7 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	h := &harness{failFile: filepath.Join(dir, "fail"), leakFile: filepath.Join(dir, "leak"), now: time.Unix(1_800_000_000, 0).In(testZone)}
-	script := filepath.Join(dir, "trmnlp")
-	if err := os.WriteFile(script, []byte(fakeTrmnlp), 0o700); err != nil { //nolint:gosec // G306: the fake command must be executable.
-		t.Fatal(err)
-	}
-	shim := render.NewShim(script, []string{"PATH=" + os.Getenv("PATH"), "FAIL_FILE=" + h.failFile, "LEAK_FILE=" + h.leakFile}, 10*time.Second, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.builds.Add(1)
-		if h.down.Load() {
-			http.Error(w, "busy", http.StatusServiceUnavailable)
-			return
-		}
-		shim.ServeHTTP(w, r)
-	}))
+	srv := httptest.NewServer(http.HandlerFunc(h.fakeRenderer))
 	t.Cleanup(srv.Close)
 
 	var err error
@@ -719,6 +681,9 @@ func TestRenderOnPushAfterFailure(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.renderDue(t, 1)
+	if r := h.render(t); r.Error != "" {
+		t.Fatalf("first build failed: %s", r.Error)
+	}
 	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
