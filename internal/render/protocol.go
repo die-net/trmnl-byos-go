@@ -6,6 +6,8 @@
 package render
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -53,11 +55,47 @@ var (
 // build log says why.
 var ErrBuildFailed = errors.New("trmnlp build failed")
 
+// ErrRejected means the job itself is refused, by the client before it sends
+// it or by the shim with a 400: it is too big, or malformed. Another try
+// would be refused the same, and the fault is in the settings it was built
+// from, so it counts toward a render's backoff as a failed build does.
+var ErrRejected = errors.New("renderer rejected the job")
+
 // ErrUnavailable means the renderer could not be reached or did not answer
 // the request with a build result: a refused or reset connection, a timeout,
 // a busy shim, or a server error. It says nothing about the recipe, so it
-// does not count toward a render's backoff.
+// does not count toward a render's backoff. The categories are these three
+// and ErrBuildFailed, and a status other than 200, 400 and 422 is this one.
 var ErrUnavailable = errors.New("renderer unavailable")
+
+// jobReserve is what the rest of an encoded job takes beside its Env: the
+// size, the palette of up to 32 bytes and the keys, with room to spare.
+const jobReserve = 256
+
+// MaxEnvBytes is the most an Env may take in a job, by EnvSize, so that the
+// whole job fits in maxJobBytes.
+const MaxEnvBytes = maxJobBytes - jobReserve
+
+// encodeJob returns the JSON of job as it is sent. It does not escape <, >
+// and &, which would turn each into six bytes, and which the shim's decoder
+// reads the same either way.
+func encodeJob(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, fmt.Errorf("encode job: %w", err)
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// EnvSize returns the size in bytes of env in a job, exactly as the client
+// encodes it. A job is refused when it is over maxJobBytes, which is
+// MaxEnvBytes for the Env.
+func EnvSize(env map[string]string) (int, error) {
+	enc, err := encodeJob(env)
+	return len(enc), err
+}
 
 func (j Job) validate() error {
 	if j.Width < 1 || j.Height < 1 || j.Width > maxDimension || j.Height > maxDimension {

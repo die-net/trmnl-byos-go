@@ -302,12 +302,17 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	form.Name = strings.TrimSpace(r.PostForm.Get("name"))
 	form.Palette = r.PostForm.Get("palette")
+	var fieldErrs recipe.FieldErrors
 	_, err := recipe.CreateInstance(r.Context(), s.db, nil, s.recipesDir, recipe.InstanceParams{RecipeID: rec.ID, Name: form.Name, Palette: form.Palette}, s.now())
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
 	case errors.Is(err, recipe.ErrNoRecipe):
 		s.renderNotFound(w, r, noRecipe)
+	case errors.As(err, &fieldErrs):
+		// A recipe with a required field can't get an instance from this form
+		// until it has a settings form.
+		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err)+" Set the recipe's fields with `trmnl-byos instance set` or the API until the settings form is built.")
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderRecipe(w, r, http.StatusBadRequest, &rec, form, kindText(err))
 	default:

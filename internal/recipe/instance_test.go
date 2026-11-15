@@ -36,6 +36,9 @@ custom_fields:
   field_type: password
   name: Other
   optional: true
+- keyname: notes
+  field_type: code
+  optional: true
 - keyname: units
   field_type: select
   name: Units
@@ -454,5 +457,119 @@ func TestUpdateTwoSecrets(t *testing.T) {
 		if err != nil || !maps.EqualFunc(fields, tc.want, Value.equal) {
 			t.Errorf("%s: fields %v, %v; want %v", tc.name, fields, err, tc.want)
 		}
+	}
+}
+
+// TestInstanceValuesTooBig checks that values that cannot fit in a render
+// job are refused at create and update, as a field error on the largest
+// field, whether they are one field, several, or a secret, and that sealed
+// secrets that are not opened still count.
+func TestInstanceValuesTooBig(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	now := time.Unix(5000, 0)
+	// 20,000 of these are 20 KB, as sent, but 120 KB if < were escaped.
+	html := strings.Repeat("<", 20000)
+	if _, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}, "notes": {One: html}}}, now); err != nil {
+		t.Fatalf("20 KB of HTML: %v", err)
+	}
+	big := strings.Repeat("x", 40000)
+	var fe FieldErrors
+	for _, tc := range []struct {
+		name   string
+		values map[string]Value
+		want   string
+	}{
+		{"one field", map[string]Value{"city": {One: "Zurich"}, "notes": {One: strings.Repeat("x", 70000)}}, "notes"},
+		{"a secret", map[string]Value{"city": {One: "Zurich"}, "notes": {One: big}, "token": {One: big}}, "notes"},
+	} {
+		_, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: tc.values}, now)
+		if !errors.As(err, &fe) || len(fe) != 1 || !strings.Contains(fe[tc.want], "KB, over the 63 KB limit") || !errors.Is(err, errkind.ErrInvalid) {
+			t.Errorf("create, %s: %v", tc.name, err)
+		}
+	}
+	if left, err := f.client.Read.ListInstances(ctx); err != nil || len(left) != 1 {
+		t.Errorf("refused creates left %d instances, %v; want the one that fit", len(left), err)
+	}
+
+	inst, err := CreateInstance(ctx, f.client, key, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Values: map[string]Value{
+		"city": {One: "Zurich"}, "token": {One: strings.Repeat("s", 30000)},
+	}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Updates: a plain field that does not fit with the sealed secret that
+	// is not opened, one that does, and a secret that does not fit.
+	for _, tc := range []struct {
+		name    string
+		key     *secrets.Key
+		values  map[string]Value
+		wantErr string
+	}{
+		{"fits with the sealed secret", nil, map[string]Value{"notes": {One: strings.Repeat("n", 20000)}}, ""},
+		{"too big with the sealed secret, and no key", nil, map[string]Value{"notes": {One: strings.Repeat("n", 40000)}}, "notes"},
+		{"too big with the secret opened", key, map[string]Value{"notes": {One: strings.Repeat("n", 40000)}}, "notes"},
+		{"a secret too big", key, map[string]Value{"token": {One: strings.Repeat("s", 70000)}}, "token"},
+	} {
+		_, err := UpdateInstance(ctx, f.client, tc.key, f.recipesDir, inst.ID, InstanceUpdate{Values: tc.values}, now)
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("update, %s: %v", tc.name, err)
+		case tc.wantErr != "" && (!errors.As(err, &fe) || len(fe) != 1 || fe[tc.wantErr] == ""):
+			t.Errorf("update, %s: %v", tc.name, err)
+		}
+	}
+	stored, err := f.client.Read.GetInstance(ctx, inst.ID)
+	if err != nil || !strings.Contains(stored.FieldValues, strings.Repeat("n", 20000)) || strings.Contains(stored.FieldValues, strings.Repeat("n", 40000)) {
+		t.Errorf("a refused update changed the instance, or the fitting one was lost: %v", err)
+	}
+}
+
+// TestInstanceNames checks that names are cleaned as a playlist's are, on
+// create and update, and that an empty one is the recipe's.
+func TestInstanceNames(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	values := map[string]Value{"city": {One: "Zurich"}}
+	for _, tc := range []struct {
+		name, in, want string
+		ok             bool
+	}{
+		{"trimmed", "  Home  ", "Home", true},
+		{"empty is the recipe's", "", "Weather", true},
+		{"blank is the recipe's", " \t ", "Weather", true},
+		{"at the limit", strings.Repeat("é", 32), strings.Repeat("é", 32), true},
+		{"over the limit", strings.Repeat("a", 65), "", false},
+		{"a newline", "a\nb", "", false},
+		{"a control character", "a\x07b", "", false},
+		{"not UTF-8", "a\xffb", "", false},
+	} {
+		inst, err := CreateInstance(ctx, f.client, nil, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Name: tc.in, Values: values}, time.Unix(1, 0))
+		if tc.ok != (err == nil) || (!tc.ok && !errors.Is(err, errkind.ErrInvalid)) || (tc.ok && inst.Name != tc.want) {
+			t.Errorf("create %s: %q, %v", tc.name, inst.Name, err)
+			continue
+		}
+		if !tc.ok {
+			continue
+		}
+		upd, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Name: ptr(tc.in)}, time.Unix(1, 0))
+		if err != nil || upd.Name != tc.want {
+			t.Errorf("update %s: %q, %v", tc.name, upd.Name, err)
+		}
+	}
+	inst, err := CreateInstance(ctx, f.client, nil, f.recipesDir, InstanceParams{RecipeID: f.recipe.ID, Name: "Home", Values: values}, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{strings.Repeat("a", 65), "a\nb"} {
+		if _, err := UpdateInstance(ctx, f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Name: ptr(bad)}, time.Unix(1, 0)); !errors.Is(err, errkind.ErrInvalid) {
+			t.Errorf("update to %q: %v", bad, err)
+		}
+	}
+	if got, err := f.client.Read.GetInstance(ctx, inst.ID); err != nil || got.Name != "Home" {
+		t.Errorf("a refused name changed the instance: %q, %v", got.Name, err)
 	}
 }

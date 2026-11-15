@@ -96,7 +96,10 @@ func (f *Field) check(v Value) (Value, string) {
 	}
 	switch input {
 	case "select":
-		for _, s := range v.items() {
+		for i, s := range v.items() {
+			if slices.Contains(v.items()[:i], s) {
+				return v, fmt.Sprintf("%q is chosen twice", s)
+			}
 			if !slices.ContainsFunc(f.Options, func(o Option) bool { return o.Value == s }) {
 				return v, fmt.Sprintf("%q is not one of the options", s)
 			}

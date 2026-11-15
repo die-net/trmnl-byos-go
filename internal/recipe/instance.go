@@ -10,11 +10,15 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
+	"github.com/die-net/trmnl-byos-go/internal/render"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
 )
 
@@ -96,6 +100,12 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 	if len(secret) > 0 && key == nil {
 		return db.PluginInstance{}, secrets.ErrNoKey
 	}
+	if err := checkEnvSize(plain, secret, 0); err != nil {
+		return db.PluginInstance{}, err
+	}
+	if p.Name, err = CleanInstanceName(p.Name); err != nil {
+		return db.PluginInstance{}, err
+	}
 	if p.Name == "" {
 		p.Name = rec.Name
 	}
@@ -156,6 +166,13 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 			return db.PluginInstance{}, err
 		}
 	}
+	if u.Name != nil {
+		name, err := CleanInstanceName(*u.Name)
+		if err != nil {
+			return db.PluginInstance{}, err
+		}
+		u.Name = &name
+	}
 	// An instance's recipe never changes, so the definitions read here are
 	// the ones for the row read again inside the transaction.
 	inst, err := client.Read.GetInstance(ctx, id)
@@ -200,6 +217,13 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		}
 		oldPlain, oldSecret := maps.Clone(plain), maps.Clone(secret)
 		setValues(byName, plain, secret, values)
+		unopened := 0
+		if !touchesSecret {
+			unopened = len(cur.SecretValues)
+		}
+		if err := checkEnvSize(plain, secret, unopened); err != nil {
+			return err
+		}
 		arg := db.UpdateInstanceParams{
 			ID: id, Name: cur.Name, Palette: cur.Palette, SecretValues: cur.SecretValues, SettingsAt: cur.SettingsAt,
 		}
@@ -260,6 +284,58 @@ func setValues(byName map[string]*Field, plain map[string]Value, secret map[stri
 			plain[k] = v
 		}
 	}
+}
+
+// MaxInstanceNameBytes is the longest an instance's name may be.
+const MaxInstanceNameBytes = 64
+
+// CleanInstanceName returns an instance name without the space around it.
+// An empty name stays empty, which means the recipe's name. A name over
+// MaxInstanceNameBytes, not valid UTF-8, or with a control character is an
+// error that wraps errkind.ErrInvalid. The rules are an instance's own, so a
+// change to device or playlist names does not change them.
+func CleanInstanceName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	switch {
+	case len(name) > MaxInstanceNameBytes:
+		return "", fmt.Errorf("%w: name is over %d bytes", errkind.ErrInvalid, MaxInstanceNameBytes)
+	case !utf8.ValidString(name):
+		return "", fmt.Errorf("%w: name is not valid UTF-8", errkind.ErrInvalid)
+	case strings.ContainsFunc(name, unicode.IsControl):
+		return "", fmt.Errorf("%w: name has a control character", errkind.ErrInvalid)
+	}
+	return name, nil
+}
+
+// checkEnvSize returns a FieldErrors, for the field with the most bytes, if
+// the field values do not fit in a render job. They travel in its Env, built
+// by envFor as the scheduler builds it, with the secret values in hand
+// counted exactly. Sealed secrets that were not opened, since the key is not
+// needed to change a plain field, count as their sealed length: it is at
+// least the size of their JSON with no escaping, apart from the length of
+// the names and of control characters, and the client refuses a job that
+// still comes out too big, as a failed build.
+func checkEnvSize(plain map[string]Value, secret map[string]string, sealed int) error {
+	all := make(map[string]Value, len(plain)+len(secret))
+	maps.Copy(all, plain)
+	for k, v := range secret {
+		all[k] = Value{One: v}
+	}
+	env, _ := envFor(all)
+	size, err := render.EnvSize(env)
+	if err != nil {
+		return err
+	}
+	if size+sealed <= render.MaxEnvBytes {
+		return nil
+	}
+	largest, most := "", -1
+	for k, v := range all {
+		if n := len(v.One) + len(strings.Join(v.Many, "")); n > most || (n == most && k < largest) {
+			largest, most = k, n
+		}
+	}
+	return FieldErrors{largest: fmt.Sprintf("the field values come to %d KB, over the %d KB limit", (size+sealed+1023)/1024, render.MaxEnvBytes/1024)}
 }
 
 // secretAD is the associated data an instance's secrets are sealed with, so

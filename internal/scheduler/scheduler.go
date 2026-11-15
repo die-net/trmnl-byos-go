@@ -426,15 +426,18 @@ func lead(r *db.Render) time.Duration {
 // that a build reads, and the time. It is due when any of these holds:
 //
 //   - it has never been rendered;
+//   - its settings are newer than what its last build read, by settings_at,
+//     which an update of the instance's field values or secrets makes rise.
+//     This holds after a failed build too, since the change is new input
+//     and is usually the fix, and the failed build recorded the
+//     settings_at it read, so it holds once for each change;
 //   - its last build failed, and retryDelay has passed since it, which
 //     grows with each failure in a row (while a failure is the latest
-//     outcome, nothing else makes it due, so a failing recipe is not built
-//     on every check);
+//     outcome, nothing else but the settings rule makes it due, so a
+//     failing recipe is not built on every check);
 //   - its data is newer than what its last build read, by updated_at, which
-//     the push path makes rise with every push, or its settings are, by
-//     settings_at, which an update of the instance's field values or
-//     secrets makes rise. A failed build is retried after retryDelay by
-//     the rule above, so a push or a settings change waits for that;
+//     the push path makes rise with every push. A failed build is retried
+//     after retryDelay by the rule above, so a push waits for that;
 //   - it is wanted at a wake that its last good render would be a refresh
 //     interval old at, and that wake is within lead;
 //   - its last good render is two refresh intervals old, wanted or not,
@@ -449,6 +452,13 @@ func due(t target, r *db.Render, wanted []time.Time, woken bool, read version, n
 		return true, earliest(wanted, func(time.Time) bool { return true })
 	}
 	if r.Error != "" {
+		// A change to the settings is new input the failed build did not
+		// see, and fixing a field is the usual reason for one, so it does
+		// not wait for the backoff. The failed build recorded the
+		// settings_at it read, so this holds once for each change.
+		if read.settings > r.SettingsAt {
+			return true, earliest(wanted, func(time.Time) bool { return true })
+		}
 		ok = !now.Before(time.Unix(r.AttemptedAt, 0).Add(retryDelay(r.Failures)))
 		return ok, earliest(wanted, func(time.Time) bool { return ok })
 	}
