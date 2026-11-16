@@ -129,6 +129,35 @@ func (q *Queries) ListBlockedMACs(ctx context.Context) ([]ListBlockedMACsRow, er
 	return items, nil
 }
 
+const listCanaryFirmware = `-- name: ListCanaryFirmware :many
+SELECT firmware_id FROM firmware_rollout WHERE canary_device_id = ? ORDER BY firmware_id
+`
+
+// The firmware builds whose rollout has the device as its canary, which a
+// delete of the device deletes.
+func (q *Queries) ListCanaryFirmware(ctx context.Context, canaryDeviceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listCanaryFirmware, canaryDeviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var firmware_id int64
+		if err := rows.Scan(&firmware_id); err != nil {
+			return nil, err
+		}
+		items = append(items, firmware_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const unblockMAC = `-- name: UnblockMAC :execrows
 DELETE FROM blocked_mac WHERE mac = ?
 `

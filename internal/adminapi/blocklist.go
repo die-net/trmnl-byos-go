@@ -22,7 +22,7 @@ type blockedJSON struct {
 }
 
 func (s *Server) deleteDevice(r *http.Request) error {
-	_, err := device.Delete(r.Context(), s.db, r.PathValue("id"), s.now())
+	_, err := device.Delete(r.Context(), s.db, r.PathValue("id"), nil, s.now())
 	return err
 }
 
@@ -44,7 +44,7 @@ func (s *Server) listBlocked(_ http.ResponseWriter, r *http.Request) ([]blockedJ
 // which it looks up after the block, since a device is not part of one.
 func (s *Server) putBlocked(_ http.ResponseWriter, r *http.Request) (blockedJSON, error) {
 	ctx := r.Context()
-	b, err := device.Block(ctx, s.db, r.PathValue("id"), s.now())
+	b, err := device.Block(ctx, s.db, r.PathValue("id"), nil, s.now())
 	if err != nil {
 		return blockedJSON{}, err
 	}
@@ -61,6 +61,6 @@ func (s *Server) putBlocked(_ http.ResponseWriter, r *http.Request) (blockedJSON
 }
 
 func (s *Server) deleteBlocked(r *http.Request) error {
-	_, err := device.Unblock(r.Context(), s.db, r.PathValue("id"))
+	_, err := device.Unblock(r.Context(), s.db, r.PathValue("id"), nil)
 	return err
 }

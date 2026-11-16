@@ -93,7 +93,7 @@ func deviceArg(ctx context.Context, args []string, out io.Writer, name string,
 
 func deviceDelete(ctx context.Context, args []string, out io.Writer) error {
 	return deviceArg(ctx, args, out, "device delete", func(ctx context.Context, client *db.Client, dev string, out io.Writer) error {
-		d, err := device.Delete(ctx, client, dev, time.Now())
+		d, err := device.Delete(ctx, client, dev, nil, time.Now())
 		if err != nil {
 			return err
 		}
@@ -104,7 +104,7 @@ func deviceDelete(ctx context.Context, args []string, out io.Writer) error {
 
 func deviceBlock(ctx context.Context, args []string, out io.Writer) error {
 	return deviceArg(ctx, args, out, "device block", func(ctx context.Context, client *db.Client, dev string, out io.Writer) error {
-		b, err := device.Block(ctx, client, dev, time.Now())
+		b, err := device.Block(ctx, client, dev, nil, time.Now())
 		if err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func deviceBlock(ctx context.Context, args []string, out io.Writer) error {
 
 func deviceUnblock(ctx context.Context, args []string, out io.Writer) error {
 	return deviceArg(ctx, args, out, "device unblock", func(ctx context.Context, client *db.Client, dev string, out io.Writer) error {
-		mac, err := device.Unblock(ctx, client, dev)
+		mac, err := device.Unblock(ctx, client, dev, nil)
 		if err != nil {
 			return err
 		}

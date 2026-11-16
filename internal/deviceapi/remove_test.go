@@ -76,7 +76,7 @@ func TestDeleteResetsDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := device.Delete(t.Context(), ts.db, testMAC, ts.now); err != nil {
+	if _, err := device.Delete(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -149,7 +149,7 @@ func TestBlockedDisplay(t *testing.T) {
 		}},
 		{"deleted device", func(t *testing.T, ts *testServer) map[string]string {
 			key := ts.register(t)
-			if _, err := device.Delete(t.Context(), ts.db, testMAC, ts.now); err != nil {
+			if _, err := device.Delete(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 				t.Fatal(err)
 			}
 			return displayHeaders(testMAC, key)
@@ -166,7 +166,7 @@ func TestBlockedDisplay(t *testing.T) {
 			ts := newTestServer(t)
 			h := tc.prepare(t, ts)
 			before := ts.savedState(t)
-			if _, err := device.Block(t.Context(), ts.db, testMAC, ts.now); err != nil {
+			if _, err := device.Block(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 				t.Fatal(err)
 			}
 			ts.now = ts.now.Add(time.Hour)
@@ -190,11 +190,11 @@ func TestUnblock(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
-	if _, err := device.Block(t.Context(), ts.db, testMAC, ts.now); err != nil {
+	if _, err := device.Block(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 		t.Fatal(err)
 	}
 	ts.wantBlocked(t, "blocked", ts.getJSON(t, "/api/display", displayHeaders(testMAC, key)))
-	if _, err := device.Unblock(t.Context(), ts.db, testMAC); err != nil {
+	if _, err := device.Unblock(t.Context(), ts.db, testMAC, nil); err != nil {
 		t.Fatal(err)
 	}
 	if m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key)); m["status"] != float64(statusOK) || m["refresh_rate"] == float64(blockedRefresh) || m["image_url"] == nil {
@@ -203,14 +203,14 @@ func TestUnblock(t *testing.T) {
 
 	// Delete, then block: the block wins over the tombstone, and an unblock
 	// lets the tombstone reset the device.
-	if _, err := device.Delete(t.Context(), ts.db, testMAC, ts.now); err != nil {
+	if _, err := device.Delete(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := device.Block(t.Context(), ts.db, testMAC, ts.now); err != nil {
+	if _, err := device.Block(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 		t.Fatal(err)
 	}
 	ts.wantBlocked(t, "deleted and blocked", ts.getJSON(t, "/api/display", displayHeaders(testMAC, key)))
-	if _, err := device.Unblock(t.Context(), ts.db, testMAC); err != nil {
+	if _, err := device.Unblock(t.Context(), ts.db, testMAC, nil); err != nil {
 		t.Fatal(err)
 	}
 	wantReset(t, "deleted and unblocked", ts.getJSON(t, "/api/display", displayHeaders(testMAC, key)))
@@ -232,7 +232,7 @@ func TestBlockedSetup(t *testing.T) {
 		t.Fatalf("the window is not open: %v", m)
 	}
 	for _, mac := range []string{testMAC, strangerMAC} {
-		if _, err := device.Block(t.Context(), ts.db, mac, ts.now); err != nil {
+		if _, err := device.Block(t.Context(), ts.db, mac, nil, ts.now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -259,7 +259,7 @@ func TestBlockedLog(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t)
 	key := ts.register(t)
-	if _, err := device.Block(t.Context(), ts.db, testMAC, ts.now); err != nil {
+	if _, err := device.Block(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := ts.do(t, http.MethodPost, "/api/log", map[string]string{"ID": testMAC, "Access-Token": key}, logBody(1)); code != http.StatusForbidden {
@@ -285,7 +285,7 @@ func TestDeleteRacesDisplay(t *testing.T) {
 		// The first time the handler reads the clock is after it found the
 		// device.
 		once.Do(func() {
-			if _, err := device.Delete(t.Context(), ts.db, testMAC, ts.now); err != nil {
+			if _, err := device.Delete(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
 				t.Error(err)
 			}
 		})
