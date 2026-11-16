@@ -1582,6 +1582,64 @@ END`,
 // zone and locale, takes two rows that differ only by zone or locale, still
 // removes a deleted device's renders, gives devices an empty zone and
 // locale, and ends with the shape of schema.sql.
+// TestMigrateZoneLocaleKeepsSequence checks that step 10 keeps render's
+// AUTOINCREMENT counter, so a render made after it gets an ID above every
+// one before it, deleted ones included: with rows left below a deleted
+// higher ID, and with every row deleted.
+func TestMigrateZoneLocaleKeepsSequence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// keep is how many of renders 1 to 9 are left after 9 are made.
+		keep int
+	}{
+		{"rows left below a deleted ID", 3},
+		{"every row deleted", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			path := filepath.Join(t.TempDir(), "v9.db")
+			old, err := Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stmt := range slices.Concat(dropZoneLocale, []string{
+				`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
+				`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
+				`PRAGMA user_version = 9`,
+			}) {
+				if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+					t.Fatalf("%s: %v", stmt, err)
+				}
+			}
+			for i := range 9 {
+				_, err := old.Writer.ExecContext(ctx, `INSERT INTO render (instance_id, width, height, palette, attempted_at, duration_ms) VALUES (1, ?, 480, 'bw', 1, 1)`, 100+i)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := old.Writer.ExecContext(ctx, `DELETE FROM render WHERE id > ?`, tc.keep); err != nil {
+				t.Fatal(err)
+			}
+			if err := old.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			client, err := Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			var id int64
+			err = client.Writer.QueryRowContext(ctx, `INSERT INTO render (instance_id, width, height, palette, time_zone, locale, attempted_at, duration_ms) VALUES (1, 1, 1, 'bw', 'UTC', 'en', 1, 1) RETURNING id`).Scan(&id)
+			if err != nil || id <= 9 {
+				t.Errorf("new render ID = %d, %v; want above 9, the highest before the migration", id, err)
+			}
+		})
+	}
+}
+
 func TestMigrateZoneLocale(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
