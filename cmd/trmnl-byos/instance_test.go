@@ -221,7 +221,7 @@ func TestInstanceSecret(t *testing.T) {
 }
 
 // TestInstanceFieldFile checks that -field-file reads a value from a file or
-// from stdin, drops one trailing newline and no more, repeats into a list,
+// from stdin, drops one trailing LF or CR LF and no more, repeats into a list,
 // and refuses a missing file, a second stdin, and a file that is too big.
 func TestInstanceFieldFile(t *testing.T) {
 	t.Parallel()
@@ -255,10 +255,17 @@ func TestInstanceFieldFile(t *testing.T) {
 		t.Errorf("after a file: %v, want %v", fields, want)
 	}
 
-	// From stdin, with a CRLF-free line, on set.
-	err = instanceSet(t.Context(), []string{"-data", dir, "1", "-field-file", "city=-"}, strings.NewReader("Bern\n"), &out)
-	if fields = storedValues(t, dir); err != nil || fields["city"].One != "Bern" {
-		t.Errorf("from stdin: %v, %v", fields, err)
+	// From stdin, on set, with a CR LF or an LF ending.
+	for _, in := range []string{"Basel\r\n", "Bern\n"} {
+		err = instanceSet(t.Context(), []string{"-data", dir, "1", "-field-file", "city=-"}, strings.NewReader(in), &out)
+		if fields = storedValues(t, dir); err != nil || fields["city"].One != strings.TrimRight(in, "\r\n") {
+			t.Errorf("from stdin %q: %v, %v", in, fields, err)
+		}
+	}
+	// A CR on its own is not a line ending a file can have, so it stays.
+	err = instanceSet(t.Context(), []string{"-data", dir, "1", "-field-file", "city=-"}, strings.NewReader("Bern\r"), &out)
+	if err == nil || !strings.Contains(err.Error(), "city: must be one line") {
+		t.Errorf("a trailing lone CR: %v", err)
 	}
 	for _, tc := range []struct {
 		name  string

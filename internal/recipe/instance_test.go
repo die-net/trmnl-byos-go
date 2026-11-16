@@ -1362,6 +1362,11 @@ func TestFormShowableValues(t *testing.T) {
 		if err != nil || again.SettingsAt != got.SettingsAt {
 			t.Errorf("same choices reordered: settings_at %d, was %d, %v", again.SettingsAt, got.SettingsAt, err)
 		}
+		// A list that names a value twice names one choice, stored once.
+		once, err := UpdateInstance(t.Context(), f.client, key, f.recipesDir, inst.ID, InstanceUpdate{Values: map[string]Value{"tags": {Many: []string{"b", "b"}}}}, now)
+		if err != nil || once.FieldValues != `{"city":"Zurich","tags":["b"]}` {
+			t.Errorf("a value named twice: %s, %v", once.FieldValues, err)
+		}
 	})
 
 	t.Run("an existing value that breaks a rule", func(t *testing.T) {

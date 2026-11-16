@@ -113,10 +113,9 @@ func (f *Field) check(v Value, sealed bool) (Value, string) {
 	}
 	switch input {
 	case "select":
-		for i, s := range v.items() {
-			if slices.Contains(v.items()[:i], s) {
-				return v, "chooses an option twice"
-			}
+		// A list may name a value twice, as a form does when two options
+		// share it. It names one choice, stored once.
+		for _, s := range v.items() {
 			if !slices.ContainsFunc(f.Options, func(o Option) bool { return o.Value == s }) {
 				return v, "is not one of the options"
 			}
