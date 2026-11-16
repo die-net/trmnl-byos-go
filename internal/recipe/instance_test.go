@@ -1290,7 +1290,10 @@ func TestFormShowableValues(t *testing.T) {
 		{"a fraction and exponent", map[string]Value{"days": {One: "0.25e1"}}, nil},
 		{"a negative number below the minimum is checked as a number", map[string]Value{"days": {One: "-1"}}, map[string]string{"days": "must be at least 1"}},
 		{"a leading plus", map[string]Value{"days": {One: "+5"}}, map[string]string{"days": "must be a number"}},
-		{"no digit before the point", map[string]Value{"days": {One: ".5"}}, map[string]string{"days": "must be a number"}},
+		// A number input takes and shows ".5" as written.
+		{"no digit before the point", map[string]Value{"days": {One: ".5e1"}}, nil},
+		{"no digit before the point, below the minimum", map[string]Value{"days": {One: "-.5"}}, map[string]string{"days": "must be at least 1"}},
+		{"a point and no digit", map[string]Value{"days": {One: "."}}, map[string]string{"days": "must be a number"}},
 		{"no digit after the point", map[string]Value{"days": {One: "5."}}, map[string]string{"days": "must be a number"}},
 		{"hex", map[string]Value{"days": {One: "0x10"}}, map[string]string{"days": "must be a number"}},
 		{"underscores", map[string]Value{"days": {One: "1_0"}}, map[string]string{"days": "must be a number"}},
@@ -1399,4 +1402,42 @@ func TestFormShowableValues(t *testing.T) {
 			t.Errorf("normalizing update: %s, %v", got.FieldValues, err)
 		}
 	})
+}
+
+// TestUpdateUnchangedValuesNeedNoKey checks that an update sending back the
+// plain values an instance has, in any form that is stored the same (a
+// multi-select out of order with a choice twice, as a form whose options
+// share a value posts it), with a rename, is no change of values: it needs
+// no secrets key though the instance has a sealed secret, and does not
+// raise settings_at. A real change of a value still needs the key, and so
+// does a clear of a plain field the instance does not have, since only the
+// secrets can say whether the field has a value there.
+func TestUpdateUnchangedValuesNeedNoKey(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	now := time.Unix(5000, 0)
+	inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{
+		RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"a", "c"}}, "token": {One: "hunter22"}},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "Home"
+	same := InstanceUpdate{Name: &name, Values: map[string]Value{"city": {One: "Zurich"}, "tags": {Many: []string{"c", "a", "a"}}}}
+	got, err := UpdateInstance(t.Context(), f.client, nil, f.recipesDir, inst.ID, same, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("an unchanged save with no key: %v", err)
+	}
+	if got.Name != "Home" || got.FieldValues != inst.FieldValues || got.SettingsAt != inst.SettingsAt || !bytes.Equal(got.SecretValues, inst.SecretValues) {
+		t.Errorf("an unchanged save changed the values: %+v, was %+v", got, inst)
+	}
+	for _, values := range []map[string]Value{
+		{"city": {One: "Bern"}},
+		{"notes": {}},
+	} {
+		if _, err := UpdateInstance(t.Context(), f.client, nil, f.recipesDir, inst.ID, InstanceUpdate{Values: values}, now.Add(time.Hour)); !errors.Is(err, secrets.ErrNoKey) {
+			t.Errorf("%v with no key: %v, want ErrNoKey", values, err)
+		}
+	}
 }

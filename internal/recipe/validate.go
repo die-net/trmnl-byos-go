@@ -190,11 +190,11 @@ func (f *Field) checkNumber(s string) string {
 var lineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n")
 
 // numberSyntax is the grammar of a number an HTML number input shows back
-// as written: an optional minus, digits, an optional fraction with digits on
-// both sides of the point, and an optional exponent. ParseFloat also takes
-// "+5", ".5", "5.", "0x10", "1_000" and "Inf", which such an input would not
-// show, so a form saving the value back would change it.
-var numberSyntax = regexp.MustCompile(`^-?\d+(\.\d+)?([eE][+-]?\d+)?$`)
+// as written, WHATWG's valid floating-point number: an optional minus,
+// digits, a point and digits, or both, and an optional exponent. ParseFloat
+// also takes "+5", "5.", "0x10", "1_000" and "Inf", which such an input
+// would not show, so a form saving the value back would change it.
+var numberSyntax = regexp.MustCompile(`^-?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$`)
 
 // inOptionOrder returns the chosen values in the order of the field's
 // options, each once. Every value is one of them. Two options may share a
