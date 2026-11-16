@@ -33,8 +33,9 @@ CREATE TABLE IF NOT EXISTS device (
   -- profile_override is the registry model the device's panel is, when its
   -- Model header says otherwise, as the 4-color OG on firmware 1.8.10 and
   -- older does. It sets what renders and system screens are drawn for, not
-  -- the firmware the device is offered or the largest image it takes.
-  -- Empty means the Model header's.
+  -- the firmware the device is offered. The largest image the device takes
+  -- never goes above its firmware's, and is the override model's when that
+  -- is smaller. Empty means the Model header's.
   profile_override TEXT NOT NULL DEFAULT '',
   -- palette_override is the palette the device renders with when a plugin
   -- instance asks for none, one of its model's palettes. Empty means the
