@@ -128,11 +128,14 @@ func (e *ReplaceRefused) Unwrap() error {
 // Why a replace refuses an instance's value. A message never repeats the
 // value.
 const (
-	sealNeedsKey    = "is now a password field, and sealing its value needs the secrets key"
-	sealUnreadable  = "is now a password field, and the instance's stored secret fields do not open with the secrets key, so its value cannot be sealed with them, and the instance cannot be changed; create the instance again"
-	sealList        = "is now a password field, and has a list of values, which cannot be secret; clear it first"
-	problemDropped  = "is not in the recipe any more; clear it to remove it"
-	problemRequired = "is required"
+	sealNeedsKey   = "is now a password field, and sealing its value needs the secrets key"
+	sealUnreadable = "is now a password field, and the instance's stored secret fields do not open with the secrets key, so its value cannot be sealed with them, and the instance cannot be changed; create the instance again"
+	sealList       = "is now a password field, and has a list of values, which cannot be secret; clear it first"
+	problemDropped = "is not in the recipe any more; clear it to remove it"
+	// problemMaybeDropped is for a marked keyname the recipe no longer has,
+	// when the secrets that would say whether it holds a value do not open.
+	problemMaybeDropped = "is not in the recipe any more; a sealed value for it, if any, cannot be checked without the secrets key that sealed it"
+	problemRequired     = "is required"
 )
 
 // Replace replaces the files of the recipe with the given ID with the
@@ -513,6 +516,38 @@ func replaceInstance(inst *db.PluginInstance, oldFields, newFields map[string]*F
 		}
 		if _, msg := f.check(plain[k], false); msg != "" {
 			report.Problems[k] = msg
+		}
+	}
+	// A sealed value of a field the recipe no longer has is reported at
+	// every replace, as a plain one is, not only by the replace that marks
+	// it. Only the secrets say whether a marked keyname holds one, and a
+	// clear of one that holds none is refused, so when they open it is
+	// reported only if they hold it. When they do not open, for want of the
+	// key or with another key, it is reported as one that may be left.
+	if len(inst.SecretValues) > 0 {
+		var dropped []string
+		for _, k := range slices.Sorted(maps.Keys(marks)) {
+			if _, inPlain := plain[k]; newFields[k] == nil && !inPlain {
+				dropped = append(dropped, k)
+			}
+		}
+		if len(dropped) > 0 && secret == nil && key != nil {
+			secret, err = openSecrets(inst, key)
+			if errors.Is(err, errUnreadable) {
+				secret, err = nil, nil
+			}
+			if err != nil {
+				return report, arg, nil, err
+			}
+		}
+		for _, k := range dropped {
+			_, inSecret := secret[k]
+			switch {
+			case secret == nil:
+				report.Problems[k] = problemMaybeDropped
+			case inSecret:
+				report.Problems[k] = problemDropped
+			}
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(newFields)) {

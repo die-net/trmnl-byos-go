@@ -270,7 +270,9 @@ func TestReplaceMarks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []ReplacedInstance{{ID: sealed.ID, Name: sealed.Name, Marked: []string{"other", "token"}, Problems: FieldErrors{}}}
+	// other left the recipe, and without the key whether it holds a value is
+	// not known, so it is reported as one that may.
+	want := []ReplacedInstance{{ID: sealed.ID, Name: sealed.Name, Marked: []string{"other", "token"}, Problems: FieldErrors{"other": problemMaybeDropped}}}
 	if !reflect.DeepEqual(got.Instances, want) {
 		t.Errorf("report %+v, want %+v", got.Instances, want)
 	}
@@ -283,6 +285,65 @@ func TestReplaceMarks(t *testing.T) {
 	}
 	if after := instanceRow(t, f, plain.ID); after.SecretKeys != plain.SecretKeys {
 		t.Errorf("an instance with no secrets got marks %s", after.SecretKeys)
+	}
+}
+
+// TestReplaceDroppedSealed checks that a sealed value of a field the recipe
+// no longer has is reported as dropped at every replace with the key, as a
+// plain one is, and not only by the replace that marks it; that a dropped
+// field with no value is not reported, since clearing it would be refused;
+// and that a replace without the key, or with another, which cannot tell,
+// reports each dropped marked keyname as one that may hold a value.
+func TestReplaceDroppedSealed(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	key := testKey(t, keyA)
+	inst, err := CreateInstance(t.Context(), f.client, key, f.recipesDir, InstanceParams{
+		RecipeID: f.recipe.ID, Values: map[string]Value{"city": {One: "Oslo"}, "token": {One: "hunter22"}},
+	}, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// token and other leave the recipe. token has a sealed value, and other
+	// none.
+	noSecrets := strings.NewReplacer(
+		"- keyname: token\n  field_type: password\n  name: Token\n  optional: true\n", "",
+		"- keyname: other\n  field_type: password\n  name: Other\n  optional: true\n", "",
+	).Replace(weatherYML)
+	maybe := map[string]string{"other": problemMaybeDropped, "token": problemMaybeDropped}
+	for i, tc := range []struct {
+		name   string
+		key    *secrets.Key
+		marked []string
+		// problems are the instance's problems of token and other.
+		problems map[string]string
+	}{
+		{"the replace that marks it", key, []string{"other", "token"}, map[string]string{"token": problemDropped}},
+		{"a later replace", key, nil, map[string]string{"token": problemDropped}},
+		{"a later replace without the key", nil, nil, maybe},
+		{"a later replace with another key", testKey(t, keyB), nil, maybe},
+	} {
+		use := tc.key
+		yml := strings.Replace(noSecrets, "refresh_interval: 15\n", "refresh_interval: "+string(rune('6'+i))+"0\n", 1)
+		got, err := replaceWith(t, f, use, yml, time.Unix(int64(1000*(i+1)), 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r ReplacedInstance
+		for _, ri := range got.Instances {
+			if ri.ID == inst.ID {
+				r = ri
+			}
+		}
+		problems := map[string]string{}
+		for _, k := range []string{"token", "other"} {
+			if msg, ok := r.Problems[k]; ok {
+				problems[k] = msg
+			}
+		}
+		if !slices.Equal(r.Marked, tc.marked) || !maps.Equal(problems, tc.problems) {
+			t.Errorf("%s: %+v; want marked %v and problems %v", tc.name, r, tc.marked, tc.problems)
+		}
 	}
 }
 
