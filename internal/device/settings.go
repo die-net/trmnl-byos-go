@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"slices"
 	"strconv"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
@@ -80,11 +79,6 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 			return db.Device{}, err
 		}
 	}
-	if c.Profile != nil && *c.Profile != "" {
-		if _, ok := profile.ModelByName(*c.Profile); !ok {
-			return db.Device{}, fmt.Errorf("%w: profile %q is not a model in the registry", errkind.ErrInvalid, *c.Profile)
-		}
-	}
 	var dev db.Device
 	err := client.InTx(ctx, func(q *db.Queries) error {
 		var err error
@@ -106,20 +100,26 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 		if c.FwPin != nil {
 			dev.FwPin = *c.FwPin
 		}
-		if c.Profile != nil {
+		// A profile or palette is checked only when the change changes it
+		// from what is stored. A stored one can stop resolving without a
+		// change, when the registry drops the model or the device reports
+		// another one. Resolve then ignores it, and the device JSON says so,
+		// but it must not block a change of the other settings, nor a form
+		// that posts it back as it is.
+		profileChanged := c.Profile != nil && *c.Profile != dev.ProfileOverride
+		paletteChanged := c.Palette != nil && *c.Palette != dev.PaletteOverride
+		if profileChanged {
 			dev.ProfileOverride = *c.Profile
 		}
-		if c.Palette != nil {
+		if paletteChanged {
 			dev.PaletteOverride = *c.Palette
 		}
-		// Only a change of the profile or the palette checks the palette. A
-		// stored one can stop fitting without either, when the device
-		// reports another model or the registry changes, and Resolve then
-		// ignores it, so it must not block a change of the other settings.
-		if c.Profile != nil || c.Palette != nil {
-			if err := checkPalette(&dev); err != nil {
-				return err
-			}
+		modelProblem, paletteProblem := ProfileOverride(&dev).Check(dev.FwModel)
+		if profileChanged && modelProblem != "" {
+			return fmt.Errorf("%w: %s", errkind.ErrInvalid, modelProblem)
+		}
+		if (profileChanged || paletteChanged) && paletteProblem != "" {
+			return fmt.Errorf("%w: %s", errkind.ErrInvalid, paletteProblem)
 		}
 		err = q.UpdateDeviceSettings(ctx, db.UpdateDeviceSettingsParams{
 			Name: dev.Name, UpdatesEnabled: dev.UpdatesEnabled, FwPin: dev.FwPin,
@@ -133,19 +133,24 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 	return dev, err
 }
 
-// checkPalette returns an error of kind errkind.ErrInvalid if the device's
-// palette override is not one of its model's palettes.
-func checkPalette(dev *db.Device) error {
-	if dev.PaletteOverride == "" {
-		return nil
+// ProfileOverride is the profile override stored for a device.
+func ProfileOverride(dev *db.Device) profile.Override {
+	return profile.Override{Model: dev.ProfileOverride, Palette: dev.PaletteOverride}
+}
+
+// OverrideProblem says why a device's stored profile or palette override
+// is ignored, as a sentence, or "" when it applies or there is none. A
+// stored override can stop applying when the registry drops its model or
+// the device reports a model that does not take its palette. Renders and
+// /api/display then use what the firmware reports, so the device is never
+// stuck, and this is what the device's JSON shows so a page can flag it.
+func OverrideProblem(dev *db.Device) string {
+	model, palette := ProfileOverride(dev).Check(dev.FwModel)
+	switch {
+	case model != "" && palette != "":
+		return model + ", and " + palette
+	case model != "":
+		return model
 	}
-	p := profile.Resolve(dev.FwModel, nil, nil, profile.Override{Model: dev.ProfileOverride})
-	if !slices.Contains(p.Palettes, dev.PaletteOverride) {
-		model := p.Model
-		if model == "" {
-			model = "an unknown model"
-		}
-		return fmt.Errorf("%w: palette %q is not one of %s's palettes", errkind.ErrInvalid, dev.PaletteOverride, model)
-	}
-	return nil
+	return palette
 }
