@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/screen"
 )
@@ -60,10 +61,16 @@ func screenProfile(p profile.Profile) screen.Profile {
 }
 
 // systemScreen resolves the requesting device's profile from its headers
-// and draws a system screen for it with draw.
-func systemScreen(r *http.Request, draw func(screen.Profile) (string, error)) (string, error) {
-	p := profile.Resolve(r.Header.Get("Model"), headerInt(r, "Width"), headerInt(r, "Height"), profile.Override{})
+// and o, the override of the registered device it is, if any, and draws a
+// system screen for it with draw.
+func systemScreen(r *http.Request, o profile.Override, draw func(screen.Profile) (string, error)) (string, error) {
+	p := profile.Resolve(r.Header.Get("Model"), headerInt(r, "Width"), headerInt(r, "Height"), o)
 	return draw(screenProfile(p))
+}
+
+// overrideOf is the profile override of a device row.
+func overrideOf(dev *db.Device) profile.Override {
+	return profile.Override{Model: dev.ProfileOverride, Palette: dev.PaletteOverride}
 }
 
 // screen renders a system screen of text lines, stores it, and returns its

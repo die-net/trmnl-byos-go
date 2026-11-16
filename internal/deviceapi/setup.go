@@ -12,6 +12,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
+	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/screen"
 )
 
@@ -41,9 +42,19 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	// alone must not be enough to take over a device.
 	key := rand.Text()
 	var dev db.Device
-	registered, blocked := false, false
+	registered, blocked, known := false, false, false
 	err := s.db.InTx(ctx, func(q *db.Queries) error {
-		registered, blocked = false, false
+		registered, blocked, known = false, false, false
+		// A registered device's refusal screen is drawn with its profile
+		// override.
+		var err error
+		dev, err = q.GetDeviceByMAC(ctx, mac)
+		switch {
+		case err == nil:
+			known = true
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("get device: %w", err)
+		}
 		// A blocked MAC is refused even while the join window is open.
 		standing, err := q.GetMACStanding(ctx, mac)
 		if err != nil {
@@ -64,19 +75,12 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 				return fmt.Errorf("delete tombstone: %w", err)
 			}
 		}
-		dev, err = q.GetDeviceByMAC(ctx, mac)
-		switch {
-		case err == nil:
+		if known {
 			if err := q.SetDeviceAPIKeyHash(ctx, db.SetDeviceAPIKeyHashParams{ApiKeyHash: hashKey(key), ID: dev.ID}); err != nil {
 				return fmt.Errorf("set key: %w", err)
 			}
-		case errors.Is(err, sql.ErrNoRows):
-			dev, err = createDevice(ctx, q, mac, hashKey(key), r.Header.Get("Model"), r.Header.Get("FW-Version"), now)
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("get device: %w", err)
+		} else if dev, err = createDevice(ctx, q, mac, hashKey(key), r.Header.Get("Model"), r.Header.Get("FW-Version"), now); err != nil {
+			return err
 		}
 		registered = true
 		return nil
@@ -94,7 +98,11 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		} else {
 			slog.Info("setup refused: join window closed", "mac", mac)
 		}
-		name, err := systemScreen(r, func(sp screen.Profile) (string, error) {
+		var o profile.Override
+		if known {
+			o = overrideOf(&dev)
+		}
+		name, err := systemScreen(r, o, func(sp screen.Profile) (string, error) {
 			if blocked {
 				return s.blockedScreen(sp, mac, false)
 			}
