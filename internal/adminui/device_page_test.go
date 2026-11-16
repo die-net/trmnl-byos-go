@@ -153,9 +153,9 @@ func TestDeviceDetail(t *testing.T) {
 		"<h1>Kitchen</h1>", `<a class="back" href="/devices">`, `class="badge badge-ok">Online`,
 		`<img src="/images/0123abcd.png" alt="Current screen of Kitchen" width="800" height="480">`,
 		"<dd>ABC123</dd>", "<dd>" + testMAC + "</dd>", "<dd>" + testModel + "</dd>", "<dd>1.8.19</dd>",
-		`<time datetime="1970-01-12T13:41:40Z">12 Jan 1970 19:11 TST</time> <span class="rel">(5 min ago)</span>`,
-		`<time datetime="1970-01-12T13:56:40Z">12 Jan 1970 19:26 TST</time>`,
-		`<time datetime="1970-01-01T00:00:01Z">1 Jan 1970 05:30 TST</time>`,
+		`<time datetime="1970-01-12T13:41:40Z" data-local="full">12 Jan 1970 19:11 TST</time> <span class="rel">(5 min ago)</span>`,
+		`<time datetime="1970-01-12T13:56:40Z" data-local="full">12 Jan 1970 19:26 TST</time>`,
+		`<time datetime="1970-01-01T00:00:01Z" data-local="full">1 Jan 1970 05:30 TST</time>`,
 		"<dd>3.90 V</dd>", "<dd>-70 dBm</dd>", "<dd>1.2 s</dd>", "<dd>button</dd>", "<dd>800 × 480</dd>",
 		`<form method="post" action="/devices/ABC123#settings">`, "This device has no playlist items.",
 	} {
@@ -163,7 +163,7 @@ func TestDeviceDetail(t *testing.T) {
 			t.Errorf("page lacks %q:\n%s", want, body)
 		}
 	}
-	for _, bad := range []string{"api_key", "ApiKey", "<script", "style="} {
+	for _, bad := range []string{"api_key", "ApiKey", "<script>", "style="} {
 		if strings.Contains(body, bad) {
 			t.Errorf("page has %q", bad)
 		}
@@ -508,7 +508,7 @@ func TestJoinWindow(t *testing.T) {
 	c := tu.signIn(t)
 	closed := []string{"New devices cannot register.", `name="action" value="open">Open for 10 minutes</button>`}
 	open := []string{
-		`New devices can register until <time datetime="1970-01-12T13:56:40Z">19:26 TST</time>.`,
+		`New devices can register until <time datetime="1970-01-12T13:56:40Z" data-local="clock">19:26 TST</time>.`,
 		`name="action" value="close">Close</button>`,
 	}
 	check := func(label string, shown, hidden []string) {
@@ -571,7 +571,7 @@ func TestListTimesUseZone(t *testing.T) {
 	tu := newTestUI(t, Config{}, true)
 	addDevice(t, tu, testMAC, "ABC123", "Kitchen", tu.now.Add(-time.Hour).Unix())
 	body := tu.get(t, tu.signIn(t), "/devices").Body.String()
-	want := `<time datetime="1970-01-12T12:46:40Z" title="12 Jan 1970 18:16 TST">1 h ago</time>`
+	want := `<time datetime="1970-01-12T12:46:40Z" title="12 Jan 1970 18:16 TST" data-local="title">1 h ago</time>`
 	if !strings.Contains(body, want) {
 		t.Errorf("list lacks %q:\n%s", want, body)
 	}
@@ -594,8 +594,13 @@ func TestUntilText(t *testing.T) {
 		{"same day next year", now.AddDate(1, 0, 0), "1 Mar 2027 12:00 TST"},
 		{"today in the zone, tomorrow in UTC", time.Date(2026, 3, 1, 1, 0, 0, 0, testZone), "01:00 TST"},
 	} {
-		if got := s.untilText(tc.until, now.UTC()); got != tc.want {
-			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		// The kind tells the page's script whether the date was left out.
+		wantKind := timeFull
+		if len(tc.want) == len("12:10 TST") {
+			wantKind = timeClock
+		}
+		if got, kind := s.untilText(tc.until, now.UTC()); got != tc.want || kind != wantKind {
+			t.Errorf("%s: %q as %q, want %q as %q", tc.name, got, kind, tc.want, wantKind)
 		}
 	}
 }

@@ -11,7 +11,7 @@
 </div>
 <dl class="facts">
 <div><dt>Refresh</dt><dd>{{.Refresh}}</dd></div>
-<div><dt>Installed</dt><dd>{{.Installed}}</dd></div>
+<div><dt>Installed</dt><dd>{{template "time" .Installed}}</dd></div>
 <div class="wide"><dt>Source</dt><dd{{if .SourceTitle}} title="{{.SourceTitle}}"{{end}}>{{.Source}}</dd></div>
 </dl>
 {{if .Instances}}<ul class="items">

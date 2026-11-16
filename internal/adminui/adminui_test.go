@@ -386,9 +386,25 @@ func TestStaticAndMarkup(t *testing.T) {
 			t.Errorf("login page lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"<script", "style=", "<style"} {
+	for _, bad := range []string{"<script>", "style=", "<style"} {
 		if strings.Contains(page, bad) {
 			t.Errorf("login page has inline %q, which the CSP refuses", bad)
+		}
+	} // The one script is a file of the server's own, which the CSP allows.
+	if n := strings.Count(page, "<script"); n != 1 || !strings.Contains(page, `<script src="/static/time.js" defer></script>`) {
+		t.Errorf("login page has %d scripts, want only /static/time.js", n)
+	}
+	js := tu.do(t, "GET", "/static/time.js", "")
+	if ct := js.Header().Get("Content-Type"); js.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
+		t.Errorf("time.js: status %d, Content-Type %q", js.Code, ct)
+	}
+	if csp := js.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("time.js Content-Security-Policy = %q", csp)
+	}
+	// The script handles every kind of time the pages write.
+	for _, kind := range []string{timeFull, timeClock, timeDay, "title"} {
+		if !strings.Contains(js.Body.String(), `case "`+kind+`":`) {
+			t.Errorf("time.js has no case for %q", kind)
 		}
 	}
 }

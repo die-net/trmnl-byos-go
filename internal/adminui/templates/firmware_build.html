@@ -37,7 +37,7 @@
 {{end}}{{if .Offered}}<span class="badge badge-ok">Offered now</span>{{else}}<span class="badge badge-neutral">Not offered</span>
 <span class="rel">{{.Why}}{{if .InsteadHref}} <a href="{{.InsteadHref}}">See build</a>{{end}}</span>{{end}}
 </div>
-{{if .Offers}}<p class="rel">{{.Offers}}</p>{{end}}
+{{if .Offers}}<p class="rel">{{.Offers}}{{if .LastOffer.ISO}}, last {{template "time" .LastOffer}}{{end}}</p>{{end}}
 </li>
 {{end}}</ul>{{else}}<p class="rel">No device reports the model <code>{{.Firmware.Model}}</code>, so this build has no one to go to.</p>{{end}}
 </section>

@@ -209,7 +209,7 @@ func TestFirmwareStages(t *testing.T) {
 			start: "Restart rollout", cancel: true,
 			facts: []string{
 				`<dt>Canary</dt><dd><a href="/devices/ABC123">ABC123</a></dd>`, "<dt>Canary reports</dt><dd>1.8.17</dd>",
-				"<dt>Canary last offered</dt><dd>Never</dd>", "<dt>Started</dt><dd>12 Jan 1970 19:16 TST</dd>",
+				"<dt>Canary last offered</dt><dd>Never</dd>", `<dt>Started</dt><dd><time datetime="1970-01-12T13:46:40Z" data-local="full">12 Jan 1970 19:16 TST</time></dd>`,
 			},
 		},
 		{
@@ -237,7 +237,7 @@ func TestFirmwareStages(t *testing.T) {
 			badge: `<span class="badge badge-warn">Stalled</span>`,
 			offer: "ABC123 was offered this build 3 times and still reports 1.8.17, so the rollout is stalled. No device is offered the build. Restart it with a canary, or cancel it.",
 			start: "Restart rollout", cancel: true,
-			facts: []string{"<dt>Canary last offered</dt><dd>1 Jan 1970 05:30 TST</dd>"},
+			facts: []string{`<dt>Canary last offered</dt><dd><time datetime="1970-01-01T00:00:01Z" data-local="full">1 Jan 1970 05:30 TST</time></dd>`},
 		},
 		{
 			name: "canary blocked",
@@ -276,7 +276,7 @@ func TestFirmwareStages(t *testing.T) {
 			want := []string{
 				`<li class="panel" id="build-` + id(fw.ID) + `">`, "<h2>xiao_<wbr>epaper_<wbr>display 1.8.19</h2>", tc.badge,
 				`<dt>Model</dt><dd><code>` + model + `</code></dd>`, "<dt>Chip</dt><dd>esp32s3</dd>",
-				fmt.Sprintf("<dt>Size</dt><dd>%d bytes</dd>", fw.Bytes), "<dt>Uploaded</dt><dd>12 Jan 1970</dd>",
+				fmt.Sprintf("<dt>Size</dt><dd>%d bytes</dd>", fw.Bytes), `<dt>Uploaded</dt><dd><time datetime="1970-01-12T13:46:40Z" data-local="day">12 Jan 1970</time></dd>`,
 				`<p class="rel">` + tc.offer + `</p>`,
 				`href="/firmware/builds/` + id(fw.ID) + `" aria-label="` + aria + `">` + tc.start + `</a>`,
 				`<a class="btn btn-secondary" href="/firmware/builds/` + id(fw.ID) + `#devices" aria-label="Devices for ` + model + ` 1.8.19">Devices</a>`,
@@ -712,7 +712,7 @@ func TestFirmwareBuildPageDevices(t *testing.T) {
 		}, []string{"Offered now", "Canary", "See build", "times"}},
 		{"JKL012", []string{
 			`Plain</a>`, `<span class="rel">Firmware 1.8.18</span>`, `<span class="badge badge-ok">Offered now</span>`,
-			`<p class="rel">Offered 1 of 3 times, last 1 Jan 1970 05:30 TST</p>`,
+			`<p class="rel">Offered 1 of 3 times, last <time datetime="1970-01-01T00:00:01Z" data-local="full">1 Jan 1970 05:30 TST</time></p>`,
 		}, []string{"Not offered", "Canary", "See build"}},
 	} {
 		item := deviceItem(t, body, tc.friendly)

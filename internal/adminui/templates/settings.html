@@ -10,9 +10,13 @@
 <input type="hidden" name="key" value="{{.Key}}">
 <div class="field">
 <label for="value-{{.Key}}">Value{{if .Unit}} in {{.Unit}}{{end}}</label>
-<input id="value-{{.Key}}" name="value" type="number" min="{{.Min}}" max="{{.Max}}" step="1" inputmode="numeric" required value="{{.Value}}" aria-describedby="{{if or .Error .Bad}}error-{{.Key}} {{end}}hint-{{.Key}}"{{if .Error}} aria-invalid="true"{{end}}>
+{{if .Choices}}<select id="value-{{.Key}}" name="value" aria-describedby="{{if or .Error .Bad}}error-{{.Key}} {{end}}hint-{{.Key}}"{{if .Error}} aria-invalid="true"{{end}}>
+{{range .Choices}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+<p class="hint" id="hint-{{.Key}}">{{.State}}</p>
+{{else}}<input id="value-{{.Key}}" name="value" type="number" min="{{.Min}}" max="{{.Max}}" step="1" inputmode="numeric" required value="{{.Value}}" aria-describedby="{{if or .Error .Bad}}error-{{.Key}} {{end}}hint-{{.Key}}"{{if .Error}} aria-invalid="true"{{end}}>
 <p class="hint" id="hint-{{.Key}}">{{.Range}}{{if .Words}} Currently {{.Words}}.{{end}} {{.State}}</p>
-</div>
+{{end}}</div>
 <button class="btn btn-primary" type="submit">Save</button>
 </form>
 {{if .CanReset}}<form class="reset-form" method="post" action="/settings/reset">

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
@@ -65,8 +64,8 @@ type recipeView struct {
 	Source, SourceTitle string
 	// Refresh is how often the recipe is rendered, in words.
 	Refresh string
-	// Installed is the day the recipe was installed, in the server's zone.
-	Installed string
+	// Installed is the day the recipe was installed.
+	Installed timeView
 	// Href is the recipe's page, which adds an instance.
 	Href      string
 	Instances []recipeInstanceView
@@ -116,7 +115,7 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 		shown, title := sourceText(r.Source)
 		out[i] = recipeView{
 			ID: r.ID, Name: r.Name, Source: shown, SourceTitle: title, Refresh: "Every " + spanText(r.RefreshInterval),
-			Installed: time.Unix(r.InstalledAt, 0).In(s.zone).Format(dayLayout),
+			Installed: s.dayAt(r.InstalledAt),
 			Href:      "/recipes/" + strconv.FormatInt(r.ID, 10),
 		}
 		byID[r.ID] = &out[i]

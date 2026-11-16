@@ -100,7 +100,7 @@ func New(client *db.Client, cfg Config) *Server {
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
 	for _, name := range []string{"devices", "device", "device_delete", "unblock", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "settings", "notfound"} {
-		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/instance_fields.html", "templates/standing.html", "templates/"+name+".html"))
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/instance_fields.html", "templates/standing.html", "templates/time.html", "templates/"+name+".html"))
 	}
 	return s
 }

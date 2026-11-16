@@ -163,7 +163,7 @@ func TestNavCurrent(t *testing.T) {
 			if n := strings.Count(body, "<h1>"); n != 1 {
 				t.Errorf("%d h1 elements, want 1", n)
 			}
-			for _, bad := range []string{"<script", "style=", "<style"} {
+			for _, bad := range []string{"<script>", "style=", "<style"} {
 				if strings.Contains(body, bad) {
 					t.Errorf("page has inline %q, which the CSP refuses", bad)
 				}

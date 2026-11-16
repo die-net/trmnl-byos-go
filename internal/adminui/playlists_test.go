@@ -796,7 +796,7 @@ func TestPlaylistPagesNoInlineCode(t *testing.T) {
 	c := tu.signIn(t)
 	for _, path := range []string{"/playlists", "/playlists/" + id(playlistID(t, tu, "p")), "/playlists/items/" + id(item.ID), "/playlists/items/" + id(item.ID) + "/delete", "/playlists/delete/" + id(playlistID(t, tu, "p")), "/playlists/99"} {
 		body := tu.get(t, c, path).Body.String()
-		for _, bad := range []string{"<script", "style=", "<style", " onclick=", " onsubmit="} {
+		for _, bad := range []string{"<script>", "style=", "<style", " onclick=", " onsubmit="} {
 			if strings.Contains(body, bad) {
 				t.Errorf("%s has inline %q, which the CSP refuses", path, bad)
 			}

@@ -464,7 +464,7 @@ func TestBlockedDevicesPanel(t *testing.T) {
 			t.Errorf("a name was not escaped, or the empty state is shown:\n%s", body)
 		}
 		wantInOrder(t, body, `id="blocked"`,
-			`<span class="item-name">`+blockMACa+`</span>`, `<span class="rel">Not registered</span>`, `<time datetime="1970-01-12T13:46:40Z">`,
+			`<span class="item-name">`+blockMACa+`</span>`, `<span class="rel">Not registered</span>`, `<time datetime="1970-01-12T13:46:40Z" data-local="full">`,
 			`<a class="btn btn-secondary" href="/blocklist/`+blockMACa+`" aria-label="Unblock `+blockMACa+`…">Unblock…</a>`,
 			`<span class="item-name">`+testMAC+`</span>`, `<a href="/devices/ABC123">&lt;b&gt;Kitchen&lt;/b&gt;</a>`,
 			`<span class="item-name">D8:3B:DA:00:00:02</span>`, `<a href="/devices/XYZ789">XYZ789</a>`)

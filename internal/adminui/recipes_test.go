@@ -215,7 +215,7 @@ func TestRecipesList(t *testing.T) {
 	for _, want := range []string{
 		`<li class="panel" id="recipe-` + id(weather.ID) + `">`, `<h2>&lt;b&gt;x&lt;/b&gt;</h2>`,
 		`href="/recipes/` + id(weather.ID) + `" aria-label="Add instance of &lt;b&gt;x&lt;/b&gt;">Add instance</a>`,
-		`<dd title="/src/&lt;b&gt;x&lt;_b&gt;">&lt;b&gt;x&lt;_b&gt;</dd>`, "<dd>Uploaded</dd>", "<dd>Every 15 min</dd>", "<dd>3 Jan 2026</dd>",
+		`<dd title="/src/&lt;b&gt;x&lt;_b&gt;">&lt;b&gt;x&lt;_b&gt;</dd>`, "<dd>Uploaded</dd>", "<dd>Every 15 min</dd>", `<dd><time datetime="2026-01-02T23:00:00Z" data-local="day">3 Jan 2026</time></dd>`,
 		`<span class="item-name">Home &lt;i&gt;</span>`, `<span class="rel">Black &amp; White (1-bit)</span>`,
 		`<span class="rel">Device&#39;s palette</span>`, `<span class="rel">gone</span>`,
 		`In <a href="/playlists#playlist-` + id(evening) + `">Evening</a>, <a href="/playlists#playlist-` + id(morning) + `">Morning</a>`,
@@ -729,7 +729,7 @@ func TestRecipePagesNoInlineCode(t *testing.T) {
 	c := tu.signIn(t)
 	for _, path := range []string{"/recipes", "/recipes/" + id(rec.ID), "/recipes/instances/" + id(inst.ID), "/recipes/instances/" + id(inst.ID) + "/delete", "/recipes/99"} {
 		body := tu.get(t, c, path).Body.String()
-		for _, bad := range []string{"<script", "style=", "<style", " onclick=", " onsubmit="} {
+		for _, bad := range []string{"<script>", "style=", "<style", " onclick=", " onsubmit="} {
 			if strings.Contains(body, bad) {
 				t.Errorf("%s has inline %q, which the CSP refuses", path, bad)
 			}
