@@ -66,9 +66,9 @@ func ReadStanding(ctx context.Context, q *db.Queries, device string) (Standing, 
 	if row.Registered == 0 {
 		return s, nil
 	}
-	dev, err := FindDevice(ctx, q, mac)
+	dev, err := q.GetDeviceByMAC(ctx, mac)
 	if err != nil {
-		return Standing{}, err
+		return Standing{}, fmt.Errorf("get device: %w", err)
 	}
 	s.DeviceID = dev.ID
 	if s.Canary, err = q.ListCanaryFirmware(ctx, dev.ID); err != nil {

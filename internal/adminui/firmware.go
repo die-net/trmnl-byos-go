@@ -166,6 +166,8 @@ func stageBadge(stage string) badgeView {
 		return badgeView{"badge-ok", "Open"}
 	case "stalled":
 		return badgeView{"badge-warn", "Stalled"}
+	case "blocked":
+		return badgeView{"badge-warn", "Canary blocked"}
 	case "canceled":
 		return badgeView{"badge-neutral", "Canceled"}
 	}
@@ -184,6 +186,8 @@ func stageText(e *firmware.Entry) string {
 		return fmt.Sprintf("%s reports %s, so the rollout is open to the other %s devices.", e.Canary, e.CanaryVersion, e.FwModel)
 	case "stalled":
 		return fmt.Sprintf("%s was offered this build %d times and still reports %s, so the rollout is stalled. No device is offered the build. Restart it with a canary, or cancel it.", e.Canary, firmware.MaxOffers, e.CanaryVersion)
+	case "blocked":
+		return fmt.Sprintf("%s, the canary, is blocked and still reports %s, so the rollout cannot go on. No device is offered the build. Restart it with another canary, or cancel it.", e.Canary, e.CanaryVersion)
 	case "canceled":
 		return "The rollout was canceled. The build is offered to no one and its file is not served."
 	}

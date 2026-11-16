@@ -20,6 +20,7 @@ import (
 	"testing/iotest"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/deviceapi"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
 )
@@ -237,6 +238,18 @@ func TestFirmwareStages(t *testing.T) {
 			offer: "ABC123 was offered this build 3 times and still reports 1.8.17, so the rollout is stalled. No device is offered the build. Restart it with a canary, or cancel it.",
 			start: "Restart rollout", cancel: true,
 			facts: []string{"<dt>Canary last offered</dt><dd>1 Jan 1970 05:30 TST</dd>"},
+		},
+		{
+			name: "canary blocked",
+			setup: func(t *testing.T, tu *testUI, fw db.Firmware, _ int64) {
+				startRollout(t, tu, fw.ID)
+				if _, err := device.Block(t.Context(), tu.db, canaryID, nil, tu.now); err != nil {
+					t.Fatal(err)
+				}
+			},
+			badge: `<span class="badge badge-warn">Canary blocked</span>`,
+			offer: "ABC123, the canary, is blocked and still reports 1.8.17, so the rollout cannot go on. No device is offered the build. Restart it with another canary, or cancel it.",
+			start: "Restart rollout", cancel: true,
 		},
 		{
 			name: "canceled",
