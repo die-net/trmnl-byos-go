@@ -98,7 +98,7 @@
 <select id="special_function" name="special_function" aria-describedby="special_function-hint">
 {{range .Form.Functions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
 {{end}}</select>
-<p class="hint" id="special_function-hint">A change reaches the device at its next wake. Go to sleep lasts until the sleep window next ends, or for some hours when there is no window.</p>
+<p class="hint" id="special_function-hint">A change reaches the device at its next wake. Go to sleep lasts until the sleep window next ends, or 8 hours when there is no window.</p>
 </div>
 <button class="btn btn-primary" type="submit">Save</button>
 </form>
