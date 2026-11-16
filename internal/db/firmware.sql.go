@@ -112,6 +112,7 @@ func (q *Queries) GetFirmware(ctx context.Context, id int64) (Firmware, error) {
 const getFirmwareEntry = `-- name: GetFirmwareEntry :one
 SELECT firmware.id, firmware.fw_model, firmware.version, firmware.sha256, firmware.chip, firmware.idf_version, firmware.bytes, firmware.source, firmware.uploaded_at, r.state AS rollout_state, r.started_at AS rollout_started_at,
   c.id AS canary_id, c.friendly_id AS canary, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS canary_offers,
   CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS canary_last_offered_at
 FROM firmware
@@ -129,6 +130,7 @@ type GetFirmwareEntryRow struct {
 	Canary              *string  `json:"canary"`
 	CanaryModel         *string  `json:"canary_model"`
 	CanaryVersion       *string  `json:"canary_version"`
+	CanaryBlocked       int64    `json:"canary_blocked"`
 	CanaryOffers        int64    `json:"canary_offers"`
 	CanaryLastOfferedAt int64    `json:"canary_last_offered_at"`
 }
@@ -153,6 +155,7 @@ func (q *Queries) GetFirmwareEntry(ctx context.Context, id int64) (GetFirmwareEn
 		&i.Canary,
 		&i.CanaryModel,
 		&i.CanaryVersion,
+		&i.CanaryBlocked,
 		&i.CanaryOffers,
 		&i.CanaryLastOfferedAt,
 	)
@@ -161,8 +164,10 @@ func (q *Queries) GetFirmwareEntry(ctx context.Context, id int64) (GetFirmwareEn
 
 const listActiveFirmware = `-- name: ListActiveFirmware :many
 SELECT firmware.id, firmware.fw_model, firmware.version, firmware.sha256, firmware.chip, firmware.idf_version, firmware.bytes, firmware.source, firmware.uploaded_at, r.canary_device_id, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(co.offers, 0) AS INTEGER) AS canary_offers,
-  CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers
+  CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers,
+  EXISTS (SELECT 1 FROM blocked_mac JOIN device d ON d.mac = blocked_mac.mac WHERE d.id = ?1) AS device_blocked
 FROM firmware
 JOIN firmware_rollout r ON r.firmware_id = firmware.id AND r.state = 'active'
 JOIN device c ON c.id = r.canary_device_id
@@ -181,13 +186,15 @@ type ListActiveFirmwareRow struct {
 	CanaryDeviceID int64    `json:"canary_device_id"`
 	CanaryModel    string   `json:"canary_model"`
 	CanaryVersion  string   `json:"canary_version"`
+	CanaryBlocked  int64    `json:"canary_blocked"`
 	CanaryOffers   int64    `json:"canary_offers"`
 	Offers         int64    `json:"offers"`
+	DeviceBlocked  int64    `json:"device_blocked"`
 }
 
 // The builds of a model in an active rollout, with the canary device's
-// model, version and offer count, and how many times the given device was
-// offered each build.
+// model, version and offer count, how many times the given device was
+// offered each build, and whether the given device is blocked.
 func (q *Queries) ListActiveFirmware(ctx context.Context, arg ListActiveFirmwareParams) ([]ListActiveFirmwareRow, error) {
 	rows, err := q.db.QueryContext(ctx, listActiveFirmware, arg.DeviceID, arg.FwModel)
 	if err != nil {
@@ -210,8 +217,10 @@ func (q *Queries) ListActiveFirmware(ctx context.Context, arg ListActiveFirmware
 			&i.CanaryDeviceID,
 			&i.CanaryModel,
 			&i.CanaryVersion,
+			&i.CanaryBlocked,
 			&i.CanaryOffers,
 			&i.Offers,
+			&i.DeviceBlocked,
 		); err != nil {
 			return nil, err
 		}
@@ -228,6 +237,7 @@ func (q *Queries) ListActiveFirmware(ctx context.Context, arg ListActiveFirmware
 
 const listActiveFirmwareOffers = `-- name: ListActiveFirmwareOffers :many
 SELECT firmware.id, firmware.fw_model, firmware.version, firmware.sha256, firmware.chip, firmware.idf_version, firmware.bytes, firmware.source, firmware.uploaded_at, r.canary_device_id, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(co.offers, 0) AS INTEGER) AS canary_offers,
   o.device_id AS offered_device_id, o.offers AS offered_offers
 FROM firmware
@@ -243,6 +253,7 @@ type ListActiveFirmwareOffersRow struct {
 	CanaryDeviceID  int64    `json:"canary_device_id"`
 	CanaryModel     string   `json:"canary_model"`
 	CanaryVersion   string   `json:"canary_version"`
+	CanaryBlocked   int64    `json:"canary_blocked"`
 	CanaryOffers    int64    `json:"canary_offers"`
 	OfferedDeviceID *int64   `json:"offered_device_id"`
 	OfferedOffers   *int64   `json:"offered_offers"`
@@ -274,6 +285,7 @@ func (q *Queries) ListActiveFirmwareOffers(ctx context.Context, fwModel string) 
 			&i.CanaryDeviceID,
 			&i.CanaryModel,
 			&i.CanaryVersion,
+			&i.CanaryBlocked,
 			&i.CanaryOffers,
 			&i.OfferedDeviceID,
 			&i.OfferedOffers,
@@ -294,6 +306,7 @@ func (q *Queries) ListActiveFirmwareOffers(ctx context.Context, fwModel string) 
 const listFirmware = `-- name: ListFirmware :many
 SELECT firmware.id, firmware.fw_model, firmware.version, firmware.sha256, firmware.chip, firmware.idf_version, firmware.bytes, firmware.source, firmware.uploaded_at, r.state AS rollout_state, r.started_at AS rollout_started_at,
   c.id AS canary_id, c.friendly_id AS canary, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS canary_offers,
   CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS canary_last_offered_at
 FROM firmware
@@ -311,6 +324,7 @@ type ListFirmwareRow struct {
 	Canary              *string  `json:"canary"`
 	CanaryModel         *string  `json:"canary_model"`
 	CanaryVersion       *string  `json:"canary_version"`
+	CanaryBlocked       int64    `json:"canary_blocked"`
 	CanaryOffers        int64    `json:"canary_offers"`
 	CanaryLastOfferedAt int64    `json:"canary_last_offered_at"`
 }
@@ -341,6 +355,7 @@ func (q *Queries) ListFirmware(ctx context.Context) ([]ListFirmwareRow, error) {
 			&i.Canary,
 			&i.CanaryModel,
 			&i.CanaryVersion,
+			&i.CanaryBlocked,
 			&i.CanaryOffers,
 			&i.CanaryLastOfferedAt,
 		); err != nil {
@@ -401,7 +416,8 @@ func (q *Queries) ListFirmwareClashes(ctx context.Context, arg ListFirmwareClash
 const listFirmwareDevices = `-- name: ListFirmwareDevices :many
 SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin,
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers,
-  CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS last_offered_at
+  CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS last_offered_at,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN firmware_offer o ON o.device_id = device.id AND o.firmware_id = ?1
 WHERE device.fw_model = ?2
@@ -417,6 +433,7 @@ type ListFirmwareDevicesRow struct {
 	Device        Device `json:"device"`
 	Offers        int64  `json:"offers"`
 	LastOfferedAt int64  `json:"last_offered_at"`
+	Blocked       int64  `json:"blocked"`
 }
 
 // The devices whose last reported model is the given one, by friendly ID,
@@ -445,6 +462,7 @@ func (q *Queries) ListFirmwareDevices(ctx context.Context, arg ListFirmwareDevic
 			&i.Device.FwPin,
 			&i.Offers,
 			&i.LastOfferedAt,
+			&i.Blocked,
 		); err != nil {
 			return nil, err
 		}

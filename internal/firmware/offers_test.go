@@ -4,10 +4,12 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
 // setVersion records what a device reported, as a display request does.
@@ -28,6 +30,56 @@ func (f *fixture) start(fw db.Firmware) {
 	f.t.Helper()
 	if _, err := StartRollout(f.t.Context(), f.client, fw.ID, canaryID, testNow); err != nil {
 		f.t.Fatal(err)
+	}
+}
+
+// block blocks the device's MAC.
+func (f *fixture) block(friendly string) {
+	f.t.Helper()
+	if _, err := device.Block(f.t.Context(), f.client, friendly, nil, testNow); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// TestBlockedCanary checks that a blocked device is refused as a canary, and
+// that a canary blocked before it reports the build's version shows the
+// rollout's stage as blocked, which a restart with another canary clears.
+// A canary blocked after it reported leaves the rollout open.
+func TestBlockedCanary(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newFixture(t)
+	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
+	f.device(otherID, "AA:00:00:00:00:02", testModel, "1.8.17")
+	fw := f.add("1.8.19")
+
+	f.block(otherID)
+	_, err := StartRollout(ctx, f.client, fw.ID, otherID, testNow)
+	if !errors.Is(err, errkind.ErrInvalid) || !strings.Contains(err.Error(), "the device is blocked") {
+		t.Errorf("a blocked canary: %v, want it refused", err)
+	}
+	if e, err := Get(ctx, f.client.Read, fw.ID); err != nil || e.Stage != "" {
+		t.Errorf("a refused rollout started: %+v, %v", e, err)
+	}
+	if _, err := device.Unblock(ctx, f.client, otherID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	f.start(fw)
+	f.block(canaryID)
+	if e, err := Get(ctx, f.client.Read, fw.ID); err != nil || e.Stage != "blocked" {
+		t.Errorf("stage with the canary blocked = %q, %v; want blocked", e.Stage, err)
+	}
+	if _, err := StartRollout(ctx, f.client, fw.ID, otherID, testNow); err != nil {
+		t.Fatal(err)
+	}
+	if e, err := Get(ctx, f.client.Read, fw.ID); err != nil || e.Stage != "canary" || e.Canary != otherID {
+		t.Errorf("after a restart with another canary: %+v, %v", e, err)
+	}
+	f.setVersion(otherID, "1.8.19")
+	f.block(otherID)
+	if e, err := Get(ctx, f.client.Read, fw.ID); err != nil || e.Stage != "open" {
+		t.Errorf("stage with a canary blocked after it reported = %q, %v; want open", e.Stage, err)
 	}
 }
 
@@ -166,6 +218,25 @@ func TestDeviceOffers(t *testing.T) {
 			f.offered(canaryID, fw, MaxOffers)
 			return fw, otherID
 		}, ReasonStalled, true},
+		{"blocked", func(f *fixture) (db.Firmware, string) {
+			fw := f.add("1.8.19")
+			f.start(fw)
+			f.setVersion(canaryID, "1.8.19")
+			f.block(otherID)
+			return fw, otherID
+		}, ReasonBlocked, false},
+		{"canary blocked, for the canary", func(f *fixture) (db.Firmware, string) {
+			fw := f.add("1.8.19")
+			f.start(fw)
+			f.block(canaryID)
+			return fw, canaryID
+		}, ReasonBlocked, false},
+		{"canary blocked, for another", func(f *fixture) (db.Firmware, string) {
+			fw := f.add("1.8.19")
+			f.start(fw)
+			f.block(canaryID)
+			return fw, otherID
+		}, ReasonCanaryBlocked, true},
 		{"waiting for the canary", func(f *fixture) (db.Firmware, string) {
 			fw := f.add("1.8.19")
 			f.start(fw)

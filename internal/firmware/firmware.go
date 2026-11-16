@@ -182,10 +182,12 @@ func Add(ctx context.Context, client *db.Client, dir, model, version string, r i
 // Entry is a build and the state of its rollout.
 type Entry struct {
 	db.Firmware
-	// Stage is "", for no rollout, "canary", "open", "stalled" or
-	// "canceled". A stalled rollout's canary has been offered the build
-	// MaxOffers times and still does not report its version, so nothing is
-	// offered to anyone until the rollout is restarted or canceled.
+	// Stage is "", for no rollout, "canary", "open", "stalled", "blocked"
+	// or "canceled". A stalled rollout's canary has been offered the build
+	// MaxOffers times and still does not report its version, and a blocked
+	// one's canary was blocked before it reported the version, so it is
+	// offered nothing. Either way nothing is offered to anyone until the
+	// rollout is restarted with another canary or canceled.
 	Stage string
 	// CanaryVersion is the firmware version the canary last reported.
 	CanaryVersion string
@@ -227,6 +229,8 @@ func newEntry(r *db.ListFirmwareRow) Entry {
 		switch {
 		case canaryReported(&r.Firmware, deref(r.CanaryModel), e.CanaryVersion):
 			e.Stage = "open"
+		case r.CanaryBlocked != 0:
+			e.Stage = "blocked"
 		case r.CanaryOffers >= MaxOffers:
 			e.Stage = "stalled"
 		default:
@@ -270,9 +274,12 @@ func canaryReported(fw *db.Firmware, canaryModel, canaryVersion string) bool {
 // zero value means it is offered.
 type Reason string
 
-// The reasons a device is not offered a build. The first six come from the
+// The reasons a device is not offered a build. The first seven come from the
 // device and the build, and the rest from the build's rollout and file.
 const (
+	// ReasonBlocked means the device's MAC is blocked, so it is offered
+	// nothing and cannot be a canary.
+	ReasonBlocked Reason = "blocked"
 	// ReasonUpdatesOff means updates are off for the device.
 	ReasonUpdatesOff Reason = "updates_off"
 	// ReasonPinned means the device is pinned to a version.
@@ -296,6 +303,10 @@ const (
 	ReasonNoRollout Reason = "no_rollout"
 	// ReasonCanceled means the build's rollout was canceled.
 	ReasonCanceled Reason = "canceled"
+	// ReasonCanaryBlocked means the canary was blocked before it reported
+	// the build's version, so the rollout waits until it is restarted with
+	// another canary.
+	ReasonCanaryBlocked Reason = "canary_blocked"
 	// ReasonStalled means the canary was offered the build MaxOffers times
 	// and does not report its version, so no device is offered it.
 	ReasonStalled Reason = "stalled"
@@ -315,10 +326,13 @@ const (
 
 // notEligible returns why a device of the given model and version, with
 // the given policy, is not offered the build, and a sentence saying so, or
-// "" and "" when it is. It is the device half of an offer, and what
-// StartRollout checks of a canary so that a rollout is never started that
-// its canary can never take.
-func notEligible(dev *db.Device, model, version string, fw *db.Firmware) (Reason, string) {
+// "" and "" when it is. blocked is whether the device's MAC is blocked. It
+// is the device half of an offer, and what StartRollout checks of a canary
+// so that a rollout is never started that its canary can never take.
+func notEligible(dev *db.Device, blocked bool, model, version string, fw *db.Firmware) (Reason, string) {
+	if blocked {
+		return ReasonBlocked, "the device is blocked"
+	}
 	if reason, why := notUpdatable(dev, model); reason != "" {
 		return reason, why
 	}
@@ -367,13 +381,16 @@ type rollout struct {
 	canaryModel   string
 	canaryVersion string
 	canaryOffers  int64
+	// canaryBlocked is whether the canary's MAC is blocked, so that it is
+	// offered nothing.
+	canaryBlocked bool
 }
 
 // rolloutOf returns the rollout of a catalog row.
 func rolloutOf(r *db.ListFirmwareRow) rollout {
 	return rollout{
 		state: deref(r.RolloutState), canaryID: derefInt(r.CanaryID), canaryModel: deref(r.CanaryModel),
-		canaryVersion: deref(r.CanaryVersion), canaryOffers: r.CanaryOffers,
+		canaryVersion: deref(r.CanaryVersion), canaryOffers: r.CanaryOffers, canaryBlocked: r.CanaryBlocked != 0,
 	}
 }
 
@@ -393,6 +410,9 @@ func (r *rollout) notOpen(deviceID int64, fw *db.Firmware, offers int64) (Reason
 		return ReasonCanceled, "the build's rollout was canceled"
 	}
 	if !canaryReported(fw, r.canaryModel, r.canaryVersion) {
+		if r.canaryBlocked {
+			return ReasonCanaryBlocked, "the canary is blocked before it reported the build's version, so the rollout needs another canary"
+		}
 		if r.canaryOffers >= MaxOffers {
 			return ReasonStalled, "the canary was offered the build " + strconv.Itoa(MaxOffers) + " times and does not report its version"
 		}
@@ -411,8 +431,8 @@ func (r *rollout) notOpen(deviceID int64, fw *db.Firmware, offers int64) (Reason
 // build's version. A rollout already under way, stalled or canceled restarts
 // with the canary, and the canary's count of offers of the build starts over,
 // which is how the admin retries. It refuses a canary that could not be offered the
-// build now: of another model, with updates off or pinned, or already on
-// that version or newer.
+// build now: blocked, of another model, with updates off or pinned, or
+// already on that version or newer.
 func StartRollout(ctx context.Context, client *db.Client, id int64, canary string, now time.Time) (Entry, error) {
 	err := client.InTx(ctx, func(q *db.Queries) error {
 		fw, err := getFirmware(ctx, q, id)
@@ -423,7 +443,11 @@ func StartRollout(ctx context.Context, client *db.Client, id int64, canary strin
 		if err != nil {
 			return err
 		}
-		if reason, why := notEligible(&dev, dev.FwModel, dev.FwVersion, &fw); reason != "" {
+		standing, err := q.GetMACStanding(ctx, dev.Mac)
+		if err != nil {
+			return fmt.Errorf("get mac standing: %w", err)
+		}
+		if reason, why := notEligible(&dev, standing.Blocked != 0, dev.FwModel, dev.FwVersion, &fw); reason != "" {
 			return fmt.Errorf("%w: %s cannot be the canary: %s", errkind.ErrInvalid, dev.FriendlyID, why)
 		}
 		if err := q.ResetFirmwareOffers(ctx, db.ResetFirmwareOffersParams{DeviceID: dev.ID, FirmwareID: id}); err != nil {
@@ -567,7 +591,7 @@ type refusal struct {
 // the refusal of every other build, by ID. Offer, OfferAndRecord and
 // DeviceOffers all decide here, so that they cannot disagree, and since it
 // checks no file it can run inside a write transaction.
-func decide(dev *db.Device, model, version string, builds []activeBuild, refused map[int64]refusal) []*db.Firmware {
+func decide(dev *db.Device, blocked bool, model, version string, builds []activeBuild, refused map[int64]refusal) []*db.Firmware {
 	type candidate struct {
 		fw *db.Firmware
 		v  Version
@@ -576,7 +600,7 @@ func decide(dev *db.Device, model, version string, builds []activeBuild, refused
 	for i := range builds {
 		b := &builds[i]
 		r := refusal{byDevice: true}
-		if r.reason, r.why = notEligible(dev, model, version, b.fw); r.reason == "" {
+		if r.reason, r.why = notEligible(dev, blocked, model, version, b.fw); r.reason == "" {
 			r.byDevice = false
 			r.reason, r.why = b.ro.notOpen(dev.ID, b.fw, b.offers)
 		}
@@ -624,15 +648,20 @@ func offerable(ctx context.Context, q *db.Queries, dev *db.Device, model, versio
 		return nil, fmt.Errorf("list active firmware: %w", err)
 	}
 	builds := make([]activeBuild, len(rows))
+	// Every row says the same of the device. /api/display answers a blocked
+	// MAC before it offers firmware, so this matters only to other callers,
+	// and keeps Offer and DeviceOffers agreeing.
+	blocked := false
 	for i := range rows {
 		r := &rows[i]
+		blocked = r.DeviceBlocked != 0
 		builds[i] = activeBuild{
 			fw:     &r.Firmware,
-			ro:     rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers},
+			ro:     rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers, canaryBlocked: r.CanaryBlocked != 0},
 			offers: r.Offers,
 		}
 	}
-	return decide(dev, model, version, builds, nil), nil
+	return decide(dev, blocked, model, version, builds, nil), nil
 }
 
 // onDisk reports whether the build's file is in dir, at the recorded size.
@@ -801,7 +830,7 @@ func DeviceOffers(ctx context.Context, q *db.Queries, dir string, firmwareID int
 			counts[id] = map[int64]int64{}
 			builds = append(builds, activeBuild{
 				fw: &r.Firmware,
-				ro: rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers},
+				ro: rollout{state: stateActive, canaryID: r.CanaryDeviceID, canaryModel: r.CanaryModel, canaryVersion: r.CanaryVersion, canaryOffers: r.CanaryOffers, canaryBlocked: r.CanaryBlocked != 0},
 			})
 		}
 		if r.OfferedDeviceID != nil {
@@ -832,7 +861,7 @@ func DeviceOffers(ctx context.Context, q *db.Queries, dir string, firmwareID int
 			builds[j].offers = counts[builds[j].fw.ID][d.Device.ID]
 		}
 		clear(refused)
-		cands := decide(&d.Device, d.Device.FwModel, d.Device.FwVersion, builds, refused)
+		cands := decide(&d.Device, d.Blocked != 0, d.Device.FwModel, d.Device.FwVersion, builds, refused)
 		o := DeviceOffer{
 			DeviceID: d.Device.ID, FriendlyID: d.Device.FriendlyID, Name: d.Device.Name,
 			Model: d.Device.FwModel, Version: d.Device.FwVersion, Canary: d.Device.ID == canaryID,

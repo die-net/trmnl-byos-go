@@ -16,6 +16,7 @@ SELECT * FROM firmware WHERE id = ?;
 -- Every build with its rollout, if any, and the canary device's state.
 SELECT sqlc.embed(firmware), r.state AS rollout_state, r.started_at AS rollout_started_at,
   c.id AS canary_id, c.friendly_id AS canary, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS canary_offers,
   CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS canary_last_offered_at
 FROM firmware
@@ -28,6 +29,7 @@ ORDER BY firmware.fw_model, firmware.id;
 -- One build with its rollout, in the shape of a ListFirmware row.
 SELECT sqlc.embed(firmware), r.state AS rollout_state, r.started_at AS rollout_started_at,
   c.id AS canary_id, c.friendly_id AS canary, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS canary_offers,
   CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS canary_last_offered_at
 FROM firmware
@@ -41,7 +43,8 @@ WHERE firmware.id = ?;
 -- with how many times each was offered a build.
 SELECT sqlc.embed(device),
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers,
-  CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS last_offered_at
+  CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS last_offered_at,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN firmware_offer o ON o.device_id = device.id AND o.firmware_id = sqlc.arg(firmware_id)
 WHERE device.fw_model = sqlc.arg(fw_model)
@@ -49,11 +52,13 @@ ORDER BY device.friendly_id;
 
 -- name: ListActiveFirmware :many
 -- The builds of a model in an active rollout, with the canary device's
--- model, version and offer count, and how many times the given device was
--- offered each build.
+-- model, version and offer count, how many times the given device was
+-- offered each build, and whether the given device is blocked.
 SELECT sqlc.embed(firmware), r.canary_device_id, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(co.offers, 0) AS INTEGER) AS canary_offers,
-  CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers
+  CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers,
+  EXISTS (SELECT 1 FROM blocked_mac JOIN device d ON d.mac = blocked_mac.mac WHERE d.id = sqlc.arg(device_id)) AS device_blocked
 FROM firmware
 JOIN firmware_rollout r ON r.firmware_id = firmware.id AND r.state = 'active'
 JOIN device c ON c.id = r.canary_device_id
@@ -67,6 +72,7 @@ WHERE firmware.fw_model = sqlc.arg(fw_model);
 -- build, with its offer count. A build nobody was offered has one row with no
 -- device.
 SELECT sqlc.embed(firmware), r.canary_device_id, c.fw_model AS canary_model, c.fw_version AS canary_version,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = c.mac) AS canary_blocked,
   CAST(COALESCE(co.offers, 0) AS INTEGER) AS canary_offers,
   o.device_id AS offered_device_id, o.offers AS offered_offers
 FROM firmware

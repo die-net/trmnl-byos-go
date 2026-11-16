@@ -31,8 +31,10 @@ type rolloutJSON struct {
 	// State is canary while only the canary is offered the build, open
 	// once the canary has reported its version and every device of the
 	// model is offered it, stalled when the canary was offered it the most
-	// times it is and does not report its version, so nothing is offered
-	// until the rollout is restarted or canceled, or canceled.
+	// times it is and does not report its version, blocked when the canary
+	// was blocked before it reported the version, or canceled. Nothing is
+	// offered while it is stalled or blocked, until the rollout is
+	// restarted with another canary or canceled.
 	State string `json:"state"`
 	// Canary is the canary device's friendly ID, and CanaryVersion the
 	// firmware version it last reported.
