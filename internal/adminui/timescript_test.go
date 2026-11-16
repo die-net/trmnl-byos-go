@@ -58,12 +58,12 @@ func runTimeScript(t *testing.T, zone string, page scriptPage) scriptResult {
 // TestTimeScript runs the page's script and checks that it writes each kind
 // of time as the server's layouts do, in the browser's zone, and that the
 // zone line is hidden only when the browser and the device keep the same
-// time. It needs node, and is skipped without it, so only a machine with
-// node checks the script.
+// time. It needs node, and fails without it, so the script never goes
+// unchecked.
 func TestTimeScript(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("node is not installed, so the script is not run")
+		t.Fatalf("node is needed to run the page's script: %v", err)
 	}
 	// A winter and a summer instant, so both of a zone's offsets are used.
 	winter := time.Date(2026, 1, 2, 23, 30, 0, 0, time.UTC)

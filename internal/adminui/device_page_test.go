@@ -168,6 +168,7 @@ func TestDeviceDetail(t *testing.T) {
 			t.Errorf("page has %q", bad)
 		}
 	}
+	wantOneScript(t, body)
 }
 
 func TestDeviceDetailMissingValues(t *testing.T) {
@@ -239,13 +240,20 @@ func TestDevicePlaylistMoveTooBig(t *testing.T) {
 	}
 }
 
-// withState returns the form with the settings state and the row ID a page
-// of the device with testMAC would post now.
+// withState returns the form as a page of the device with testMAC would post
+// it now: with the settings state, the row ID, and every setting the form
+// leaves out posted empty.
 func withState(t *testing.T, tu *testUI, form url.Values) url.Values {
 	t.Helper()
 	dev, err := device.FindDevice(t.Context(), tu.db.Read, testMAC)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A browser posts every text input and list of the form, empty or not.
+	for _, name := range []string{"name", "fw_pin", "profile", "palette", "time_zone", "locale"} {
+		if !form.Has(name) {
+			form.Set(name, "")
+		}
 	}
 	form.Set("settings_state", device.SettingsState(&dev))
 	form.Set("seen_device", strconv.FormatInt(dev.ID, 10))

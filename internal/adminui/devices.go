@@ -574,6 +574,26 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		Locale:  r.PostForm.Get("locale"),
 		Seen:    r.PostForm.Get("settings_state"),
 	}
+	// A setting the post does not carry is kept, and the page a refusal
+	// sends shows it as stored. A browser posts every text input and list
+	// of a form, so only a form from a release without the field, or a
+	// hand-made post, leaves one out. The checkbox is the exception: a
+	// browser posts nothing for one that is not checked.
+	for _, f := range []struct {
+		name          string
+		value, stored *string
+	}{
+		{"name", &form.Name, &dev.Name},
+		{"fw_pin", &form.Pin, &dev.FwPin},
+		{"profile", &form.Profile, &dev.ProfileOverride},
+		{"palette", &form.Palette, &dev.PaletteOverride},
+		{"time_zone", &form.Zone, &dev.TimeZone},
+		{"locale", &form.Locale, &dev.Locale},
+	} {
+		if !r.PostForm.Has(f.name) {
+			*f.value = *f.stored
+		}
+	}
 	seenDevice, err := strconv.ParseInt(r.PostForm.Get("seen_device"), 10, 64)
 	form.Device = seenDevice
 	if form.Seen == "" || err != nil {
@@ -617,16 +637,28 @@ const deviceReplaced = "The device this page showed was deleted, and a new devic
 
 // saveDevice stores the form in one transaction, so a refused field changes
 // nothing, and a form whose page showed other settings than are stored now
-// is refused. It is what the JSON API's PATCH does with every field and the
-// settings state set.
+// is refused. It is what the JSON API's PATCH does with the settings state
+// set: a setting the post does not carry is left as it is.
 func (s *Server) saveDevice(r *http.Request, id string, form *deviceForm) error {
-	pin, err := firmware.CleanPin(form.Pin)
-	if err != nil {
-		return err
+	// posted returns v for a setting the post carries, and nil, which
+	// device.Update leaves as it is, for one it does not.
+	posted := func(name string, v *string) *string {
+		if !r.PostForm.Has(name) {
+			return nil
+		}
+		return v
 	}
-	_, err = device.Update(r.Context(), s.db, id, device.Change{
-		Name: &form.Name, UpdatesEnabled: &form.Updates, FwPin: &pin, Profile: &form.Profile, Palette: &form.Palette,
-		TimeZone: &form.Zone, Locale: &form.Locale, Seen: &form.Seen,
+	var pin string
+	if r.PostForm.Has("fw_pin") {
+		var err error
+		if pin, err = firmware.CleanPin(form.Pin); err != nil {
+			return err
+		}
+	}
+	_, err := device.Update(r.Context(), s.db, id, device.Change{
+		Name: posted("name", &form.Name), UpdatesEnabled: &form.Updates, FwPin: posted("fw_pin", &pin),
+		Profile: posted("profile", &form.Profile), Palette: posted("palette", &form.Palette),
+		TimeZone: posted("time_zone", &form.Zone), Locale: posted("locale", &form.Locale), Seen: &form.Seen,
 	})
 	return err
 }

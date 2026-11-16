@@ -801,6 +801,7 @@ func TestPlaylistPagesNoInlineCode(t *testing.T) {
 				t.Errorf("%s has inline %q, which the CSP refuses", path, bad)
 			}
 		}
+		wantOneScript(t, body)
 		if n := strings.Count(body, "<h1>"); n != 1 {
 			t.Errorf("%s has %d h1 elements, want 1", path, n)
 		}

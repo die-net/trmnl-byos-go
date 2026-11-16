@@ -4,7 +4,7 @@ A self-hosted server for TRMNL e-ink displays, in Go with SQLite. The design is 
 
 ## Build
 
-Go 1.26 or newer. CGO builds use `github.com/mattn/go-sqlite3`. `CGO_ENABLED=0` uses `modernc.org/sqlite`, which needs no C toolchain and makes a static binary. CI tests both.
+Go 1.26 or newer. CGO builds use `github.com/mattn/go-sqlite3`. `CGO_ENABLED=0` uses `modernc.org/sqlite`, which needs no C toolchain and makes a static binary. CI tests both. The tests run the web UI's script in Node.js, so `node` must be on the path.
 
 ```
 go test ./...
