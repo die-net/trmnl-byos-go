@@ -121,12 +121,31 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), device.ProfileOverride(&dev))
 	sp := screenProfile(p)
 	special := device.SpecialFunctionOf(dev.SpecialFunction)
-	fn := requestedFunction(r, special)
-	// A double-click sends true and runs the function the device saved from
-	// an earlier answer. With none configured since, the device still runs
-	// that function, which draws nothing for an answer without its action,
-	// so the wake is answered as a timer wake and the cursor does not skip
-	// an item the device never shows.
+	// The firmware sends a special_function header only to ask for one. On
+	// a wake without it, and only then, it saves the answer's
+	// special_function, which a double-click later runs.
+	normal := strings.TrimSpace(r.Header.Get("special_function")) == ""
+	// sent is the function the device saved: the one recorded as sent in the
+	// last answer to a normal wake, or the configured one when none was
+	// recorded. A double-click sends true and runs it, whatever is configured
+	// now, and the firmware acts only on an answer with its action.
+	st, err := s.db.Read.GetDeviceStatus(ctx, dev.ID)
+	if err != nil {
+		// What the device saved is not known, so this sends none, which
+		// the next normal answer replaces, rather than a function the
+		// record may not match.
+		displayFailed(w, dev.Mac, "get device state", device.FuncNone, err)
+		return
+	}
+	sent := special
+	if st.LastSpecialFunctionSent != nil && *st.LastSpecialFunctionSent != "" {
+		sent = *st.LastSpecialFunctionSent
+	}
+	fn := requestedFunction(r, sent)
+	// A true that names no function, because the device saved none as far
+	// as the server knows, still runs whatever the device saved. That draws
+	// nothing for an answer without its action, so the wake is answered as a
+	// timer wake and the cursor does not skip an item the device never shows.
 	saved := fn == "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("special_function")), "true")
 	// The TRMNL X's guest_mode and toggle_hold are answered as a timer wake,
 	// with the screen the device would show now and its usual refresh. The
@@ -179,11 +198,20 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		choice.name, err = s.tooLarge(sp, choice.size, p.ImageSizeLimit)
 		choice.refresh = tooLargeRefresh
 	}
+	// A failure answer to a normal wake is saved by the firmware too, so it
+	// sends the function recorded as sent, which this request does not
+	// change, and the record stays what the device holds.
 	if err != nil {
-		displayFailed(w, dev.Mac, "render screen", special, err)
+		displayFailed(w, dev.Mac, "render screen", sent, err)
 		return
 	}
 
+	// record is the function the device saves from this answer, or "", which
+	// keeps the record, for an answer it saves none from.
+	record := ""
+	if normal {
+		record = special
+	}
 	err = s.db.InTx(ctx, func(q *db.Queries) error {
 		if (model != "" && model != dev.FwModel) || (version != "" && version != dev.FwVersion) {
 			// An empty header leaves the stored value alone in the query.
@@ -204,16 +232,17 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		err := q.UpsertDeviceState(ctx, db.UpsertDeviceStateParams{
-			DeviceID:            dev.ID,
-			LastSeen:            s.now().Unix(),
-			BatteryV:            headerFloat(r, "Battery-Voltage"),
-			Rssi:                headerInt(r, "RSSI"),
-			WakeTimeMs:          headerInt(r, "Wake-Time"),
-			UpdateSource:        headerString(r, "Update-Source"),
-			LastRefreshRateSent: choice.refresh,
-			LastImage:           choice.name,
-			Width:               headerInt(r, "Width"),
-			Height:              headerInt(r, "Height"),
+			DeviceID:                dev.ID,
+			LastSeen:                s.now().Unix(),
+			BatteryV:                headerFloat(r, "Battery-Voltage"),
+			Rssi:                    headerInt(r, "RSSI"),
+			WakeTimeMs:              headerInt(r, "Wake-Time"),
+			UpdateSource:            headerString(r, "Update-Source"),
+			LastRefreshRateSent:     choice.refresh,
+			LastImage:               choice.name,
+			LastSpecialFunctionSent: record,
+			Width:                   headerInt(r, "Width"),
+			Height:                  headerInt(r, "Height"),
 		})
 		if err != nil {
 			return fmt.Errorf("save device state: %w", err)
@@ -221,7 +250,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		displayFailed(w, dev.Mac, "save state", special, err)
+		displayFailed(w, dev.Mac, "save state", sent, err)
 		return
 	}
 
@@ -234,9 +263,11 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	if choice.name != "" {
 		resp.ImageURL, resp.Filename = s.imageURL(r, choice.name), choice.name
 	}
-	// The firmware reads little but the action from an answer to a special
-	// function, so a device is offered firmware only at a normal wake.
-	if fn == "" {
+	// The firmware would take an offer in any answer, but an update never
+	// starts from a double-click or the TRMNL X menu, which ask for
+	// something else. The next wake without a special_function header gets
+	// the offer.
+	if normal {
 		if fw := s.offerFirmware(ctx, &dev, model, version); fw != nil {
 			slog.Info("display: offering firmware", "mac", dev.Mac, "model", model, "from", version, "to", fw.Version)
 			resp.UpdateFirmware, resp.FirmwareURL = true, s.baseURL(r)+"/firmware/"+firmware.FileName(fw.Sha256)
@@ -258,14 +289,14 @@ const (
 var cloudFunctions = []string{funcSendToMe, funcGuestMode, funcToggleHold}
 
 // requestedFunction returns the special function a request asks for, or ""
-// for a normal wake. The firmware sends the header as true to ask for the
-// function configured on the server, which is configured, and as a function's
-// name to ask for that one, as the TRMNL X menu and touch bar do. A value
-// that names no function, such as none, is a normal wake.
-func requestedFunction(r *http.Request, configured string) string {
+// for a normal wake. The firmware sends the header as true to run the
+// function it saved, which is saved, and as a function's name to ask for
+// that one, as the TRMNL X menu and touch bar do. A value that names no
+// function, such as none, is a normal wake.
+func requestedFunction(r *http.Request, saved string) string {
 	v := strings.ToLower(strings.TrimSpace(r.Header.Get("special_function")))
 	if v == "true" {
-		v = configured
+		v = saved
 	}
 	if v != device.FuncNone && (slices.Contains(device.SpecialFunctions, v) || slices.Contains(cloudFunctions, v)) {
 		return v

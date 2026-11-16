@@ -1812,11 +1812,13 @@ func TestMigrateSleepWindow(t *testing.T) {
 var dropButtons = []string{
 	`ALTER TABLE device DROP COLUMN button_command`,
 	`ALTER TABLE device DROP COLUMN special_function`,
+	`ALTER TABLE device_state DROP COLUMN last_special_function_sent`,
 }
 
 // TestMigrateButtons checks step 12: a database at version 11 gets the
-// device's button columns, empty for the defaults, keeps its devices, and
-// ends with the shape of schema.sql.
+// device's button columns, empty for the defaults, and the function last
+// sent, empty for none recorded, keeps its devices and their state, and ends
+// with the shape of schema.sql.
 func TestMigrateButtons(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -1829,6 +1831,7 @@ func TestMigrateButtons(t *testing.T) {
 	}
 	for _, stmt := range slices.Concat(dropButtons, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
+		`INSERT INTO device_state (device_id, last_seen, last_refresh_rate_sent, last_image) VALUES (3, 5, 900, 'img')`,
 		`PRAGMA user_version = 11`,
 	}) {
 		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
@@ -1853,5 +1856,9 @@ func TestMigrateButtons(t *testing.T) {
 	dev, err := client.Read.GetDevice(ctx, 3)
 	if err != nil || dev.FwModel != "og" || dev.ButtonCommand != "" || dev.SpecialFunction != "" {
 		t.Errorf("device after migration: %+v, %v", dev, err)
+	}
+	st, err := client.Read.GetDeviceStatus(ctx, 3)
+	if err != nil || st.LastImage == nil || *st.LastImage != "img" || st.LastSpecialFunctionSent == nil || *st.LastSpecialFunctionSent != "" {
+		t.Errorf("device state after migration: %+v, %v", st, err)
 	}
 }
