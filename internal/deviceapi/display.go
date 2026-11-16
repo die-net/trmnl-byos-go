@@ -234,13 +234,18 @@ func untilChange(lists []playlist.List, now time.Time, refresh int64) int64 {
 // schedule changes or a render is ready.
 func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, pressed bool, refresh int64) (screenChoice, error) {
 	zone := device.ZoneOf(dev.TimeZone, s.cfg.Zone)
+	// The locale is part of the render's key, so a default in place of a
+	// setting that cannot be read would find no render and send the
+	// Rendering screen over a good image. The error is returned, so the
+	// device keeps its screen and tries again. It is read before the cursor
+	// moves, so a wake that shows nothing new does not move it.
+	serverLocale, err := settings.Locale(ctx, s.db.Read)
+	if err != nil {
+		return screenChoice{refresh: refresh}, fmt.Errorf("read the locale setting: %w", err)
+	}
 	pick, err := s.advance(ctx, dev.ID, zone, pressed)
 	if err != nil || len(pick.lists) == 0 {
 		return screenChoice{refresh: refresh}, err
-	}
-	serverLocale, err := settings.Locale(ctx, s.db.Read)
-	if err != nil {
-		slog.Error("display: read the locale setting; using the default", "err", err)
 	}
 	now := s.now().In(zone)
 	refresh = untilChange(pick.lists, now, refresh)
