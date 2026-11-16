@@ -1,6 +1,7 @@
 // Command trmnl-byos is a self-hosted server for TRMNL e-ink displays.
 //
 //	trmnl-byos serve      run the server
+//	trmnl-byos proxy      run the renderer's proxy apart from the server
 //	trmnl-byos join       let new devices register for a while
 //	trmnl-byos device     list, delete and block devices
 //	trmnl-byos calibrate  show a device the gray calibration screen
@@ -20,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -48,6 +50,7 @@ const usage = `usage: trmnl-byos <command> [flags]
 
 commands:
   serve      run the server
+  proxy      run the renderer's proxy apart from the server
   join       let new devices register for a while
   device     list, delete and block devices: list, delete, block, unblock, blocked
   calibrate  show a device the gray calibration screen
@@ -79,6 +82,8 @@ func run() int {
 	switch cmd, args := os.Args[1], os.Args[2:]; cmd {
 	case "serve":
 		err = serve(ctx, args)
+	case "proxy":
+		err = proxy(ctx, args)
 	case "join":
 		err = join(ctx, args, os.Stdout)
 	case "device":
@@ -161,8 +166,8 @@ func serve(ctx context.Context, args []string) error {
 	listen := fs.String("listen", ":8080", "address to listen on")
 	publicURL := fs.String("public-url", "", "base URL devices reach this server at, such as http://192.168.1.10:8080 (default: from each request)")
 	renderURL := fs.String("render-url", "", "URL of the renderer, such as http://renderer:8081 (default: recipes are not rendered)")
-	proxyListen := fs.String("proxy-listen", ":3128", "address the renderer's proxy listens on, when -render-url is set; never publish it")
-	cacheDir := fs.String("cache", "cache", "directory holding the renderer's asset cache")
+	proxyListen := fs.String("proxy-listen", "", "address the renderer's proxy listens on in this process, such as :3128; never publish it (default: no proxy here, run trmnl-byos proxy)")
+	cacheDir := fs.String("cache", "cache", "directory holding the renderer's asset cache, with -proxy-listen")
 	debug := fs.Bool("debug", false, "log at debug level, including device request headers")
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
 
@@ -217,26 +222,34 @@ func serve(ctx context.Context, args []string) error {
 	// rest stop. The database is closed by the deferred Close above, which
 	// runs only after g.Wait has returned, so no loop is left writing to it.
 	g, ctx := errgroup.WithContext(ctx)
-	if *renderURL != "" {
-		// It fails before it starts anything, so returning here leaves
-		// nothing running.
-		proxy, err := startRendering(ctx, g, client, images, key, zone, *data, *renderURL, *cacheDir, wake)
+	// The proxy fails before it starts anything, so returning here leaves
+	// nothing running.
+	if *proxyListen != "" {
+		ln, err := listenOn(ctx, *proxyListen)
 		if err != nil {
 			return err
 		}
-		// No read or write timeout: a CONNECT tunnel lasts as long as the
-		// build uses it, and the renderer kills a build that runs too long.
-		psrv := &http.Server{Addr: *proxyListen, Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
-		g.Go(func() error { return listenAndServe(ctx, psrv, shutdownGrace) })
-	} else {
+		if err := startProxy(ctx, g, ln, *cacheDir); err != nil {
+			return err
+		}
+	}
+	switch {
+	case *renderURL == "":
 		slog.Warn("no -render-url: playlists that show recipes will wait for renders")
+	case *proxyListen == "":
+		// Not a fallback: builds that fetch data or assets fail until a
+		// proxy the renderer can reach is running.
+		slog.Info("no -proxy-listen: the renderer's builds reach the internet only through a proxy run apart, such as trmnl-byos proxy")
+	}
+	if *renderURL != "" {
+		startScheduler(ctx, g, client, images, key, zone, *data, *renderURL, wake)
 	}
 	g.Go(func() error { return listenAndServe(ctx, srv, shutdownGrace) })
 	g.Go(func() error {
 		expireLoop(ctx, client, images)
 		return nil
 	})
-	slog.Info("serving", "listen", *listen, "data", *data, "render_url", *renderURL)
+	slog.Info("serving", "listen", *listen, "data", *data, "render_url", *renderURL, "proxy_listen", *proxyListen)
 	return g.Wait()
 }
 
@@ -244,21 +257,47 @@ func serve(ctx context.Context, args []string) error {
 // process is stopping.
 const shutdownGrace = 10 * time.Second
 
-// listenAndServe runs srv until ctx is done, then shuts it down, waiting up
-// to grace for requests in flight. It returns at once with an error if srv
-// cannot listen, so a caller that cancels ctx on error stops the rest.
+// listenOn listens on addr, a TCP address such as :8080. It is the one place
+// a listen address is read, so another kind, such as a Unix socket, is added
+// here for every listener at once. An empty addr is refused: TCP would take
+// it as a random port on every interface, which nothing could be pointed at.
+func listenOn(ctx context.Context, addr string) (net.Listener, error) {
+	if addr == "" {
+		return nil, errors.New("listen: no address")
+	}
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", addr, err)
+	}
+	return ln, nil
+}
+
+// listenAndServe runs srv on its Addr until ctx is done, as serveOn does. It
+// returns at once with an error if srv cannot listen, so a caller that
+// cancels ctx on error stops the rest.
 func listenAndServe(ctx context.Context, srv *http.Server, grace time.Duration) error {
+	ln, err := listenOn(ctx, srv.Addr)
+	if err != nil {
+		return err
+	}
+	return serveOn(ctx, srv, ln, grace)
+}
+
+// serveOn runs srv on ln until ctx is done, then shuts it down, waiting up
+// to grace for requests in flight. It returns at once with an error if
+// serving fails.
+func serveOn(ctx context.Context, srv *http.Server, ln net.Listener, grace time.Duration) error {
 	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
+	go func() { errc <- srv.Serve(ln) }()
 	select {
 	case err := <-errc:
-		return fmt.Errorf("listen %s: %w", srv.Addr, err)
+		return fmt.Errorf("serve %s: %w", ln.Addr(), err)
 	case <-ctx.Done():
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("shutdown %s: %w", srv.Addr, err)
+		return fmt.Errorf("shutdown %s: %w", ln.Addr(), err)
 	}
 	return nil
 }
@@ -271,21 +310,11 @@ const (
 	cacheMaxBytes   = 2 << 30
 )
 
-// startRendering starts the scheduler and the asset cache's janitor in g.
-// The scheduler renders through the renderer at renderURL, and wake makes
-// it scan at once. It returns the proxy the renderer's builds reach the
-// internet through. If it fails, it has started nothing.
-func startRendering(ctx context.Context, g *errgroup.Group, client *db.Client, images *imagestore.Store, key *secrets.Key,
-	zone *time.Location, data, renderURL, cacheDir string, wake scheduler.Waker,
-) (http.Handler, error) {
-	assets, err := cache.New(cacheDir)
-	if err != nil {
-		return nil, err
-	}
-	g.Go(func() error {
-		assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
-		return nil
-	})
+// startScheduler starts the scheduler in g. It renders through the
+// renderer at renderURL, and wake makes it scan at once.
+func startScheduler(ctx context.Context, g *errgroup.Group, client *db.Client, images *imagestore.Store, key *secrets.Key,
+	zone *time.Location, data, renderURL string, wake scheduler.Waker,
+) {
 	sched := scheduler.New(scheduler.Config{
 		DB:         client,
 		Images:     images,
@@ -300,11 +329,31 @@ func startRendering(ctx context.Context, g *errgroup.Group, client *db.Client, i
 		sched.Run(ctx)
 		return nil
 	})
-	return renderproxy.New(renderproxy.Config{
+}
+
+// startProxy starts, in g, the forward proxy the renderer's builds reach the
+// internet through, serving on ln, and the janitor of its asset cache in
+// cacheDir. If it fails, it has started nothing and closed ln.
+func startProxy(ctx context.Context, g *errgroup.Group, ln net.Listener, cacheDir string) error {
+	assets, err := cache.New(cacheDir)
+	if err != nil {
+		_ = ln.Close()
+		return err
+	}
+	g.Go(func() error {
+		assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
+		return nil
+	})
+	handler := renderproxy.New(renderproxy.Config{
 		Dialer:      guard.NewDialer(10 * time.Second),
 		Cache:       assets,
 		CachedHosts: renderproxy.AssetHosts,
-	}), nil
+	})
+	// No read or write timeout: a CONNECT tunnel lasts as long as the build
+	// uses it, and the renderer kills a build that runs too long.
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	g.Go(func() error { return serveOn(ctx, srv, ln, shutdownGrace) })
+	return nil
 }
 
 const (
