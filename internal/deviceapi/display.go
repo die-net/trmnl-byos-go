@@ -128,17 +128,22 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	// so the wake is answered as a timer wake and the cursor does not skip
 	// an item the device never shows.
 	saved := fn == "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("special_function")), "true")
-	// The firmware applies a refresh_rate to a normal answer and to sleep.
-	// For any other special function it keeps the interval it stored from
-	// an earlier answer, counted from this wake, so that interval is what
-	// the device sleeps, and what is recorded for the scheduler to predict
-	// its next wake.
-	keepRate := saved || (fn != "" && fn != device.FuncSleep)
+	// The TRMNL X's guest_mode and toggle_hold are answered as a timer wake,
+	// with the screen the device would show now and its usual refresh. The
+	// firmware draws that image and applies the refresh, so the device looks
+	// unchanged and its menu, which covers the screen, is cleared.
+	guest := fn == funcGuestMode || fn == funcToggleHold
+	// The firmware applies a refresh_rate to a normal answer, to sleep and
+	// to guest_mode. For any other special function it keeps the interval it
+	// stored from an earlier answer, counted from this wake, so that interval
+	// is what the device sleeps, and what is recorded for the scheduler to
+	// predict its next wake.
+	keepRate := saved || (fn != "" && fn != device.FuncSleep && !guest)
 	// A press moves the cursor as the device's button command says. A
 	// restart_playlist moves it to the first item shown. Any other function
 	// leaves the cursor alone, since it does not show a new item.
 	command := ""
-	if playlist.Pressed(r.Header.Get("Update-Source")) && !saved {
+	if playlist.Pressed(r.Header.Get("Update-Source")) && fn == "" && !saved {
 		command = device.ButtonCommandOf(dev.ButtonCommand)
 	}
 	if fn == device.FuncRestartPlaylist {
@@ -148,9 +153,9 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	dot, calibrating := device.CalibrationDot(dev.ScreenOverride)
 	left := dev.ScreenOverrideUntil - s.now().Unix()
 	switch {
-	case fn != "" && fn != device.FuncRestartPlaylist:
+	case fn != "" && fn != device.FuncRestartPlaylist && !guest:
 		choice, err = s.functionScreen(dev, sp, fn, choice.refresh)
-	case fn == "" && calibrating && left > 0 && sp.Levels > 2:
+	case (fn == "" || guest) && calibrating && left > 0 && sp.Levels > 2:
 		choice.name, choice.size, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, sp), func(w io.Writer) error { return screen.Calibration(w, sp, dot) })
 		// Wake when the override ends, so the usual screen comes back on time.
 		choice.refresh = min(choice.refresh, left)
@@ -240,10 +245,17 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// cloudFunctions are the special functions that are TRMNL cloud features,
-// which this server has no use for. The firmware may send them, and is
-// answered with the action none.
-var cloudFunctions = []string{"send_to_me", "guest_mode", "toggle_hold"}
+// The special functions that are TRMNL cloud features, which only the TRMNL
+// X sends, from its menu. This server has no use for them, so it answers
+// each so that the device looks unchanged and the menu is cleared.
+const (
+	funcSendToMe   = "send_to_me"
+	funcGuestMode  = "guest_mode"
+	funcToggleHold = "toggle_hold"
+)
+
+// cloudFunctions are the TRMNL cloud features a device may ask for.
+var cloudFunctions = []string{funcSendToMe, funcGuestMode, funcToggleHold}
 
 // requestedFunction returns the special function a request asks for, or ""
 // for a normal wake. The firmware sends the header as true to ask for the
@@ -262,17 +274,14 @@ func requestedFunction(r *http.Request, configured string) string {
 }
 
 // functionAction is the action field that answers the special function fn,
-// or "" for a normal wake. A function this server does not implement is
-// answered with the action none.
+// or "" for a normal wake. The firmware acts on an answer only when the
+// action is the one it expects: the function's own name, except toggle_hold,
+// which it takes as guest_mode.
 func functionAction(fn string) string {
-	switch {
-	case fn == "":
-		return ""
-	case slices.Contains(device.SpecialFunctions, fn):
-		return fn
-	default:
-		return device.FuncNone
+	if fn == funcToggleHold {
+		return funcGuestMode
 	}
+	return fn
 }
 
 // sleepFunctionRefresh is how long, in seconds, a device that is told to
@@ -280,12 +289,12 @@ func functionAction(fn string) string {
 // design did not name a number, so this is a choice, not a firmware limit.
 const sleepFunctionRefresh = 8 * 60 * 60
 
-// functionScreen answers a special function that does not move the playlist
-// cursor: fn is anything but restart_playlist, which picks a screen as a
-// normal wake does. identify draws a screen that says which device this is.
-// The others send no image, and the device keeps what it shows: rewind
-// redraws its own previous image, add_wifi has opened its portal already,
-// the cloud functions are not built, and sleep sets how long the device
+// functionScreen answers a special function that does not show a playlist
+// screen: fn is anything but restart_playlist, guest_mode and toggle_hold,
+// which pick a screen as a wake does. identify draws a screen that says
+// which device this is. The others send no image, and the device keeps what
+// it shows: rewind redraws its own previous image, send_to_me its last one,
+// add_wifi has opened its portal already, and sleep sets how long the device
 // sleeps. refresh is the usual seconds to the next wake.
 func (s *Server) functionScreen(dev db.Device, sp screen.Profile, fn string, refresh int64) (screenChoice, error) {
 	switch fn {
