@@ -279,9 +279,13 @@ func (src *fieldSource) value(f *recipe.Field) recipe.Value {
 	return f.Default
 }
 
-// postedValue returns the value a form posted for the field. An unchecked
-// box posts nothing, so a boolean is "true" when its box was ticked and
-// "false" when it was not.
+// postedValue returns the value a form posted for the field, in the form
+// the field stores it (recipe.Field.StoredForm), so comparing it with the
+// stored value says whether the save changes it. A multi-select whose
+// options share a value has both boxes ticked and posts the value twice,
+// and a textarea posts its line breaks as CR LF. An unchecked box posts
+// nothing, so a boolean is "true" when its box was ticked and "false" when
+// it was not.
 func postedValue(f *recipe.Field, post url.Values) recipe.Value {
 	name := valuePrefix + f.Keyname
 	switch {
@@ -289,11 +293,9 @@ func postedValue(f *recipe.Field, post url.Values) recipe.Value {
 		return recipe.Value{One: strconv.FormatBool(post.Get(name) == "true")}
 	case f.Input() == "select" && f.Multiple:
 		// A list even when no box was ticked, which clears the field.
-		return recipe.Value{Many: append([]string{}, post[name]...)}
+		return f.StoredForm(recipe.Value{Many: append([]string{}, post[name]...)})
 	}
-	// A browser sends each line break of a form value as CR LF. A value is
-	// stored with the line breaks it was typed with, which are LF.
-	return recipe.Value{One: strings.ReplaceAll(post.Get(name), "\r\n", "\n")}
+	return f.StoredForm(recipe.Value{One: post.Get(name)})
 }
 
 // describedBy returns the IDs of the hints and the error of v.

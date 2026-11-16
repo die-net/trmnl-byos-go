@@ -91,6 +91,23 @@ func fieldsByName(fields []Field) map[string]*Field {
 	return byName
 }
 
+// StoredForm returns v as the field would store it: a multi-select in
+// option order with each value once, a multi-line text with LF line
+// breaks. A value the field would refuse, or an empty one, is returned as
+// it is, so the refusal shows when it is saved. A form compares what it
+// posted with what is stored through it, so a value posted in another form
+// of the stored one counts as unchanged.
+func (f *Field) StoredForm(v Value) Value {
+	if v.Empty() {
+		return v
+	}
+	out, problem := f.check(v, false)
+	if problem != "" {
+		return v
+	}
+	return out
+}
+
 // check returns the value, a single string for a multi-select as a list,
 // and why it is not acceptable for the field, "" if it is. v is not empty,
 // and sealed says whether it is stored sealed. A message never repeats the

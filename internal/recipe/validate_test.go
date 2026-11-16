@@ -196,6 +196,31 @@ func TestOptionsSharingAValue(t *testing.T) {
 	}
 }
 
+// TestStoredForm checks that StoredForm gives a value as the field stores
+// it, and a value the field refuses, or an empty one, as it is.
+func TestStoredForm(t *testing.T) {
+	t.Parallel()
+	multi := Field{Keyname: "colors", Type: "select", Multiple: true, Options: []Option{{"Red", "red"}, {"red", "red"}, {"Green", "green"}}}
+	notes := Field{Keyname: "notes", Type: "text"}
+	for _, tc := range []struct {
+		name  string
+		f     Field
+		v     Value
+		wantV Value
+	}{
+		{"a shared value posted twice", multi, Value{Many: []string{"red", "red"}}, Value{Many: []string{"red"}}},
+		{"choices out of order", multi, Value{Many: []string{"green", "red"}}, Value{Many: []string{"red", "green"}}},
+		{"no choice", multi, Value{Many: []string{}}, Value{Many: []string{}}},
+		{"a choice that is not an option is kept", multi, Value{Many: []string{"blue", "red"}}, Value{Many: []string{"blue", "red"}}},
+		{"CR LF in a textarea", notes, Value{One: "a\r\nb"}, Value{One: "a\nb"}},
+	} {
+		got := tc.f.StoredForm(tc.v)
+		if got.One != tc.wantV.One || !slices.Equal(got.Many, tc.wantV.Many) || got.IsList() != tc.wantV.IsList() {
+			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.wantV)
+		}
+	}
+}
+
 // TestMessagesDoNotEchoValues checks that no message of a bad value repeats
 // the value, since one may be a secret put in the wrong field.
 func TestMessagesDoNotEchoValues(t *testing.T) {
