@@ -32,6 +32,7 @@ var steps = []step{
 	{"make playlist priorities a unique index per device", addPlaylistPriorityIndex},
 	{"add settings_at to instances and renders, and secret marks to instances", addSettingsAt},
 	{"never reuse a surrogate ID", useAutoincrement},
+	{"add device tombstones and the MAC blocklist", addBlocklist},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -543,6 +544,25 @@ END`
 func useAutoincrement(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, useAutoincrementSQL); err != nil {
 		return fmt.Errorf("use autoincrement: %w", err)
+	}
+	return nil
+}
+
+// addBlocklistSQL is step 8: the device_tombstone and blocked_mac tables,
+// as in schema.sql.
+const addBlocklistSQL = `CREATE TABLE IF NOT EXISTS device_tombstone (
+  mac TEXT PRIMARY KEY,
+  deleted_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS blocked_mac (
+  mac TEXT PRIMARY KEY,
+  blocked_at INTEGER NOT NULL
+)`
+
+// addBlocklist is step 8: see addBlocklistSQL.
+func addBlocklist(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addBlocklistSQL); err != nil {
+		return fmt.Errorf("add blocklist: %w", err)
 	}
 	return nil
 }

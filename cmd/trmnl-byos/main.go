@@ -2,7 +2,7 @@
 //
 //	trmnl-byos serve      run the server
 //	trmnl-byos join       let new devices register for a while
-//	trmnl-byos devices    list registered devices
+//	trmnl-byos device     list, delete and block devices
 //	trmnl-byos calibrate  show a device the gray calibration screen
 //	trmnl-byos recipe     install and list recipes
 //	trmnl-byos instance   create, list, change and remove plugin instances
@@ -25,7 +25,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -50,7 +49,7 @@ const usage = `usage: trmnl-byos <command> [flags]
 commands:
   serve      run the server
   join       let new devices register for a while
-  devices    list registered devices
+  device     list, delete and block devices: list, delete, block, unblock, blocked
   calibrate  show a device the gray calibration screen
   recipe     install and list recipes: add, list
   instance   create, list, change and remove plugin instances: add, list, set, remove
@@ -82,7 +81,7 @@ func run() int {
 		err = serve(ctx, args)
 	case "join":
 		err = join(ctx, args, os.Stdout)
-	case "devices":
+	case "device":
 		err = devices(ctx, args, os.Stdout)
 	case "calibrate":
 		err = calibrate(ctx, args, os.Stdout)
@@ -392,48 +391,4 @@ func calibrate(ctx context.Context, args []string, out io.Writer) error {
 	_, err = fmt.Fprintf(out, "%s shows the calibration screen from its next wake until %s. Press its button to wake it now.\n",
 		dev.FriendlyID, until.Format(time.Kitchen))
 	return err
-}
-
-func devices(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("devices", flag.ExitOnError)
-	data := dataFlag(fs)
-	_ = fs.Parse(args) // ExitOnError exits on a parse error.
-
-	client, err := openDB(ctx, *data)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	rows, err := client.Read.ListDeviceStatus(ctx)
-	if err != nil {
-		return fmt.Errorf("list devices: %w", err)
-	}
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tMAC\tMODEL\tFIRMWARE\tLAST SEEN\tBATTERY\tRSSI\tWAKE"); err != nil {
-		return err
-	}
-	for i := range rows {
-		r, d := &rows[i], &rows[i].Device
-		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			d.FriendlyID, d.Mac, d.FwModel, d.FwVersion,
-			lastSeen(r.LastSeen), orDash(r.BatteryV, "%.2f V"), orDash(r.Rssi, "%d dBm"), orDash(r.WakeTimeMs, "%d ms"))
-		if err != nil {
-			return err
-		}
-	}
-	return tw.Flush()
-}
-
-func lastSeen(sec *int64) string {
-	if sec == nil {
-		return "never"
-	}
-	return time.Since(time.Unix(*sec, 0)).Truncate(time.Second).String() + " ago"
-}
-
-func orDash[T any](v *T, format string) string {
-	if v == nil {
-		return "-"
-	}
-	return fmt.Sprintf(format, *v)
 }

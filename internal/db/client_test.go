@@ -1084,8 +1084,9 @@ var tableNamePrefix = regexp.MustCompile(`^CREATE TABLE (IF NOT EXISTS )?("?)(\w
 // dropAutoincrement rebuilds every table of autoincrementTables without
 // AUTOINCREMENT, as it was before step 7, in a database made from
 // schema.sql that holds no rows yet. It reads each table's SQL, because a
-// test may do that, and uses the same rebuild as step 7. A migration test
-// for an older version calls it first.
+// test may do that, and uses the same rebuild as step 7. It takes out the
+// tables of the later steps first, with dropBlocklist. A migration test for
+// an older version calls it first.
 func dropAutoincrement(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx := t.Context()
@@ -1099,6 +1100,9 @@ func dropAutoincrement(t *testing.T, db *sql.DB) {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
+	}
+	for _, stmt := range dropBlocklist {
+		exec(stmt)
 	}
 	exec(`PRAGMA foreign_keys = OFF`)
 	exec(`DROP TRIGGER render_device_deleted`)
@@ -1416,5 +1420,72 @@ func TestReadTx(t *testing.T) {
 	}
 	if v, err := client.Read.GetSetting(ctx, "k"); err != nil || v != "new" {
 		t.Errorf("after the transaction = %q, %v", v, err)
+	}
+}
+
+// dropBlocklist takes the tables of step 8 out of a database made from
+// schema.sql, so that it has the shape from before that step.
+var dropBlocklist = []string{
+	`DROP TABLE device_tombstone`,
+	`DROP TABLE blocked_mac`,
+}
+
+// TestMigrateBlocklist checks step 8: a database at version 7 gets the
+// device_tombstone and blocked_mac tables, keeps its devices, and ends with
+// the shape of schema.sql. Each table holds a MAC once.
+func TestMigrateBlocklist(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	want := shapeOf(t, openTest(t).Writer)
+
+	path := filepath.Join(t.TempDir(), "v7.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range slices.Concat(dropBlocklist, []string{
+		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
+		`PRAGMA user_version = 7`,
+	}) {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if v := userVersion(t, client.Writer); v != len(steps) || v < 8 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if dev, err := client.Read.GetDevice(ctx, 3); err != nil || dev.FriendlyID != "ABC003" {
+		t.Errorf("device after migration: %+v, %v", dev, err)
+	}
+	const mac = "D8:3B:DA:12:34:09"
+	if _, err := client.Write.BlockMAC(ctx, BlockMACParams{Mac: mac, BlockedAt: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Write.AddDeviceTombstone(ctx, AddDeviceTombstoneParams{Mac: mac, DeletedAt: 6}); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO blocked_mac (mac, blocked_at) VALUES (?, 7)`,
+		`INSERT INTO device_tombstone (mac, deleted_at) VALUES (?, 7)`,
+	} {
+		if _, err := client.Writer.ExecContext(ctx, stmt, mac); err == nil {
+			t.Errorf("a MAC was stored twice: %s", stmt)
+		}
+	}
+	got, err := client.Read.GetMACStanding(ctx, mac)
+	if err != nil || got != (GetMACStandingRow{Blocked: 1, Deleted: 1}) {
+		t.Errorf("standing = %+v, %v", got, err)
 	}
 }

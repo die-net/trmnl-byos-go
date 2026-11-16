@@ -65,26 +65,31 @@ func (s *Server) refreshRate(ctx context.Context) int64 {
 func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	debugRequest(r)
-	dev, ok, err := s.authenticate(ctx, r)
+	c, err := s.identify(ctx, r)
 	if err != nil {
 		displayFailed(w, r.Header.Get("ID"), "authenticate", err)
 		return
 	}
-	if !ok {
-		stale, err := s.staleKey(ctx, r)
+	switch {
+	case c.blocked():
+		slog.Warn("display: blocked MAC", "mac", c.mac)
+		name, err := systemScreen(r, func(sp screen.Profile) (string, error) { return s.blockedScreen(sp, c.mac, true) })
 		if err != nil {
-			displayFailed(w, r.Header.Get("ID"), "check for a stale key", err)
+			displayFailed(w, c.mac, "render screen", err)
 			return
 		}
-		if stale {
-			slog.Warn("display: registered MAC with a stale key; resetting the device", "mac", r.Header.Get("ID"))
-			writeJSON(w, displayResponse{Status: statusOK, ResetFirmware: true, RefreshRate: s.refreshRate(ctx)})
-			return
-		}
+		writeJSON(w, displayResponse{Status: statusOK, ImageURL: s.imageURL(r, name), Filename: name, RefreshRate: blockedRefresh, SpecialFunction: "none"})
+		return
+	case c.reset(r):
+		slog.Warn("display: MAC deleted or paired again; resetting the device", "mac", c.mac, "deleted", c.standing.Deleted != 0)
+		writeJSON(w, displayResponse{Status: statusOK, ResetFirmware: true, RefreshRate: s.refreshRate(ctx)})
+		return
+	case !c.ok:
 		slog.Warn("display: unknown device or bad token", "mac", r.Header.Get("ID"))
 		writeJSON(w, displayResponse{Status: statusNotRegistered})
 		return
 	}
+	dev := c.dev
 
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
 	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"))

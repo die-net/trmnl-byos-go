@@ -60,13 +60,15 @@ ON CONFLICT (device_id) DO UPDATE SET
 SELECT item_id, item_started_at FROM device_cursor WHERE device_id = ?;
 
 -- name: ListDeviceStatus :many
-SELECT sqlc.embed(device), s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height
+SELECT sqlc.embed(device), s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 ORDER BY device.name, device.id;
 
 -- name: GetDeviceStatus :one
-SELECT sqlc.embed(device), s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height
+SELECT sqlc.embed(device), s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 WHERE device.id = ?;
