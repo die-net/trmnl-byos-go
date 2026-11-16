@@ -123,3 +123,38 @@ func TestDeviceUsage(t *testing.T) {
 		}
 	}
 }
+
+// TestDeviceSet checks that device set changes only the settings it is
+// given, clears a profile or palette with none, and refuses a model that is
+// not in the registry or a palette the model lacks. The devices report no
+// model.
+func TestDeviceSet(t *testing.T) {
+	t.Parallel()
+	dir := deviceDir(t)
+	for _, tc := range []struct {
+		args    []string
+		want    string
+		invalid bool
+	}{
+		{[]string{"-name", "Kitchen", "-profile", "og_bwry", "abc001"}, "ABC001: name Kitchen, profile og_bwry, palette -.\n", false},
+		{[]string{"-palette", "color-4bwry", "ABC001"}, "ABC001: name Kitchen, profile og_bwry, palette color-4bwry.\n", false},
+		{[]string{"-name", "Hall", "-palette", "gray-4", "ABC001"}, "", true},
+		{[]string{"-profile", "og_nope", "ABC001"}, "", true},
+		{[]string{"-profile", "none", "-palette", "none", "ABC001"}, "ABC001: name Kitchen, profile -, palette -.\n", false},
+		{[]string{"-name", "", "ABC001"}, "ABC001: name -, profile -, palette -.\n", false},
+	} {
+		out, err := runDevice(t, dir, append([]string{"set"}, tc.args...)...)
+		if tc.invalid {
+			if !errors.Is(err, errkind.ErrInvalid) {
+				t.Errorf("%v: %q, %v; want invalid", tc.args, out, err)
+			}
+			continue
+		}
+		if err != nil || out != tc.want {
+			t.Errorf("%v: %q, %v; want %q", tc.args, out, err, tc.want)
+		}
+	}
+	if _, err := runDevice(t, dir, "set", "ABC001"); err == nil {
+		t.Error("set with no setting succeeded")
+	}
+}

@@ -8,7 +8,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -98,8 +100,8 @@ type firmwareModel struct {
 // firmwareModels maps the Model header the TRMNL firmware sends, its
 // DEVICE_MODEL build setting, to what the server knows about the board. A
 // Model not listed here or in the registry gets the fallback profile.
-// Firmware 1.8.10 and older sends "og" for the 4-color OG too; a device
-// override will cover that.
+// Firmware 1.8.10 and older sends "og" for the 4-color OG too, which a device
+// profile override of og_bwry covers.
 var firmwareModels = map[string]firmwareModel{
 	"og":           {registry: "og_plus"},
 	"og_4clr":      {registry: "og_bwry"},
@@ -150,10 +152,80 @@ type Profile struct {
 	Light []float64
 }
 
+// Override is what an admin set for a device's profile. A field left empty
+// is not overridden.
+type Override struct {
+	// Model is a registry model name, which replaces the model the device's
+	// firmware Model header gives.
+	Model string
+	// Palette is the palette to render with when a plugin instance asks for
+	// none, one of the model's palettes.
+	Palette string
+}
+
 // Resolve returns the profile for a device by its firmware Model header,
-// falling back to the Width and Height it reports, and then to 800x480.
-// width and height are nil when the device did not send them.
-func Resolve(fwModel string, width, height *int64) Profile {
+// falling back to the Width and Height it reports, and then to 800x480,
+// with o applied. width and height are nil when the device did not send
+// them.
+//
+// An override model sets the size, palettes and default palette. The image
+// size limit stays the firmware's, since MAX_IMAGE_SIZE belongs to the
+// firmware build and not the panel, unless the model's is smaller. An
+// override of the model the firmware already maps to changes nothing, so
+// its measured light and its board's limit stay.
+// An override palette the model does not take is ignored, as is an unknown
+// override model: the setter checks both, and the registry can change under
+// a stored value.
+func Resolve(fwModel string, width, height *int64, o Override) Profile {
+	p := resolveFirmware(fwModel, width, height)
+	// An override of the model the firmware already gives changes nothing,
+	// so the firmware table's limit and light, which know the board better
+	// than the registry, stay.
+	if m, ok := loadRegistry().models[o.Model]; ok && o.Model != "" && m.Name != p.Model {
+		p = Profile{
+			Model:          m.Name,
+			Width:          m.Width,
+			Height:         m.Height,
+			Palettes:       m.Palettes,
+			DefaultPalette: m.DefaultPalette,
+			ImageSizeLimit: smallerLimit(p.ImageSizeLimit, m.ImageSizeLimit),
+		}
+	}
+	if o.Palette != "" && slices.Contains(p.Palettes, o.Palette) {
+		p.DefaultPalette = o.Palette
+	}
+	return p
+}
+
+// smallerLimit returns the smaller of two image size limits, where 0 means
+// no limit.
+func smallerLimit(a, b int64) int64 {
+	switch {
+	case a == 0:
+		return b
+	case b == 0:
+		return a
+	}
+	return min(a, b)
+}
+
+// ModelByName returns the registry model with the name, and false if there
+// is none.
+func ModelByName(name string) (Model, bool) {
+	m, ok := loadRegistry().models[name]
+	return m, ok
+}
+
+// Models returns every registry model, ordered by name, for a list to choose
+// an override from.
+func Models() []Model {
+	reg := loadRegistry()
+	return slices.SortedFunc(maps.Values(reg.models), func(a, b Model) int { return strings.Compare(a.Name, b.Name) })
+}
+
+// resolveFirmware is Resolve with no override: by the firmware Model header,
+// the reported size, or the fallback.
+func resolveFirmware(fwModel string, width, height *int64) Profile {
 	reg := loadRegistry()
 	fm, known := firmwareModels[fwModel]
 	if !known {

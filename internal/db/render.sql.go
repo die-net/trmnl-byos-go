@@ -176,7 +176,7 @@ func (q *Queries) GetRenderStatus(ctx context.Context, id int64) (GetRenderStatu
 }
 
 const listDeviceWakes = `-- name: ListDeviceWakes :many
-SELECT device.id AS device_id, device.fw_model, device_state.width, device_state.height,
+SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
   device_state.last_seen, device_state.last_refresh_rate_sent, device_cursor.item_id, device_cursor.item_started_at
 FROM device_state
 JOIN device ON device.id = device_state.device_id
@@ -187,6 +187,8 @@ WHERE NOT EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac)
 type ListDeviceWakesRow struct {
 	DeviceID            int64  `json:"device_id"`
 	FwModel             string `json:"fw_model"`
+	ProfileOverride     string `json:"profile_override"`
+	PaletteOverride     string `json:"palette_override"`
 	Width               *int64 `json:"width"`
 	Height              *int64 `json:"height"`
 	LastSeen            int64  `json:"last_seen"`
@@ -210,6 +212,8 @@ func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, er
 		if err := rows.Scan(
 			&i.DeviceID,
 			&i.FwModel,
+			&i.ProfileOverride,
+			&i.PaletteOverride,
 			&i.Width,
 			&i.Height,
 			&i.LastSeen,
@@ -336,7 +340,7 @@ func (q *Queries) ListRenderRows(ctx context.Context) ([]ListRenderRowsRow, erro
 
 const listRenderTargets = `-- name: ListRenderTargets :many
 SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
-  recipe.refresh_interval, device.id AS device_id, device.fw_model, device_state.width, device_state.height,
+  recipe.refresh_interval, device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
   device_state.device_id IS NOT NULL AS woken,
   CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at,
   plugin_instance.settings_at
@@ -359,6 +363,8 @@ type ListRenderTargetsRow struct {
 	RefreshInterval int64  `json:"refresh_interval"`
 	DeviceID        int64  `json:"device_id"`
 	FwModel         string `json:"fw_model"`
+	ProfileOverride string `json:"profile_override"`
+	PaletteOverride string `json:"palette_override"`
 	Width           *int64 `json:"width"`
 	Height          *int64 `json:"height"`
 	Woken           bool   `json:"woken"`
@@ -389,6 +395,8 @@ func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow
 			&i.RefreshInterval,
 			&i.DeviceID,
 			&i.FwModel,
+			&i.ProfileOverride,
+			&i.PaletteOverride,
 			&i.Width,
 			&i.Height,
 			&i.Woken,

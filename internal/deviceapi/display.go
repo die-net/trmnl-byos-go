@@ -92,7 +92,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	dev := c.dev
 
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
-	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"))
+	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), profile.Override{Model: dev.ProfileOverride, Palette: dev.PaletteOverride})
 	sp := screenProfile(p)
 	choice := screenChoice{refresh: s.refreshRate(ctx)}
 	dot, calibrating := device.CalibrationDot(dev.ScreenOverride)

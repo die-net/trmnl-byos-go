@@ -339,6 +339,40 @@ func TestPatchDeviceName(t *testing.T) {
 	}
 }
 
+// TestPatchDeviceProfile checks the profile and palette overrides, that a
+// refused field changes nothing, the other fields included, and that a
+// settings_state from before another change is refused with 409. The test
+// device reports no model, so without a profile only bw is a palette.
+func TestPatchDeviceProfile(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, false)
+	ta.addDevice(t)
+	path := "/api/v1/devices/" + testFriend
+	var d deviceJSON
+	ta.call(t, "GET", path, "", 200, &d)
+	if d.Profile != "" || d.Palette != "" || d.SettingsState == "" {
+		t.Fatalf("new device %+v", d)
+	}
+	old := d.SettingsState
+	ta.call(t, "PATCH", path, `{"profile": "og_bwry", "palette": "color-4bwry", "settings_state": "`+old+`"}`, 200, &d)
+	if d.Profile != "og_bwry" || d.Palette != "color-4bwry" || d.SettingsState == old {
+		t.Errorf("device %+v", d)
+	}
+	ta.wantError(t, "PATCH", path, `{"name": "Hall", "palette": "gray-4"}`, 400, `palette "gray-4" is not one of og_bwry's palettes`)
+	ta.wantError(t, "PATCH", path, `{"name": "Hall", "profile": "og_nope"}`, 400, "is not a model in the registry")
+	ta.wantError(t, "PATCH", path, `{"name": "Hall", "fw_pin": "latest"}`, 400, "dotted numbers")
+	ta.wantError(t, "PATCH", path, `{"name": "Hall", "settings_state": "`+old+`"}`, 409, "the device's settings have changed")
+	var got deviceJSON
+	ta.call(t, "GET", path, "", 200, &got)
+	if got.Name != "" || got.Profile != "og_bwry" || got.Palette != "color-4bwry" || got.SettingsState != d.SettingsState {
+		t.Errorf("a refused patch changed the device: %+v", got)
+	}
+	ta.call(t, "PATCH", path, `{"profile": "", "palette": ""}`, 200, &d)
+	if d.Profile != "" || d.Palette != "" {
+		t.Errorf("after clearing: %+v", d)
+	}
+}
+
 func TestFirmwareDevices(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, false)

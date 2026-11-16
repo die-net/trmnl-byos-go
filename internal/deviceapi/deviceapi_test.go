@@ -624,7 +624,7 @@ func TestDisplayTooLarge(t *testing.T) {
 	key, first, _ := ts.playlistDevice(t)
 	h := displayHeaders(testMAC, key)
 	h["Model"] = "og"
-	p := profile.Resolve("og", nil, nil)
+	p := profile.Resolve("og", nil, nil, profile.Override{})
 
 	noise := image.NewGray(image.Rect(0, 0, p.Width, p.Height))
 	if _, err := rand.Read(noise.Pix); err != nil {

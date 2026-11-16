@@ -182,29 +182,35 @@ type devicePatch struct {
 	UpdatesEnabled *bool `json:"updates_enabled"`
 	// FWPin is a firmware version the device stays on, or "" for none.
 	FWPin *string `json:"fw_pin"`
+	// Profile is the registry model the device's panel is, or "" for the
+	// one its Model header gives.
+	Profile *string `json:"profile"`
+	// Palette is the palette the device renders with when an instance asks
+	// for none, or "" for its model's default.
+	Palette *string `json:"palette"`
+	// SettingsState is the settings_state the caller read. When given, a
+	// device whose settings have changed since is refused with 409.
+	SettingsState *string `json:"settings_state"`
 }
 
+// patchDevice changes every field the body names in one transaction, so a
+// refused field changes nothing.
 func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) (deviceJSON, error) {
 	var req devicePatch
 	if err := decode(w, r, &req, false); err != nil {
 		return deviceJSON{}, err
 	}
-	// Check the name before the policy is written, so a bad name changes
-	// nothing. SetPolicy checks the pin the same way.
-	if req.Name != nil {
-		if _, err := device.CleanName(*req.Name); err != nil {
+	c := device.Change{Name: req.Name, UpdatesEnabled: req.UpdatesEnabled, Profile: req.Profile, Palette: req.Palette, Seen: req.SettingsState}
+	if req.FWPin != nil {
+		pin, err := firmware.CleanPin(*req.FWPin)
+		if err != nil {
 			return deviceJSON{}, err
 		}
+		c.FwPin = &pin
 	}
-	id := r.PathValue("id")
-	dev, err := firmware.SetPolicy(r.Context(), s.db, id, firmware.Policy{UpdatesEnabled: req.UpdatesEnabled, Pin: req.FWPin})
+	dev, err := device.Update(r.Context(), s.db, r.PathValue("id"), c)
 	if err != nil {
 		return deviceJSON{}, err
-	}
-	if req.Name != nil {
-		if _, err := device.SetName(r.Context(), s.db, id, *req.Name); err != nil {
-			return deviceJSON{}, err
-		}
 	}
 	return deviceStatus(r.Context(), s.db.Read, dev.ID)
 }

@@ -322,8 +322,8 @@ func TestMigrateAddedColumns(t *testing.T) {
 		if ferr != nil {
 			t.Fatalf("open %d: create firmware: %v", i, ferr)
 		}
-		if serr := client.Write.SetDeviceFirmwarePolicy(ctx, SetDeviceFirmwarePolicyParams{UpdatesEnabled: 1, FwPin: "1.8.1", ID: dev.ID}); serr != nil {
-			t.Fatalf("open %d: set firmware policy: %v", i, serr)
+		if serr := client.Write.UpdateDeviceSettings(ctx, UpdateDeviceSettingsParams{UpdatesEnabled: 1, FwPin: "1.8.1", ProfileOverride: "og_plus", PaletteOverride: "gray-4", ID: dev.ID}); serr != nil {
+			t.Fatalf("open %d: update device settings: %v", i, serr)
 		}
 		if serr := client.Write.StartFirmwareRollout(ctx, StartFirmwareRolloutParams{FirmwareID: fw.ID, CanaryDeviceID: dev.ID, StartedAt: 1}); serr != nil {
 			t.Fatalf("open %d: start rollout: %v", i, serr)
@@ -1101,7 +1101,7 @@ func dropAutoincrement(t *testing.T, db *sql.DB) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	for _, stmt := range dropBlocklist {
+	for _, stmt := range slices.Concat(dropProfileOverride, dropBlocklist) {
 		exec(stmt)
 	}
 	exec(`PRAGMA foreign_keys = OFF`)
@@ -1443,7 +1443,7 @@ func TestMigrateBlocklist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropBlocklist, []string{
+	for _, stmt := range slices.Concat(dropProfileOverride, dropBlocklist, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
 		`PRAGMA user_version = 7`,
 	}) {
@@ -1487,5 +1487,54 @@ func TestMigrateBlocklist(t *testing.T) {
 	got, err := client.Read.GetMACStanding(ctx, mac)
 	if err != nil || got != (GetMACStandingRow{Blocked: 1, Deleted: 1}) {
 		t.Errorf("standing = %+v, %v", got, err)
+	}
+}
+
+// dropProfileOverride takes the columns of step 9 out of a database made
+// from schema.sql, so that it has the shape from before that step.
+var dropProfileOverride = []string{
+	`ALTER TABLE device DROP COLUMN profile_override`,
+	`ALTER TABLE device DROP COLUMN palette_override`,
+}
+
+// TestMigrateProfileOverride checks step 9: a database at version 8 gets the
+// device's override columns, empty, keeps its devices, and ends with the
+// shape of schema.sql.
+func TestMigrateProfileOverride(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	want := shapeOf(t, openTest(t).Writer)
+
+	path := filepath.Join(t.TempDir(), "v8.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range slices.Concat(dropProfileOverride, []string{
+		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
+		`PRAGMA user_version = 8`,
+	}) {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if v := userVersion(t, client.Writer); v != len(steps) || v < 9 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	dev, err := client.Read.GetDevice(ctx, 3)
+	if err != nil || dev.FwModel != "og" || dev.ProfileOverride != "" || dev.PaletteOverride != "" {
+		t.Errorf("device after migration: %+v, %v", dev, err)
 	}
 }

@@ -29,7 +29,17 @@ CREATE TABLE IF NOT EXISTS device (
   updates_enabled INTEGER NOT NULL DEFAULT 0,
   -- fw_pin is a firmware version the device stays on. A device with a pin is
   -- offered no firmware. Empty means no pin.
-  fw_pin TEXT NOT NULL DEFAULT ''
+  fw_pin TEXT NOT NULL DEFAULT '',
+  -- profile_override is the registry model the device's panel is, when its
+  -- Model header says otherwise, as the 4-color OG on firmware 1.8.10 and
+  -- older does. It sets what renders and system screens are drawn for, not
+  -- the firmware the device is offered or the largest image it takes.
+  -- Empty means the Model header's.
+  profile_override TEXT NOT NULL DEFAULT '',
+  -- palette_override is the palette the device renders with when a plugin
+  -- instance asks for none, one of its model's palettes. Empty means the
+  -- model's default.
+  palette_override TEXT NOT NULL DEFAULT ''
 );
 
 -- device_state is what a device reported on its last /api/display call, and

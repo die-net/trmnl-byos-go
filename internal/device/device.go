@@ -132,28 +132,6 @@ func CleanName(name string) (string, error) {
 	return name, nil
 }
 
-// SetName gives the device named by its friendly ID or MAC a name, checked
-// by CleanName, and returns the device. An empty name clears it.
-func SetName(ctx context.Context, client *db.Client, device, name string) (db.Device, error) {
-	name, err := CleanName(name)
-	if err != nil {
-		return db.Device{}, err
-	}
-	var dev db.Device
-	err = client.InTx(ctx, func(q *db.Queries) error {
-		var err error
-		if dev, err = FindDevice(ctx, q, device); err != nil {
-			return err
-		}
-		dev.Name = name
-		if err := q.SetDeviceName(ctx, db.SetDeviceNameParams{Name: name, ID: dev.ID}); err != nil {
-			return fmt.Errorf("set name: %w", err)
-		}
-		return nil
-	})
-	return dev, err
-}
-
 // SetJoinWindow lets devices with unknown MACs register through /api/setup
 // until the given time. A time in the past closes the window.
 func SetJoinWindow(ctx context.Context, client *db.Client, until time.Time) error {

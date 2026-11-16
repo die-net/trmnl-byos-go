@@ -33,6 +33,7 @@ var steps = []step{
 	{"add settings_at to instances and renders, and secret marks to instances", addSettingsAt},
 	{"never reuse a surrogate ID", useAutoincrement},
 	{"add device tombstones and the MAC blocklist", addBlocklist},
+	{"add per-device profile and palette overrides", addProfileOverride},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -563,6 +564,19 @@ CREATE TABLE IF NOT EXISTS blocked_mac (
 func addBlocklist(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addBlocklistSQL); err != nil {
 		return fmt.Errorf("add blocklist: %w", err)
+	}
+	return nil
+}
+
+// addProfileOverrideSQL is step 9: the device's profile and palette
+// overrides, as in schema.sql, empty in every existing row.
+const addProfileOverrideSQL = `ALTER TABLE device ADD COLUMN profile_override TEXT NOT NULL DEFAULT '';
+ALTER TABLE device ADD COLUMN palette_override TEXT NOT NULL DEFAULT ''`
+
+// addProfileOverride is step 9: see addProfileOverrideSQL.
+func addProfileOverride(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addProfileOverrideSQL); err != nil {
+		return fmt.Errorf("add profile overrides: %w", err)
 	}
 	return nil
 }

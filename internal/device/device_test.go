@@ -147,7 +147,85 @@ func TestCleanName(t *testing.T) {
 	}
 }
 
-func TestSetName(t *testing.T) {
+// TestUpdate checks each setting Update takes, what it refuses, that a
+// refused change changes nothing, even its valid fields, and that nil
+// fields are kept. The device reports the OG DIY kit's Model, which is
+// og_plus, with the palettes bw and gray-4.
+func TestUpdate(t *testing.T) {
+	t.Parallel()
+	s := func(v string) *string { return &v }
+	on := true
+	for _, tc := range []struct {
+		name   string
+		device string
+		change Change
+		want   error
+		// check is the device after the change, when it is accepted.
+		check func(dev db.Device) bool
+	}{
+		{"name, trimmed", "abc123", Change{Name: s(" Kitchen ")}, nil, func(d db.Device) bool { return d.Name == "Kitchen" && d.FwPin == "1.8.1" }},
+		{"name too long", testMAC, Change{Name: s(strings.Repeat("x", 65))}, errkind.ErrInvalid, nil},
+		{"unknown device", "ZZZ999", Change{Name: s("x")}, ErrNoDevice, nil},
+		{"policy", testMAC, Change{UpdatesEnabled: &on, FwPin: s("")}, nil, func(d db.Device) bool { return d.UpdatesEnabled == 1 && d.FwPin == "" && d.Name == "Old" }},
+		{"profile", testMAC, Change{Profile: s("og_bwry")}, nil, func(d db.Device) bool { return d.ProfileOverride == "og_bwry" }},
+		{"profile not in the registry", testMAC, Change{Name: s("New"), Profile: s("og_nope")}, errkind.ErrInvalid, nil},
+		{"palette of the reported model", testMAC, Change{Palette: s("gray-4")}, nil, func(d db.Device) bool { return d.PaletteOverride == "gray-4" }},
+		{"palette the model lacks", testMAC, Change{Name: s("New"), Palette: s("gray-16")}, errkind.ErrInvalid, nil},
+		{"palette of the new profile", testMAC, Change{Profile: s("v2"), Palette: s("gray-16")}, nil, func(d db.Device) bool {
+			return d.ProfileOverride == "v2" && d.PaletteOverride == "gray-16"
+		}},
+		{"profile that leaves the stored palette out", testMAC, Change{Profile: s("og_bwry")}, errkind.ErrInvalid, nil},
+		{"clear both", testMAC, Change{Profile: s(""), Palette: s("")}, nil, func(d db.Device) bool { return d.ProfileOverride == "" && d.PaletteOverride == "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close() })
+			dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: testMAC, ApiKeyHash: []byte{1}, FriendlyID: "ABC123", Name: "Old", FwModel: "xiao_epaper_display", CreatedAt: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			palette := ""
+			if tc.name == "profile that leaves the stored palette out" {
+				palette = "gray-4"
+			}
+			err = client.Write.UpdateDeviceSettings(ctx, db.UpdateDeviceSettingsParams{Name: "Old", FwPin: "1.8.1", PaletteOverride: palette, ID: dev.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := client.Read.GetDevice(ctx, dev.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := Update(ctx, client, tc.device, tc.change)
+			after, rerr := client.Read.GetDevice(ctx, dev.ID)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			if tc.want != nil {
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("err = %v, want %v", err, tc.want)
+				}
+				if SettingsState(&after) != SettingsState(&before) {
+					t.Errorf("a refused change changed the device: %+v, was %+v", after, before)
+				}
+				return
+			}
+			if err != nil || SettingsState(&got) != SettingsState(&after) || !tc.check(after) {
+				t.Errorf("Update = %+v, %v; stored %+v", got, err, after)
+			}
+		})
+	}
+}
+
+// TestUpdateSeen checks that an update given the settings state a page
+// showed goes through, and one given a state from before another change is
+// ErrSettingsChanged and changes nothing.
+func TestUpdateSeen(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
@@ -155,27 +233,38 @@ func TestSetName(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	_, err = client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: testMAC, ApiKeyHash: []byte{1}, FriendlyID: "ABC123", CreatedAt: 1})
+	dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: testMAC, ApiKeyHash: []byte{1}, FriendlyID: "ABC123", FwModel: "og", CreatedAt: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SetName(ctx, client, "abc123", " Kitchen "); err != nil {
+	seen := SettingsState(&dev)
+	name, profile := "Kitchen", "og_bwry"
+	if dev, err = Update(ctx, client, "ABC123", Change{Name: &name, Seen: &seen}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SetName(ctx, client, testMAC, strings.Repeat("x", 65)); !errors.Is(err, errkind.ErrInvalid) {
-		t.Errorf("long name: err = %v, want invalid", err)
+	if _, err := Update(ctx, client, "ABC123", Change{Profile: &profile, Seen: &seen}); !errors.Is(err, ErrSettingsChanged) || !errors.Is(err, errkind.ErrConflict) {
+		t.Errorf("a stale page: %v, want ErrSettingsChanged", err)
 	}
-	if _, err := SetName(ctx, client, "ZZZ999", "x"); !errors.Is(err, ErrNoDevice) {
-		t.Errorf("unknown device: err = %v, want ErrNoDevice", err)
+	stored, err := client.Read.GetDevice(ctx, dev.ID)
+	if err != nil || stored.ProfileOverride != "" || stored.Name != "Kitchen" {
+		t.Errorf("after a refused change: %+v, %v", stored, err)
 	}
-	dev, err := client.Read.GetDeviceByMAC(ctx, testMAC)
-	if err != nil || dev.Name != "Kitchen" {
-		t.Errorf("device %+v, %v; want name Kitchen", dev, err)
+	fresh := SettingsState(&stored)
+	if fresh == seen {
+		t.Error("a rename did not change the settings state")
 	}
-	if _, err := SetName(ctx, client, testMAC, ""); err != nil {
-		t.Fatal(err)
+	if _, err := Update(ctx, client, "ABC123", Change{Profile: &profile, Seen: &fresh}); err != nil {
+		t.Errorf("a fresh page: %v", err)
 	}
-	if dev, _ = client.Read.GetDeviceByMAC(ctx, testMAC); dev.Name != "" {
-		t.Errorf("name %q, want none", dev.Name)
+}
+
+// TestSettingsStateNamesTheDevice checks that two devices with the same
+// settings have different states, so a page for a deleted device does not
+// match a newer one with its friendly ID.
+func TestSettingsStateNamesTheDevice(t *testing.T) {
+	t.Parallel()
+	a, b := db.Device{ID: 1, FriendlyID: "ABC123"}, db.Device{ID: 2, FriendlyID: "ABC123"}
+	if SettingsState(&a) == SettingsState(&b) {
+		t.Error("two devices have one state")
 	}
 }

@@ -117,7 +117,7 @@ func (h *harness) render(t *testing.T) db.ListRenderRowsRow {
 // renderOf returns the render row of instance, for the OG's profile.
 func (h *harness) renderOf(t *testing.T, instance int64) db.ListRenderRowsRow {
 	t.Helper()
-	p := profile.Resolve("xiao_epaper_display", nil, nil)
+	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	rows, err := h.db.Read.ListRenderRows(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +243,7 @@ func (h *harness) installRecipe(t *testing.T, body string) db.PluginInstance {
 // screenBody returns the "PNG" the device gets for an instance.
 func (h *harness) screenBody(t *testing.T, device, instance int64) string {
 	t.Helper()
-	p := profile.Resolve("xiao_epaper_display", nil, nil)
+	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	row, err := h.db.Read.GetItemScreen(t.Context(), db.GetItemScreenParams{
 		Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), Layout: "full",
 		DeviceID: device, InstanceID: instance,
@@ -789,7 +789,7 @@ func TestRenderMissingRecipeDir(t *testing.T) {
 	}
 	failure := func() db.GetItemScreenRow {
 		t.Helper()
-		p := profile.Resolve("xiao_epaper_display", nil, nil)
+		p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 		row, err := h.db.Read.GetItemScreen(t.Context(), db.GetItemScreenParams{
 			Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), Layout: "full", DeviceID: 1, InstanceID: 1,
 		})
@@ -1205,7 +1205,7 @@ func TestRebuildAfterRenderDeleted(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.renderDue(t, 1)
-	p := profile.Resolve("xiao_epaper_display", nil, nil)
+	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	row, err := h.db.Read.GetItemScreen(t.Context(), db.GetItemScreenParams{
 		Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), Layout: "full", DeviceID: 1, InstanceID: 1,
 	})

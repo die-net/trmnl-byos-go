@@ -450,17 +450,14 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// saveDevice stores the form. It is what the JSON API's PATCH does with all
-// three fields set.
+// saveDevice stores the form in one transaction, so a refused field changes
+// nothing. It is what the JSON API's PATCH does with all three fields set.
 func (s *Server) saveDevice(r *http.Request, id string, form *deviceForm) error {
-	if _, err := device.CleanName(form.Name); err != nil {
-		return err
-	}
-	_, err := firmware.SetPolicy(r.Context(), s.db, id, firmware.Policy{UpdatesEnabled: &form.Updates, Pin: &form.Pin})
+	pin, err := firmware.CleanPin(form.Pin)
 	if err != nil {
 		return err
 	}
-	_, err = device.SetName(r.Context(), s.db, id, form.Name)
+	_, err = device.Update(r.Context(), s.db, id, device.Change{Name: &form.Name, UpdatesEnabled: &form.Updates, FwPin: &pin})
 	return err
 }
 

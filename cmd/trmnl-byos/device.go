@@ -20,7 +20,53 @@ func devices(ctx context.Context, args []string, out io.Writer) error {
 		"block":   deviceBlock,
 		"unblock": deviceUnblock,
 		"blocked": deviceBlocked,
+		"set":     deviceSet,
 	})
+}
+
+// deviceSet changes a device's name, profile and palette. A flag left out
+// keeps its setting, and none clears a profile or palette.
+func deviceSet(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("device set", flag.ExitOnError)
+	data := dataFlag(fs)
+	name := fs.String("name", "", "the device's name; empty for none")
+	prof := fs.String("profile", "", "the registry model the device's panel is, such as og_bwry, or none for the one its firmware reports")
+	palette := fs.String("palette", "", "the palette to render with when a plugin instance asks for none, one of the model's, or none for the model's default")
+	rest := parseInterspersed(fs, args)
+	if len(rest) != 1 {
+		return errors.New("usage: trmnl-byos device set [-data dir] [-name name] [-profile model|none] [-palette id|none] <friendly ID or MAC>")
+	}
+	var c device.Change
+	noneIsEmpty := func(v *string) *string {
+		if *v == "none" {
+			*v = ""
+		}
+		return v
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "name":
+			c.Name = name
+		case "profile":
+			c.Profile = noneIsEmpty(prof)
+		case "palette":
+			c.Palette = noneIsEmpty(palette)
+		}
+	})
+	if c.Name == nil && c.Profile == nil && c.Palette == nil {
+		return errors.New("device set: give -name, -profile or -palette")
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	dev, err := device.Update(ctx, client, rest[0], c)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s: name %s, profile %s, palette %s.\n", dev.FriendlyID, orNone(dev.Name), orNone(dev.ProfileOverride), orNone(dev.PaletteOverride))
+	return err
 }
 
 func deviceList(ctx context.Context, args []string, out io.Writer) error {

@@ -62,7 +62,7 @@ func screenProfile(p profile.Profile) screen.Profile {
 // systemScreen resolves the requesting device's profile from its headers
 // and draws a system screen for it with draw.
 func systemScreen(r *http.Request, draw func(screen.Profile) (string, error)) (string, error) {
-	p := profile.Resolve(r.Header.Get("Model"), headerInt(r, "Width"), headerInt(r, "Height"))
+	p := profile.Resolve(r.Header.Get("Model"), headerInt(r, "Width"), headerInt(r, "Height"), profile.Override{})
 	return draw(screenProfile(p))
 }
 
