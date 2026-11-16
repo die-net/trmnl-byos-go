@@ -1024,6 +1024,11 @@ fieldset.field-setting legend {
   margin-top: var(--space-4);
 }
 
+/* A panel a form's answer scrolls to is not left under the sticky top bar. */
+.panel[id] {
+  scroll-margin-top: calc(3rem + env(safe-area-inset-top) + var(--space-3));
+}
+
 /* The form that blocks a MAC, after the list of blocked MACs or the line
    that says there are none. */
 .blocklist .items + form,

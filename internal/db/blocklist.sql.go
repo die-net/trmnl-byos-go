@@ -87,7 +87,8 @@ func (q *Queries) GetMACStanding(ctx context.Context, mac string) (GetMACStandin
 }
 
 const listBlockedMACs = `-- name: ListBlockedMACs :many
-SELECT blocked_mac.mac, blocked_mac.blocked_at, device.friendly_id, device.name
+SELECT blocked_mac.mac, blocked_mac.blocked_at, device.friendly_id, device.name,
+  EXISTS (SELECT 1 FROM device_tombstone WHERE device_tombstone.mac = blocked_mac.mac) AS deleted
 FROM blocked_mac
 LEFT JOIN device ON device.mac = blocked_mac.mac
 ORDER BY blocked_mac.mac
@@ -98,9 +99,11 @@ type ListBlockedMACsRow struct {
 	BlockedAt  int64   `json:"blocked_at"`
 	FriendlyID *string `json:"friendly_id"`
 	Name       *string `json:"name"`
+	Deleted    int64   `json:"deleted"`
 }
 
-// Every blocked MAC, with the device that has it, if one does.
+// Every blocked MAC, with the device that has it, if one does, and whether
+// it is a deleted device's tombstone.
 func (q *Queries) ListBlockedMACs(ctx context.Context) ([]ListBlockedMACsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listBlockedMACs)
 	if err != nil {
@@ -115,6 +118,7 @@ func (q *Queries) ListBlockedMACs(ctx context.Context) ([]ListBlockedMACsRow, er
 			&i.BlockedAt,
 			&i.FriendlyID,
 			&i.Name,
+			&i.Deleted,
 		); err != nil {
 			return nil, err
 		}

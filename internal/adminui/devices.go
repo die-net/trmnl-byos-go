@@ -147,6 +147,10 @@ type deviceDetail struct {
 	RemoveError string
 	// Seen is the standing the page shows, which the block form posts back.
 	Seen standingView
+	// Held are the rollouts that offer their build to no device while this
+	// device, their canary, is blocked: those it has not yet reported the
+	// version of.
+	Held []rolloutRef
 }
 
 // joinView is the state of the join window.
@@ -169,6 +173,8 @@ type blockedView struct {
 	// it has no name, and Href the path of its page. Both are "" when no
 	// registered device has the MAC.
 	Name, Href string
+	// Deleted is whether the MAC is a deleted device's, which no device has.
+	Deleted bool
 	// Unblock is the path of the page that asks whether to unblock it.
 	Unblock string
 	// At is when the MAC was blocked.
@@ -224,7 +230,7 @@ func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, status in
 	blockedViews := make([]blockedView, len(blocked))
 	for i := range blocked {
 		b := &blocked[i]
-		v := blockedView{MAC: b.Mac, Unblock: "/blocklist/" + b.Mac, At: s.timeAt(b.BlockedAt, now, false)}
+		v := blockedView{MAC: b.Mac, Deleted: b.Deleted != 0, Unblock: "/blocklist/" + b.Mac, At: s.timeAt(b.BlockedAt, now, false)}
 		if b.FriendlyID != nil {
 			v.Href = "/devices/" + *b.FriendlyID
 			name := ""
@@ -571,6 +577,12 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	}
 	if form == nil {
 		form = &deviceForm{Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin}
+	}
+	for i := range catalog {
+		// A rollout at the canary stage becomes blocked with its canary.
+		if e := &catalog[i]; (e.Stage == "canary" || e.Stage == "blocked") && slices.Contains(st.Canary, e.ID) {
+			d.Held = append(d.Held, rolloutRef{Version: e.Version, Model: e.FwModel})
+		}
 	}
 	form.Pins = pinOptions(catalog, dev.FwModel, form.Pin)
 	d.Form = *form

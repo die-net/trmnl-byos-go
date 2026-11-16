@@ -174,7 +174,8 @@ func Unblock(ctx context.Context, client *db.Client, device string, seen *Standi
 }
 
 // ListBlocked returns every blocked MAC, ordered by MAC, with the friendly
-// ID and name of the device that has it, if one does.
+// ID and name of the device that has it, if one does, and whether it is a
+// deleted device's tombstone.
 func ListBlocked(ctx context.Context, q *db.Queries) ([]db.ListBlockedMACsRow, error) {
 	rows, err := q.ListBlockedMACs(ctx)
 	if err != nil {

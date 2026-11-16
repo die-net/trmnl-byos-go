@@ -81,7 +81,7 @@ func TestDeviceDeletePage(t *testing.T) {
 		{
 			name:    "blocked",
 			setup:   func(t *testing.T, tu *testUI, _ string) { blockMAC(t, tu, testMAC) },
-			want:    []string{"It is blocked, so it is not reset while the block lasts. Unblocking it resets it at its next wake."},
+			want:    []string{"It is blocked, so it is not reset while the block lasts. Unblocking it resets it at its next check, within a day."},
 			notWant: []string{reset},
 		},
 		{
@@ -398,7 +398,7 @@ func TestDeviceRemovePanel(t *testing.T) {
 			name: "not blocked",
 			want: []string{
 				`<section class="panel" id="remove"`, "A blocked device shows a \"Blocked\" screen and checks back once a day. Unblocking restores it as it was.",
-				`name="action" value="block">Block device</button>`, `<form method="post" action="/devices/ABC123/block">`,
+				`name="action" value="block">Block device</button>`, `<form method="post" action="/devices/ABC123/block#remove">`,
 				`<a class="btn btn-secondary btn-danger" href="/devices/ABC123/delete">Delete device…</a>`, `<span class="badge badge-ok">Online</span>`,
 			},
 			notWant: []string{"Unblock device", "Blocked</span>"},
@@ -406,7 +406,7 @@ func TestDeviceRemovePanel(t *testing.T) {
 		{
 			name: "blocked", blocked: true,
 			want: []string{
-				"This device is blocked. It shows a \"Blocked\" screen and checks back once a day. Unblocking restores it as it was, with no setup.",
+				"This device is blocked. It shows a \"Blocked\" screen and checks back once a day. Unblocking restores it as it was at its next check, within a day, with no setup.",
 				`name="action" value="unblock">Unblock device</button>`, `<span class="badge badge-warn">Blocked</span>`,
 			},
 			notWant: []string{">Block device<", "Online</span>"},
@@ -444,7 +444,7 @@ func TestBlockedDevicesPanel(t *testing.T) {
 		t.Parallel()
 		tu := newTestUI(t, Config{}, true)
 		body := tu.get(t, tu.signIn(t), "/devices").Body.String()
-		wantInOrder(t, body, "No devices yet", `id="blocked"`, "No MAC is blocked.", `<form method="post" action="/blocklist">`,
+		wantInOrder(t, body, "No devices yet", `id="blocked"`, "No MAC is blocked.", `<form method="post" action="/blocklist#blocked">`,
 			`<label for="mac">MAC address</label>`, `autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF"`,
 			`A blocked device shows a "Blocked" screen and cannot register, even while the join window is open.`, `type="submit">Block</button>`)
 		if strings.Contains(body, "aria-invalid") {
@@ -469,6 +469,64 @@ func TestBlockedDevicesPanel(t *testing.T) {
 			`<span class="item-name">`+testMAC+`</span>`, `<a href="/devices/ABC123">&lt;b&gt;Kitchen&lt;/b&gt;</a>`,
 			`<span class="item-name">D8:3B:DA:00:00:02</span>`, `<a href="/devices/XYZ789">XYZ789</a>`)
 	})
+}
+
+// TestBlockedPanelDeletedDevice checks that a blocked MAC whose device was
+// deleted says so, as its unblock page does.
+func TestBlockedPanelDeletedDevice(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+	blockMAC(t, tu, testMAC)
+	blockMAC(t, tu, blockMACa)
+	deleteNow(t, tu)
+	body := tu.get(t, tu.signIn(t), "/devices").Body.String()
+	wantInOrder(t, body, `<span class="item-name">`+blockMACa+`</span>`, `<span class="rel">Not registered</span>`,
+		`<span class="item-name">`+testMAC+`</span>`, `<span class="rel">Deleted device</span>`)
+}
+
+// TestRemovePanelCanary checks that the Remove panel names a rollout that
+// blocking its canary holds, and only one the canary has not finished.
+func TestRemovePanelCanary(t *testing.T) {
+	t.Parallel()
+	const before = "This device is the canary of the rollout of 1.8.19 for " + fwModel + " and has not reported that version. While it is blocked, that build is offered to no device."
+	const held = "The rollout of 1.8.19 for " + fwModel + " waits while this device, its canary, is blocked. That build is offered to no device."
+	for _, tc := range []struct {
+		name string
+		// rollout is whether the device is a canary, canceled whether that
+		// rollout is canceled, and blocked whether the device is blocked.
+		rollout, canceled, blocked bool
+		want                       string
+	}{
+		{name: "no rollout"},
+		{name: "canary", rollout: true, want: before},
+		{name: "blocked canary", rollout: true, blocked: true, want: held},
+		{name: "canary of a canceled rollout", rollout: true, canceled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu, dir := newFirmwareUI(t)
+			addCanaryDevice(t, tu, "Kitchen")
+			if tc.rollout {
+				fw := addFirmware(t, tu, dir, fwModel)
+				startRollout(t, tu, fw.ID)
+				if tc.canceled {
+					if err := firmware.CancelRollout(t.Context(), tu.db, fw.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if tc.blocked {
+				blockMAC(t, tu, testMAC)
+			}
+			body := tu.get(t, tu.signIn(t), "/devices/"+canaryID).Body.String()
+			for _, note := range []string{before, held} {
+				if got := strings.Contains(body, note); got != (note == tc.want) {
+					t.Errorf("page has %q = %v, want %v", note, got, note == tc.want)
+				}
+			}
+		})
+	}
 }
 
 func TestBlockMACPost(t *testing.T) {
@@ -543,8 +601,8 @@ func blockedMACs(t *testing.T, tu *testUI) []string {
 
 // The three things an unblock can do, each of which its page says.
 const (
-	unblockRestores = "At its next wake it is back as it was, with its key and no setup."
-	unblockResets   = "This MAC belonged to a device that was deleted. Once unblocked, the device is reset at its next wake"
+	unblockRestores = "At its next check, within a day, it is back as it was, with its key and no setup."
+	unblockResets   = "This MAC belonged to a device that was deleted. Once unblocked, the device is reset at its next check, within a day"
 	unblockUnknown  = "No device with this MAC is registered. Once unblocked, it can register while the join window is open."
 )
 
@@ -563,7 +621,7 @@ func TestUnblockPage(t *testing.T) {
 			path:  "/blocklist/" + testMAC, status: 200,
 			want: []string{
 				`<h2 id="unblock-title">Unblock ` + testMAC + `?</h2>`, `<a href="/devices/ABC123">&lt;b&gt;Kitchen&lt;/b&gt;</a> has this MAC. ` + unblockRestores,
-				`<form method="post" action="/blocklist/` + testMAC + `">`, `name="seen_blocked" value="true"`, `name="seen_deleted" value="false"`,
+				`<form method="post" action="/blocklist/` + testMAC + `#blocked">`, `name="seen_blocked" value="true"`, `name="seen_deleted" value="false"`,
 				`type="submit">Unblock</button>`, `<a class="btn btn-secondary" href="/devices#blocked">Keep blocked</a>`,
 			},
 		},
@@ -580,7 +638,7 @@ func TestUnblockPage(t *testing.T) {
 			name:  "MAC that never registered, in lower case",
 			setup: func(t *testing.T, tu *testUI) { blockMAC(t, tu, blockMACa) },
 			path:  "/blocklist/aa:bb:cc:dd:ee:01", status: 200,
-			want: []string{unblockUnknown, `action="/blocklist/` + blockMACa + `"`},
+			want: []string{unblockUnknown, `action="/blocklist/` + blockMACa + `#blocked"`},
 		},
 		{name: "not blocked", setup: func(*testing.T, *testUI) {}, path: "/blocklist/" + testMAC, status: 404, want: []string{"That MAC is not blocked"}},
 		{name: "not a MAC", setup: func(*testing.T, *testUI) {}, path: "/blocklist/ABC123", status: 404, want: []string{"That MAC is not blocked"}},

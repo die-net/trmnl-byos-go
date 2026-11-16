@@ -34,8 +34,10 @@ DELETE FROM blocked_mac WHERE mac = ?;
 SELECT firmware_id FROM firmware_rollout WHERE canary_device_id = ? ORDER BY firmware_id;
 
 -- name: ListBlockedMACs :many
--- Every blocked MAC, with the device that has it, if one does.
-SELECT blocked_mac.mac, blocked_mac.blocked_at, device.friendly_id, device.name
+-- Every blocked MAC, with the device that has it, if one does, and whether
+-- it is a deleted device's tombstone.
+SELECT blocked_mac.mac, blocked_mac.blocked_at, device.friendly_id, device.name,
+  EXISTS (SELECT 1 FROM device_tombstone WHERE device_tombstone.mac = blocked_mac.mac) AS deleted
 FROM blocked_mac
 LEFT JOIN device ON device.mac = blocked_mac.mac
 ORDER BY blocked_mac.mac;

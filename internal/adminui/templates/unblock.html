@@ -2,7 +2,7 @@
 {{define "content"}}{{with .Unblock}}<section class="panel form-panel" aria-labelledby="unblock-title">
 <h2 id="unblock-title">Unblock {{.MAC}}?</h2>
 {{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
-{{if .Href}}<p class="rel"><a href="{{.Href}}">{{.Device}}</a> has this MAC. At its next wake it is back as it was, with its key and no setup.</p>{{else if .Deleted}}<p class="rel">This MAC belonged to a device that was deleted. Once unblocked, the device is reset at its next wake: it forgets its key, Wi-Fi settings and server, and starts its setup portal.</p>{{else}}<p class="rel">No device with this MAC is registered. Once unblocked, it can register while the join window is open.</p>{{end}}
+{{if .Href}}<p class="rel"><a href="{{.Href}}">{{.Device}}</a> has this MAC. At its next check, within a day, it is back as it was, with its key and no setup.</p>{{else if .Deleted}}<p class="rel">This MAC belonged to a device that was deleted. Once unblocked, the device is reset at its next check, within a day: it forgets its key, Wi-Fi settings and server, and starts its setup portal.</p>{{else}}<p class="rel">No device with this MAC is registered. Once unblocked, it can register while the join window is open.</p>{{end}}
 <form method="post" action="{{.Action}}">
 {{template "standing" .Seen}}
 <button class="btn btn-primary" type="submit">Unblock</button>
