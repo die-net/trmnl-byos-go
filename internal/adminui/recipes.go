@@ -6,9 +6,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -196,44 +199,57 @@ func recipePart(mr *multipart.Reader) (*multipart.Part, error) {
 	}
 }
 
-// uploadRecipe installs the zip file the upload form posts. The body is
-// streamed, so the zip is never held in memory: the file part goes straight
-// to recipe.InstallZip, which copies it to a temporary file. A body that
-// ends early is the client's, not a server failure, so the part is read
-// through upload.Reader, and an error from walking the parts goes through
-// upload.CutOff.
-func (s *Server) uploadRecipe(w http.ResponseWriter, r *http.Request) {
+// recipeUpload streams the zip file an upload form posts to use, with the
+// file's name. The body is streamed, so the zip is never held in memory.
+// A body that ends early is the client's, not a server failure, so the part
+// is read through upload.Reader, and an error from walking the parts goes
+// through upload.CutOff. It returns the status and message for a problem
+// with the upload itself, or a status of 0 and use's error.
+func recipeUpload(w http.ResponseWriter, r *http.Request, use func(file io.Reader, name string) error) (status int, msg string, err error) {
 	upload.AllowSlow(w)
 	// Room for the recipe and the multipart framing around it, which is a
 	// few hundred bytes per field.
 	r.Body = http.MaxBytesReader(w, r.Body, recipe.MaxRecipeBytes+maxFormBody)
 	mr, err := r.MultipartReader()
 	if err != nil {
-		s.renderRecipes(w, r, http.StatusBadRequest, chooseFile)
-		return
+		return http.StatusBadRequest, chooseFile, nil
 	}
 	// Until the file part is found, a body over its limit is the body's:
 	// the other parts never end, or are many.
 	tooBig := "The upload is too large."
-	var rec db.Recipe
 	part, err := recipePart(mr)
 	if err == nil {
 		// Once the file is being read, its own limit is the one that can
 		// trip. It is the one the API gives the zip.
 		tooBig = fmt.Sprintf("The file is over %d MB.", recipe.MaxRecipeBytes>>20)
-		file := upload.Reader(http.MaxBytesReader(w, part, recipe.MaxRecipeBytes))
-		rec, err = recipe.InstallZip(r.Context(), s.db, s.recipesDir, file, part.FileName(), s.now())
+		err = use(upload.Reader(http.MaxBytesReader(w, part, recipe.MaxRecipeBytes)), part.FileName())
 	}
 	var limit *http.MaxBytesError
 	switch {
+	case errors.As(err, &limit):
+		return http.StatusRequestEntityTooLarge, tooBig, nil
+	case errors.Is(err, errNoFile):
+		return http.StatusBadRequest, chooseFile, nil
+	case errors.Is(err, upload.ErrCutOff):
+		return http.StatusBadRequest, "The upload was cut off or could not be read.", nil
+	}
+	return 0, "", err
+}
+
+// uploadRecipe installs the zip file the upload form posts, which
+// recipe.InstallZip copies to a temporary file.
+func (s *Server) uploadRecipe(w http.ResponseWriter, r *http.Request) {
+	var rec db.Recipe
+	status, msg, err := recipeUpload(w, r, func(file io.Reader, name string) error {
+		var err error
+		rec, err = recipe.InstallZip(r.Context(), s.db, s.recipesDir, file, name, s.now())
+		return err
+	})
+	switch {
+	case status != 0:
+		s.renderRecipes(w, r, status, msg)
 	case err == nil:
 		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
-	case errors.As(err, &limit):
-		s.renderRecipes(w, r, http.StatusRequestEntityTooLarge, tooBig)
-	case errors.Is(err, errNoFile):
-		s.renderRecipes(w, r, http.StatusBadRequest, chooseFile)
-	case errors.Is(err, upload.ErrCutOff):
-		s.renderRecipes(w, r, http.StatusBadRequest, "The upload was cut off or could not be read.")
 	case errors.Is(err, errkind.ErrInvalid):
 		s.renderRecipes(w, r, http.StatusBadRequest, kindText(err))
 	default:
@@ -312,6 +328,52 @@ type recipeEdit struct {
 	// were replaced since.
 	Revision int64
 	instanceFormView
+	// Replace is the panel that replaces the recipe's files.
+	Replace replaceView
+}
+
+// replaceView is the panel of a recipe's page that replaces its files, and
+// what the last replace the page posted did.
+type replaceView struct {
+	// Action is the path the form posts to.
+	Action string
+	// Limit is the size the panel says a zip may be, such as "8 MB".
+	Limit string
+	// Error is why the replace was refused, or "".
+	Error string
+	// Done is what a replace that was not refused did, or "".
+	Done string
+	// Heading says what Instances lists, when there are any.
+	Heading string
+	// Instances are the instances a replace reports on, or the ones whose
+	// values refused it.
+	Instances []replacedInstanceView
+}
+
+// replacedInstanceView is what a replace says about one instance.
+type replacedInstanceView struct {
+	Name string
+	// Href is the page that edits the instance.
+	Href string
+	// Sealed are the keynames whose values the replace sealed, and Marked
+	// the ones it marked secret.
+	Sealed, Marked []string
+	// Problems are the values the admin should look at, in keyname order.
+	Problems []keyNote
+}
+
+// keyNote is a message about the value of a keyname.
+type keyNote struct {
+	Key, Msg string
+}
+
+// keyNotes returns the messages in keyname order.
+func keyNotes(errs recipe.FieldErrors) []keyNote {
+	out := make([]keyNote, 0, len(errs))
+	for _, k := range slices.Sorted(maps.Keys(errs)) {
+		out = append(out, keyNote{Key: k, Msg: errs[k]})
+	}
+	return out
 }
 
 // recipeFromPath returns the recipe the path names.
@@ -339,15 +401,111 @@ func (s *Server) recipePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.renderRecipe(w, r, http.StatusOK, &rec, rec.Revision, fields, &instanceForm{}, &fieldSource{}, "")
+	s.renderRecipe(w, r, http.StatusOK, &rec, rec.Revision, fields, &instanceForm{}, &fieldSource{}, "", nil)
 }
 
 // renderRecipe sends the page of a recipe with the form's values, and an
 // error message above the form if msg is not "". The form sends revision
-// back. src says what the field controls show.
-func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int, rec *db.Recipe, revision int64, fields []recipe.Field, form *instanceForm, src *fieldSource, msg string) {
-	v, top := newInstanceForm("/recipes/add-instance/"+strconv.FormatInt(rec.ID, 10), rec.Name, "Add", form, fields, src, msg)
-	s.render(w, r, status, "recipe", &pageData{Nav: "recipes", Heading: rec.Name, Error: top, RecipeEdit: &recipeEdit{Name: rec.Name, Revision: revision, instanceFormView: v}})
+// back. src says what the field controls show. replaced, when not nil, is
+// what the replace panel says a replace did. Its Action and Limit are set
+// here.
+func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int, rec *db.Recipe, revision int64, fields []recipe.Field, form *instanceForm, src *fieldSource, msg string, replaced *replaceView) {
+	id := strconv.FormatInt(rec.ID, 10)
+	v, top := newInstanceForm("/recipes/add-instance/"+id, rec.Name, "Add", form, fields, src, msg)
+	edit := &recipeEdit{Name: rec.Name, Revision: revision, instanceFormView: v}
+	if replaced != nil {
+		edit.Replace = *replaced
+	}
+	edit.Replace.Action = "/recipes/replace/" + id + "#replace"
+	edit.Replace.Limit = strconv.FormatInt(recipe.MaxRecipeBytes>>20, 10) + " MB"
+	s.render(w, r, status, "recipe", &pageData{Nav: "recipes", Heading: rec.Name, Error: top, RecipeEdit: edit})
+}
+
+// What the replace panel says a replace did.
+const (
+	replaceDone      = "The recipe's files were replaced. Its instances are rendered again with the new files."
+	replaceUnchanged = "These are the files already installed, so nothing was changed."
+	replaceLook      = "These instances have values to look at:"
+	replaceRefused   = "The recipe was not replaced, and nothing was changed. The new files make these fields password fields, and their values could not be sealed:"
+	replaceNoKey     = "The recipe was not replaced, and nothing was changed. The new files make these fields password fields, and the server has no secrets key to seal their values with. Set " + secrets.EnvVar + " on the server and restart it."
+)
+
+// replaceRecipe replaces a recipe's files with the zip file the replace
+// form posts, which recipe.ReplaceZip copies to a temporary file, and shows
+// the recipe's page with what the replace did to its instances. A replace
+// that changed the files wakes the scheduler, as the API's does.
+func (s *Server) replaceRecipe(w http.ResponseWriter, r *http.Request) {
+	rec, ok := s.recipeFromPath(w, r)
+	if !ok {
+		return
+	}
+	var res recipe.Replaced
+	status, msg, err := recipeUpload(w, r, func(file io.Reader, _ string) error {
+		var err error
+		res, err = recipe.ReplaceZip(r.Context(), s.db, s.secrets, s.recipesDir, rec.ID, file, s.now())
+		return err
+	})
+	v := &replaceView{Error: msg}
+	var refused *recipe.ReplaceRefused
+	switch {
+	case status != 0:
+	case err == nil:
+		status, rec = http.StatusOK, res.Recipe
+		v.Done = replaceDone
+		if res.Unchanged {
+			v.Done = replaceUnchanged
+		} else {
+			s.rebuild()
+		}
+		if len(res.Instances) > 0 {
+			v.Heading = replaceLook
+		}
+		v.Instances = make([]replacedInstanceView, len(res.Instances))
+		for i := range res.Instances {
+			ri := &res.Instances[i]
+			v.Instances[i] = replacedInstanceView{Name: ri.Name, Href: instanceHref(ri.ID), Sealed: ri.Sealed, Marked: ri.Marked, Problems: keyNotes(ri.Problems)}
+		}
+	case errors.Is(err, recipe.ErrNoRecipe):
+		s.renderNotFound(w, r, noRecipe)
+		return
+	case errors.As(err, &refused):
+		status, v.Error = http.StatusBadRequest, replaceRefused
+		if errors.Is(err, secrets.ErrNoKey) {
+			v.Error = replaceNoKey
+		}
+		if v.Instances, err = s.refusedInstances(r.Context(), rec.ID, refused); err != nil {
+			serverError(w, r, "list recipe instances", err)
+			return
+		}
+	case errors.Is(err, errkind.ErrInvalid):
+		status, v.Error = http.StatusBadRequest, kindText(err)
+	default:
+		serverError(w, r, "replace recipe", err)
+		return
+	}
+	// The page shows the fields of the files that are current now.
+	fields, ok := s.recipeFields(w, r, &rec)
+	if !ok {
+		return
+	}
+	s.renderRecipe(w, r, status, &rec, rec.Revision, fields, &instanceForm{}, &fieldSource{}, "", v)
+}
+
+// refusedInstances names the instances of the recipe whose values refused a
+// replace, in ID order, from one query. An instance removed since the
+// refusal is left out.
+func (s *Server) refusedInstances(ctx context.Context, recipeID int64, refused *recipe.ReplaceRefused) ([]replacedInstanceView, error) {
+	insts, err := s.db.Read.ListRecipeInstances(ctx, recipeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]replacedInstanceView, 0, len(refused.Instances))
+	for i := range insts {
+		if errs, ok := refused.Instances[insts[i].ID]; ok {
+			out = append(out, replacedInstanceView{Name: insts[i].Name, Href: instanceHref(insts[i].ID), Problems: keyNotes(errs)})
+		}
+	}
+	return out, nil
 }
 
 // recipeChanged is what an add from a page drawn from files that were since
@@ -370,7 +528,7 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	form := &instanceForm{}
 	if !parseFormLimit(w, r, maxInstanceFormBody, func(status int, msg string) {
-		s.renderRecipe(w, r, status, &rec, rec.Revision, fields, form, &fieldSource{}, msg)
+		s.renderRecipe(w, r, status, &rec, rec.Revision, fields, form, &fieldSource{}, msg, nil)
 	}) {
 		return
 	}
@@ -400,7 +558,7 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 		if fields, ok = s.recipeFields(w, r, &rec); !ok {
 			return
 		}
-		s.renderRecipe(w, r, http.StatusConflict, &rec, rec.Revision, fields, form, src, recipeChanged)
+		s.renderRecipe(w, r, http.StatusConflict, &rec, rec.Revision, fields, form, src, recipeChanged, nil)
 		return
 	}
 	status, msg, ok := refusal(err, src)
@@ -408,7 +566,7 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "add instance", err)
 		return
 	}
-	s.renderRecipe(w, r, status, &rec, cmp.Or(revision, rec.Revision), fields, form, src, msg)
+	s.renderRecipe(w, r, status, &rec, cmp.Or(revision, rec.Revision), fields, form, src, msg, nil)
 }
 
 // noKeyText is what a refusal for want of a secrets key says.
