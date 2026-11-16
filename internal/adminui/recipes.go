@@ -454,8 +454,6 @@ func (s *Server) replaceRecipe(w http.ResponseWriter, r *http.Request) {
 		v.Done = replaceDone
 		if res.Unchanged {
 			v.Done = replaceUnchanged
-		} else {
-			s.rebuild()
 		}
 		if len(res.Instances) > 0 {
 			v.Heading = replaceLook

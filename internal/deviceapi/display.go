@@ -222,14 +222,15 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if keepRate {
-			st, err := q.GetDeviceStatus(ctx, dev.ID)
+			latest, err := q.GetDeviceStatus(ctx, dev.ID)
 			if err != nil {
 				return fmt.Errorf("get device state: %w", err)
 			}
 			// A device with no state yet has had no answer to store a
-			// rate from, so the one chosen here is the best guess.
-			if st.LastRefreshRateSent != nil {
-				choice.refresh = *st.LastRefreshRateSent
+			// rate from, so the one chosen here is the best guess. The
+			// state is read again here, under the write lock.
+			if latest.LastRefreshRateSent != nil {
+				choice.refresh = *latest.LastRefreshRateSent
 			}
 		}
 		err := q.UpsertDeviceState(ctx, db.UpsertDeviceStateParams{
@@ -253,6 +254,12 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		displayFailed(w, dev.Mac, "save state", sent, err)
 		return
+	}
+	// A device's first wake, or one that reports another size or model,
+	// gives it render targets it did not have, which are due now.
+	if st.LastSeen == nil || !samePtr(st.Width, headerInt(r, "Width")) || !samePtr(st.Height, headerInt(r, "Height")) ||
+		(model != "" && model != dev.FwModel) {
+		s.db.Changed()
 	}
 
 	resp := displayResponse{
@@ -526,6 +533,8 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 		if err := s.db.Write.DeleteRenderWithImage(ctx, db.DeleteRenderWithImageParams{ID: *row.RenderID, Image: *row.Image}); err != nil {
 			return screenChoice{refresh: refresh}, fmt.Errorf("delete render: %w", err)
 		}
+		// The target has no render now, so it is due.
+		s.db.Changed()
 		row.Image, failure = nil, ""
 	}
 	var lines []screen.Line
@@ -566,6 +575,14 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	}
 	name, size, err := s.screenSized(sp, lines)
 	return screenChoice{name: name, size: size, refresh: refresh, shown: true}, err
+}
+
+// samePtr reports whether a and b are both nil or point to equal values.
+func samePtr[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // deref returns what p points to, or the zero value for nil, as a column of

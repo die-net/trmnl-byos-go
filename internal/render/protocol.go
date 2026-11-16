@@ -18,6 +18,9 @@ import (
 const (
 	jobMember = "job.json"
 	logMember = "build.log"
+	// fetchFailedMember, an empty member of a 422 response, says the build
+	// failed because a data fetch did.
+	fetchFailedMember = "fetch_failed"
 )
 
 // Layouts are the views trmnlp renders for every recipe, by file name.
@@ -54,6 +57,13 @@ var (
 // ErrBuildFailed means trmnlp ran but did not produce the screens. The
 // build log says why.
 var ErrBuildFailed = errors.New("trmnlp build failed")
+
+// ErrFetchFailed means trmnlp fetched the recipe's data and the fetch
+// failed: an unreachable host, an answer other than 2xx, or a body it could
+// not read. trmnlp draws its screens anyway, from empty or error data, so
+// the shim sends none, and the build is a failure as any other, which keeps
+// the last good images. The build log's warnings say why.
+var ErrFetchFailed = errors.New("data fetch failed")
 
 // ErrRejected means the job itself is refused, by the client before it sends
 // it or by the shim with a 400: it is too big, or malformed. Another try

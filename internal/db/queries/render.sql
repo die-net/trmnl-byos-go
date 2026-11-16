@@ -167,3 +167,23 @@ DELETE FROM render WHERE id = ?;
 DELETE FROM render
 WHERE id = sqlc.arg(id)
   AND EXISTS (SELECT 1 FROM render_image WHERE render_image.render_id = render.id AND render_image.image = sqlc.arg(image));
+
+-- name: ListInstanceRenderStatus :many
+-- For each instance with renders, when its latest good build finished, 0
+-- for never, and the error of its most recently attempted target whose
+-- latest build failed, empty when none's did.
+SELECT render.instance_id,
+  CAST(MAX(render.rendered_at) AS INTEGER) AS last_rendered_at,
+  CAST(COALESCE((SELECT r.error FROM render r WHERE r.instance_id = render.instance_id AND r.error != ''
+    ORDER BY r.attempted_at DESC, r.id DESC LIMIT 1), '') AS TEXT) AS last_error
+FROM render
+GROUP BY render.instance_id;
+
+-- name: GetInstanceRenderStatus :one
+-- ListInstanceRenderStatus for one instance, with 0 and an empty error when
+-- it has no renders.
+SELECT CAST(COALESCE(MAX(render.rendered_at), 0) AS INTEGER) AS last_rendered_at,
+  CAST(COALESCE((SELECT r.error FROM render r WHERE r.instance_id = sqlc.arg(instance_id) AND r.error != ''
+    ORDER BY r.attempted_at DESC, r.id DESC LIMIT 1), '') AS TEXT) AS last_error
+FROM render
+WHERE render.instance_id = sqlc.arg(instance_id);

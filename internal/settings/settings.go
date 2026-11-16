@@ -241,7 +241,7 @@ func SetMany(ctx context.Context, client *db.Client, changes []Change, now time.
 		}
 		values[i] = v
 	}
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		for i, c := range changes {
 			err := q.SetSetting(ctx, db.SetSettingParams{Key: c.Key, Value: values[i], UpdatedAt: now.Unix()})
 			if err != nil {
@@ -261,5 +261,7 @@ func Reset(ctx context.Context, client *db.Client, key string) error {
 	if err := client.Write.DeleteSetting(ctx, key); err != nil {
 		return fmt.Errorf("reset setting %s: %w", key, err)
 	}
+	// The locale, for one, picks the render targets.
+	client.Changed()
 	return nil
 }

@@ -48,7 +48,7 @@ func TestReplaceRecipe(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)
 	var woken atomic.Int32
-	ta.srv.cfg.Rebuild = func() { woken.Add(1) }
+	ta.db.OnChange = func() { woken.Add(1) }
 	rec := ta.addRecipe(t)
 	id := strconv.FormatInt(rec.ID, 10)
 	if rec.Revision != 1 || rec.SourceHash == "" || rec.ReplacedAt != 0 {
@@ -90,7 +90,7 @@ func TestReplaceRecipeRefused(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)
 	var woken atomic.Int32
-	ta.srv.cfg.Rebuild = func() { woken.Add(1) }
+	ta.db.OnChange = func() { woken.Add(1) }
 	rec := ta.addRecipe(t)
 	id := strconv.FormatInt(rec.ID, 10)
 	z := replaceZip(t)
@@ -131,7 +131,7 @@ func TestReplaceRecipeSealing(t *testing.T) {
 	for _, withKey := range []bool{false, true} {
 		ta := newTestAPI(t, withKey)
 		var woken atomic.Int32
-		ta.srv.cfg.Rebuild = func() { woken.Add(1) }
+		ta.db.OnChange = func() { woken.Add(1) }
 		rec := ta.addRecipe(t)
 		id := strconv.FormatInt(rec.ID, 10)
 		var inst instanceJSON

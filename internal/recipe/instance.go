@@ -369,7 +369,7 @@ func updateInstanceOnce(ctx context.Context, client *db.Client, key *secrets.Key
 	}
 	byName := fieldsByName(fields)
 	var out db.PluginInstance
-	err = client.InTx(ctx, func(q *db.Queries) error {
+	err = client.ChangeTx(ctx, func(q *db.Queries) error {
 		cur, err := q.GetInstance(ctx, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: %d", ErrNoInstance, id)

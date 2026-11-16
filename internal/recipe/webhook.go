@@ -125,7 +125,7 @@ func PushData(ctx context.Context, client *db.Client, p PushParams, now time.Tim
 		return nil, fmt.Errorf("%w: stream_limit is negative", errkind.ErrInvalid)
 	}
 	var out []byte
-	err := client.InTx(ctx, func(q *db.Queries) error {
+	err := client.ChangeTx(ctx, func(q *db.Queries) error {
 		if _, err := q.GetInstance(ctx, p.InstanceID); errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: %d", ErrNoInstance, p.InstanceID)
 		} else if err != nil {

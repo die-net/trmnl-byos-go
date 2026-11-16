@@ -49,10 +49,6 @@ type Config struct {
 	// Zone is the server's time zone, which a device with none of its own is
 	// in. Nil is UTC.
 	Zone *time.Location
-	// Rebuild, when not nil, is called after a change that builds read,
-	// such as an instance's settings, so the scheduler rebuilds what it
-	// makes due at once rather than at its next check.
-	Rebuild func()
 }
 
 // Server handles admin API requests.

@@ -39,6 +39,28 @@ func (q *Queries) DeleteRenderWithImage(ctx context.Context, arg DeleteRenderWit
 	return err
 }
 
+const getInstanceRenderStatus = `-- name: GetInstanceRenderStatus :one
+SELECT CAST(COALESCE(MAX(render.rendered_at), 0) AS INTEGER) AS last_rendered_at,
+  CAST(COALESCE((SELECT r.error FROM render r WHERE r.instance_id = ?1 AND r.error != ''
+    ORDER BY r.attempted_at DESC, r.id DESC LIMIT 1), '') AS TEXT) AS last_error
+FROM render
+WHERE render.instance_id = ?1
+`
+
+type GetInstanceRenderStatusRow struct {
+	LastRenderedAt int64  `json:"last_rendered_at"`
+	LastError      string `json:"last_error"`
+}
+
+// ListInstanceRenderStatus for one instance, with 0 and an empty error when
+// it has no renders.
+func (q *Queries) GetInstanceRenderStatus(ctx context.Context, instanceID int64) (GetInstanceRenderStatusRow, error) {
+	row := q.db.QueryRowContext(ctx, getInstanceRenderStatus, instanceID)
+	var i GetInstanceRenderStatusRow
+	err := row.Scan(&i.LastRenderedAt, &i.LastError)
+	return i, err
+}
+
 const getItemScreen = `-- name: GetItemScreen :one
 SELECT plugin_instance.name, recipe.refresh_interval,
   render.id AS render_id, render.rendered_at, render.attempted_at, render.error,
@@ -250,6 +272,47 @@ func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, er
 			&i.ItemID,
 			&i.ItemStartedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInstanceRenderStatus = `-- name: ListInstanceRenderStatus :many
+SELECT render.instance_id,
+  CAST(MAX(render.rendered_at) AS INTEGER) AS last_rendered_at,
+  CAST(COALESCE((SELECT r.error FROM render r WHERE r.instance_id = render.instance_id AND r.error != ''
+    ORDER BY r.attempted_at DESC, r.id DESC LIMIT 1), '') AS TEXT) AS last_error
+FROM render
+GROUP BY render.instance_id
+`
+
+type ListInstanceRenderStatusRow struct {
+	InstanceID     int64  `json:"instance_id"`
+	LastRenderedAt int64  `json:"last_rendered_at"`
+	LastError      string `json:"last_error"`
+}
+
+// For each instance with renders, when its latest good build finished, 0
+// for never, and the error of its most recently attempted target whose
+// latest build failed, empty when none's did.
+func (q *Queries) ListInstanceRenderStatus(ctx context.Context) ([]ListInstanceRenderStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInstanceRenderStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInstanceRenderStatusRow{}
+	for rows.Next() {
+		var i ListInstanceRenderStatusRow
+		if err := rows.Scan(&i.InstanceID, &i.LastRenderedAt, &i.LastError); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

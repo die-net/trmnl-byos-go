@@ -222,7 +222,7 @@ func appendItem(ctx context.Context, client *db.Client, playlistOf func(context.
 		return db.PlaylistItem{}, err
 	}
 	var item db.PlaylistItem
-	err := client.InTx(ctx, func(q *db.Queries) error {
+	err := client.ChangeTx(ctx, func(q *db.Queries) error {
 		if _, err := q.GetInstance(ctx, instanceID); errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: no such instance %d", errkind.ErrNotFound, instanceID)
 		} else if err != nil {
@@ -307,7 +307,7 @@ func renumber(ctx context.Context, q *db.Queries, playlistID, moved, from, to in
 // items after it so positions stay 0 to n-1. It returns an error wrapping
 // ErrNoItem if there is no such item.
 func DeleteItem(ctx context.Context, client *db.Client, id int64) error {
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		item, err := q.GetPlaylistItem(ctx, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: %d", ErrNoItem, id)
@@ -350,7 +350,7 @@ func UpdateItem(ctx context.Context, client *db.Client, id int64, u ItemUpdate) 
 			return err
 		}
 	}
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		item, err := q.GetPlaylistItem(ctx, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: %d", ErrNoItem, id)

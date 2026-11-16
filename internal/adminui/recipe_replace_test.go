@@ -74,7 +74,7 @@ func newReplaceUI(t *testing.T, withKey bool) (tu *testUI, dir string, c *http.C
 	}
 	tu = newTestUI(t, cfg, true)
 	woken = new(int)
-	tu.srv.rebuildFn = func() { *woken++ }
+	tu.db.OnChange = func() { *woken++ }
 	c = tu.signIn(t)
 	if status, _, body := tu.upload(t, c, []formPart{{field: "recipe", filename: "w.zip", content: recipeZip(t, replaceOld)}}); status != http.StatusSeeOther {
 		t.Fatalf("upload: status %d: %s", status, body)

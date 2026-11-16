@@ -39,6 +39,31 @@ type Client struct {
 	Reader *sql.DB
 	Write  *Queries
 	Read   *Queries
+	// OnChange, if not nil, is called by Changed, after a committed change
+	// that may make a render due or make a new render target: the server
+	// sets it to wake its scheduler. It is set before the client is used,
+	// and is nil in a process with no scheduler, such as the CLI's.
+	OnChange func()
+}
+
+// Changed reports a committed change that may make a render due or make a
+// new render target, through OnChange. Every such write calls it, through
+// ChangeTx or after its own write, so every front end that makes one wakes
+// the scheduler.
+func (c *Client) Changed() {
+	if c.OnChange != nil {
+		c.OnChange()
+	}
+}
+
+// ChangeTx is InTx for a change that may make a render due or make a new
+// render target, and calls Changed once it commits.
+func (c *Client) ChangeTx(ctx context.Context, fn func(q *Queries) error) error {
+	if err := c.InTx(ctx, fn); err != nil {
+		return err
+	}
+	c.Changed()
+	return nil
 }
 
 // Open opens or creates the SQLite database at path.

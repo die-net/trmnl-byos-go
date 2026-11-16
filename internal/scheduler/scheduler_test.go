@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,17 @@ type harness struct {
 	// reject, while set, makes the fake renderer answer 400 to every build,
 	// as the shim does for a job it cannot read.
 	reject atomic.Bool
+	// duringBuild, if not nil, is called by the fake renderer as a build
+	// starts, as a change made while a build runs.
+	duringBuild func()
+	// fetchFail, while set, makes the fake renderer answer as the shim does
+	// for a build whose data fetch failed: 422, a warning in the log, and a
+	// fetch_failed member, with no PNGs.
+	fetchFail atomic.Bool
+	// fetchURL, if set before the first build, is the URL the warning of a
+	// failed fetch quotes, with {{token}} replaced by the token's value, as
+	// trmnlp prints a polling URL it interpolated.
+	fetchURL string
 	// leakFile, while it exists, makes the fake renderer fail with the
 	// first field's value in its output.
 	leakFile string
@@ -330,15 +342,123 @@ func TestDescribe(t *testing.T) {
 		name string
 		err  error
 		log  string
-		want string
+		// hidden are the instance's field values the line hides.
+		hidden []string
+		want   string
 	}{
-		{"trmnlp failed", render.ErrBuildFailed, "starting\nboom\n\n", "trmnlp: boom"},
-		{"no log", render.ErrBuildFailed, "", render.ErrBuildFailed.Error()},
-		{"other", os.ErrDeadlineExceeded, "x", os.ErrDeadlineExceeded.Error()},
+		{"trmnlp failed", render.ErrBuildFailed, "starting\nboom\n\n", nil, "trmnlp: boom"},
+		{"fetch failed", render.ErrFetchFailed, "warning: a\nGET https://x — received 3 bytes (401 status)\nwarning: HTTP 401 from https://x\nDone!\n", nil, "data fetch failed: HTTP 401 from https://x"},
+		{"fetch failed, a query", render.ErrFetchFailed, "warning: HTTP 403 from https://api.example/x?appid=abc123&q=Oslo\n", nil, "data fetch failed: HTTP 403 from https://api.example"},
+		{"fetch failed, a token in the path", render.ErrFetchFailed, "warning: HTTP 401 from https://api.telegram.org/bot123456:PLAINTOKEN/getUpdates?offset=1\n", nil, "data fetch failed: HTTP 401 from https://api.telegram.org"},
+		{"fetch failed, user info", render.ErrFetchFailed, "warning: HTTP 401 from https://alice:PLAINPASS@api.example/data\n", nil, "data fetch failed: HTTP 401 from https://api.example"},
+		{"fetch failed, an uppercase scheme", render.ErrFetchFailed, "warning: HTTP 500 from HTTPS://API.EXAMPLE/x?key=PLAINKEY\n", nil, "data fetch failed: HTTP 500 from https://API.EXAMPLE"},
+		{"fetch failed, a space in the query", render.ErrFetchFailed, "warning: HTTP 500 from https://api.example/w?q=New York&appid=PLAINKEY\n", nil, "data fetch failed: HTTP 500 from https://api.example"},
+		{"fetch failed, a space in the path", render.ErrFetchFailed, "warning: Malformed JSON from url: https://api.example/w/San Jose/PLAINKEY?x=1\n", nil, "data fetch failed: Malformed JSON from url: https://api.example"},
+		{"fetch failed, a / in the password", render.ErrFetchFailed, "warning: HTTP 401 from https://user:pa/ss@api.example/x\n", nil, "data fetch failed: HTTP 401 from https://api.example"},
+		{"fetch failed, a ? and # in the password", render.ErrFetchFailed, "warning: HTTP 401 from https://user:p?a#ss@api.example/x\n", nil, "data fetch failed: HTTP 401 from https://api.example"},
+		{"fetch failed, trmnlp's separator", render.ErrFetchFailed, "warning: Unable to fetch data from url: https://api.example/v1/PLAINKEY — the host replied 500\n", nil, "data fetch failed: Unable to fetch data from url: https://api.example — the host replied 500"},
+		{"fetch failed, a refused URL", render.ErrFetchFailed, "warning: TRMNL refuses http://10.0.0.1/admin/PLAINKEY: the url resolves to a private address\n", nil, "data fetch failed: TRMNL refuses http://10.0.0.1: the url resolves to a private address"},
+		{"fetch failed, a scheme typo", render.ErrFetchFailed, "warning: HTTP 500 from http:/api.example/x?key=PLAINKEY\n", []string{"PLAINKEY"}, "data fetch failed: HTTP 500 from http:/api.example/x?key=[redacted]"},
+		{"fetch failed, no scheme", render.ErrFetchFailed, "warning: Unable to fetch data from url: api.example/PLAINKEY/x — failed\n", []string{"PLAINKEY"}, "data fetch failed: Unable to fetch data from url: api.example/[redacted]/x — failed"},
+		{"fetch failed, an @ in the query", render.ErrFetchFailed, "warning: HTTP 400 from https://api.example/x?email=me@mail.example&key=KEY23\n", nil, "data fetch failed: HTTP 400 from https://mail.example"},
+		{"fetch failed, an @ in the query and a port", render.ErrFetchFailed, "warning: HTTP 400 from https://api.example:8443/x?u=a@b.example:9/x&k=KEY23\n", nil, "data fetch failed: HTTP 400 from https://b.example:9"},
+		{"fetch failed, a base URL from a field", render.ErrFetchFailed, "warning: HTTP 401 from https://api.example.com/v1/feed?auth=dXNlcjpzZWNyZXQ= — Unauthorized\n", []string{"https://api.example.com"}, "data fetch failed: HTTP 401 from [redacted] — Unauthorized"},
+		{"fetch failed, the scheme from a field", render.ErrFetchFailed, "warning: HTTP 401 from https://api.example/x?key=PLAINKEY\n", []string{"https"}, "data fetch failed: HTTP 401 from [redacted]://api.example"},
+		{"fetch failed, a host from a field", render.ErrFetchFailed, "warning: HTTP 401 from https://home.myname.example/api\n", []string{"home.myname.example"}, "data fetch failed: HTTP 401 from https://[redacted]"},
+		{"fetch failed, a base URL with a path from a field", render.ErrFetchFailed, "warning: HTTP 401 from https://home.myname.example/api/feed?k=X — Unauthorized\n", []string{"https://home.myname.example/api/"}, "data fetch failed: HTTP 401 from [redacted] — Unauthorized"},
+		{"fetch failed, a base URL with a slash from a field", render.ErrFetchFailed, "warning: HTTP 401 from https://home.myname.example/feed?k=X — Unauthorized\n", []string{"https://home.myname.example/"}, "data fetch failed: HTTP 401 from [redacted] — Unauthorized"},
+		{"fetch failed, an uppercase base URL from a field", render.ErrFetchFailed, "warning: HTTP 401 from HTTPS://home.myname.example/api/feed?k=X — Unauthorized\n", []string{"HTTPS://home.myname.example/api/"}, "data fetch failed: HTTP 401 from [redacted] — Unauthorized"},
+		{"fetch failed, a host and path from a field", render.ErrFetchFailed, "warning: HTTP 401 from https://home.myname.example/api/feed?k=X — Unauthorized\n", []string{"home.myname.example/api"}, "data fetch failed: HTTP 401 from https://[redacted] — Unauthorized"},
+		{"trmnlp failed, a URL", render.ErrBuildFailed, "starting\nGET http://u:p@api.example:8080/v1/k/SECRET failed\n", nil, "trmnlp: GET http://api.example:8080"},
+		{"trmnlp failed, a value", render.ErrBuildFailed, "starting\nundefined method for Oslo Centrum\n", []string{"Oslo Centrum"}, "trmnlp: undefined method for [redacted]"},
+		{"trmnlp failed, a value with a trailing space", render.ErrBuildFailed, "boom: hunter2 \n", []string{"hunter2 "}, "trmnlp: boom: [redacted]"},
+		{"trmnlp failed, a value across lines", render.ErrBuildFailed, "boom: abcd\nefgh-tail\n", []string{"abcd\nefgh"}, "trmnlp: [redacted]-tail"},
+		{"fetch failed, a value with a trailing space", render.ErrFetchFailed, "warning: bad value hunter2 \n", []string{"hunter2 "}, "data fetch failed: bad value [redacted]"},
+		{"fetch failed, a value across the URL's end", render.ErrFetchFailed, "warning: HTTP 401 from https://api.example/x?k=SECRET — Unauthorized\n", []string{"SECRET — Una"}, "data fetch failed: HTTP 401 from https://api.example[redacted]uthorized"},
+		{"trmnlp failed, a value in the prefix's words", render.ErrBuildFailed, "trmnlp said no\n", []string{"trmnlp"}, "trmnlp: [redacted] said no"},
+		{"fetch failed, a warning after its last line", render.ErrFetchFailed, "warning: HTTP 500 from https://x\n  \nDone!\n\n", nil, "data fetch failed: HTTP 500 from https://x"},
+		{"fetch failed, no warning", render.ErrFetchFailed, "Done!\n", nil, render.ErrFetchFailed.Error()},
+		{"no log", render.ErrBuildFailed, "", nil, render.ErrBuildFailed.Error()},
+		{"other", os.ErrDeadlineExceeded, "x", nil, os.ErrDeadlineExceeded.Error()},
+		{"the server's own error keeps its URL", errors.New(`render request: renderer unavailable: Post "http://renderer:8081/build": context deadline exceeded`), "", []string{"renderer:8081/build"}, `render request: renderer unavailable: Post "http://[redacted]": context deadline exceeded`},
 	} {
-		if got := describe(tc.err, tc.log); got != tc.want {
+		if got := describe(tc.err, tc.log, tc.hidden); got != tc.want {
 			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestHiddenBytes checks which bytes of a line hiddenBytes marks: each
+// occurrence of a value, overlapping ones too, in the forms redact hides,
+// and all of a long repeated value against a longer line of it, as fast as
+// the line is long.
+func TestHiddenBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, line string
+		values     []string
+		want       string
+	}{
+		{"none", "abc", nil, "..."},
+		{"one", "xabcx", []string{"abc"}, ".###."},
+		{"overlapping", "ababa", []string{"aba"}, "#####"},
+		{"apart", "abxab", []string{"ab"}, "##.##"},
+		{"escaped", "q=a+b&p=a%20b", []string{"a b"}, "..###...#####"},
+		{"two values", "abcdef", []string{"bc", "cde"}, ".####."},
+	} {
+		var got strings.Builder
+		for _, h := range hiddenBytes(tc.line, tc.values) {
+			got.WriteByte(map[bool]byte{false: '.', true: '#'}[h])
+		}
+		if got.String() != tc.want {
+			t.Errorf("%s: %s, want %s", tc.name, got.String(), tc.want)
+		}
+	}
+	long := hiddenBytes(strings.Repeat("a", 64<<10), []string{strings.Repeat("a", 32<<10)})
+	if i := slices.Index(long, false); i >= 0 {
+		t.Errorf("a long repeated value leaves byte %d shown", i)
+	}
+}
+
+// BenchmarkHiddenBytes times hiddenBytes at the largest line a build log
+// keeps, against a value half as long that repeats in it at every byte.
+func BenchmarkHiddenBytes(b *testing.B) {
+	line, value := strings.Repeat("a", 64<<10), strings.Repeat("a", 32<<10)
+	for b.Loop() {
+		hiddenBytes(line, []string{value})
+	}
+}
+
+// TestHiddenValues checks the values a device line hides: every field
+// value, of at least minHiddenLen characters, each item of a list on its own.
+func TestHiddenValues(t *testing.T) {
+	t.Parallel()
+	got := hiddenValues(map[string]recipe.Value{
+		"city": {One: "Oslo Centrum"}, "unit": {One: "m"}, "tags": {Many: []string{"news", "ab", "weather"}},
+	})
+	slices.Sort(got)
+	if want := []string{"Oslo Centrum", "news", "weather"}; !slices.Equal(got, want) {
+		t.Errorf("hidden %v, want %v", got, want)
+	}
+}
+
+// TestBuildHidesWhatItRead checks that a build hides the field values it
+// read, not the ones stored by the time it fails: a save during the build
+// does not change what its line hides.
+func TestBuildHidesWhatItRead(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.duringBuild = func() { h.setToken(t, "trout-fish") }
+	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cands, err := h.s.candidates(t.Context())
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("candidates %+v, %v", cands, err)
+	}
+	images, log, _, err := h.s.build(t.Context(), cands[0].target, version{})
+	if err == nil || images != nil || !slices.Equal(log.hidden, []string{"hunter2"}) || !slices.Equal(log.secrets, []string{"hunter2"}) {
+		t.Errorf("build: %v, %d images, hidden %v, secrets %v; want a failure hiding the value it read", err, len(images), log.hidden, log.secrets)
 	}
 }
 
@@ -830,7 +950,8 @@ func TestRenderMissingRecipeDir(t *testing.T) {
 
 // TestRenderRedactsSecrets checks that the value of a secret field never
 // reaches the stored error or log, though a transform or a failed fetch
-// printed it, and that the rest of the line is kept.
+// printed it, that the log keeps the rest of the line, and that the error
+// keeps it with the URL cut to its host.
 func TestRenderRedactsSecrets(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -845,7 +966,7 @@ func TestRenderRedactsSecrets(t *testing.T) {
 	if strings.Contains(r.Error, "hunter2") || strings.Contains(r.Log, "hunter2") {
 		t.Fatalf("secret stored: error %q, log %q", r.Error, r.Log)
 	}
-	if want := "trmnlp: GET https://api.example/?key=[redacted] failed: 401"; r.Error != want {
+	if want := "trmnlp: GET https://api.example"; r.Error != want {
 		t.Errorf("error = %q, want %q", r.Error, want)
 	}
 	if !strings.Contains(r.Log, "fetching https://api.example/?key=[redacted]\n") {

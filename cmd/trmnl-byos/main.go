@@ -194,14 +194,15 @@ func serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("sweep leftovers: %w", err)
 	}
 
-	// A settings save through the API or the web UI wakes the scheduler, so
-	// what it makes due is built now. The CLI is another process, and its
-	// changes wait for the scheduler's next check.
+	// A change that may make a render due wakes the scheduler, so what it
+	// makes due is built now, whichever front end made it. The CLI is
+	// another process, and its changes wait for the scheduler's next check.
 	wake := scheduler.NewWaker()
+	client.OnChange = wake.Wake
 	mux := http.NewServeMux()
 	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
-	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Zone: zone, Rebuild: wake.Wake}).Register(mux)
-	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Secrets: key, Rebuild: wake.Wake}).Register(mux)
+	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
+	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Secrets: key}).Register(mux)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,

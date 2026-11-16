@@ -26,8 +26,12 @@ var (
 // friendly_id the project's trmnl.device has, if it has one, and the
 // headline pushed to the instance, if there is one. It fails while
 // h.failFile exists, and fails if a secret reached the project's files.
+// While h.fetchFail is set, it answers as for a failed data fetch.
 func (h *harness) fakeRenderer(w http.ResponseWriter, r *http.Request) {
 	h.builds.Add(1)
+	if h.duringBuild != nil {
+		h.duringBuild()
+	}
 	if h.down.Load() {
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 		return
@@ -39,6 +43,19 @@ func (h *harness) fakeRenderer(w http.ResponseWriter, r *http.Request) {
 	job, files, err := readFakeRequest(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if h.fetchFail.Load() {
+		url := "https://api.example/forecast"
+		if h.fetchURL != "" {
+			url = strings.ReplaceAll(h.fetchURL, "{{token}}", job.Env["FIELD_0"])
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		tw := tar.NewWriter(w)
+		addFake(tw, "build.log", "warning: HTTP 401 from "+url+" — Unauthorized\nDone!\n")
+		addFake(tw, "fetch_failed", "")
+		_ = tw.Close()
 		return
 	}
 

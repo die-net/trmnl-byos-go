@@ -76,7 +76,7 @@ func (s *Shim) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if buildErr != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 	}
-	if err := writeResult(w, dir, buildErr == nil); err != nil {
+	if err := writeResult(w, dir, buildErr == nil, errors.Is(buildErr, ErrFetchFailed)); err != nil {
 		slog.Warn("render: write result", "err", err)
 	}
 }
@@ -195,12 +195,22 @@ func (s *Shim) build(ctx context.Context, dir string, job Job) error {
 			return fmt.Errorf("%w: no %s.png", ErrBuildFailed, layout)
 		}
 	}
+	// trmnlp swallows a failed data fetch: it prints a warning, draws the
+	// screens from empty or error data, and exits 0. It marks the failure
+	// in its cache, which is this build's own, so the screens are not sent.
+	failed, err := filepath.Glob(filepath.Join(dir, "cache", "trmnl", "state", "*.fetch_failed"))
+	if err != nil {
+		return fmt.Errorf("look for a failed fetch: %w", err)
+	}
+	if len(failed) > 0 {
+		return ErrFetchFailed
+	}
 	return nil
 }
 
 // writeResult streams a tar of the build log, and of the PNGs when the
-// build succeeded.
-func writeResult(w io.Writer, dir string, withPNGs bool) error {
+// build succeeded, or a fetchFailedMember when its data fetch failed.
+func writeResult(w io.Writer, dir string, withPNGs, fetchFailed bool) error {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return fmt.Errorf("open build dir: %w", err)
@@ -217,6 +227,11 @@ func writeResult(w io.Writer, dir string, withPNGs bool) error {
 	}
 	for i, file := range files {
 		if err := addResultFile(tw, root, names[i], file); err != nil {
+			return err
+		}
+	}
+	if fetchFailed {
+		if err := tw.WriteHeader(&tar.Header{Name: fetchFailedMember, Mode: 0o600, Typeflag: tar.TypeReg}); err != nil {
 			return err
 		}
 	}
