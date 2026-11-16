@@ -96,8 +96,11 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	dev := c.dev
 	if problem := device.OverrideProblem(&dev); problem != "" {
 		// Resolve falls back to what the firmware reports, so the device
-		// is not stuck. The device's JSON shows the problem too.
-		slog.Warn("display: ignoring the device's profile override", "mac", dev.Mac, "problem", problem)
+		// is not stuck. The device's JSON shows the problem for as long as
+		// it lasts, so it is logged once per process, not at every wake.
+		if _, seen := s.overrideWarned.LoadOrStore(fmt.Sprintf("%d %s", dev.ID, problem), struct{}{}); !seen {
+			slog.Warn("display: ignoring the device's profile override", "mac", dev.Mac, "problem", problem)
+		}
 	}
 
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")

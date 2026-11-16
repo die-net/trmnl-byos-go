@@ -93,7 +93,7 @@ func addFirmwareDevice(t *testing.T, tu *testUI, friendly, name, model, version 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := firmware.SetPolicy(t.Context(), tu.db, friendly, firmware.Policy{UpdatesEnabled: &updates}); err != nil {
+	if _, err := device.Update(t.Context(), tu.db, friendly, device.Change{UpdatesEnabled: &updates}); err != nil {
 		t.Fatal(err)
 	}
 	return dev.ID

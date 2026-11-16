@@ -13,6 +13,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
 )
 
@@ -181,18 +182,18 @@ func firmwareDevice(ctx context.Context, args []string, out io.Writer) error {
 	pin := fs.String("pin", "", "a version for the device to stay on, or none to clear the pin")
 	first, rest := splitID(args)
 	_ = fs.Parse(rest) // ExitOnError exits on a parse error.
-	device := first
-	if device == "" && fs.NArg() == 1 {
-		device = fs.Arg(0)
+	name := first
+	if name == "" && fs.NArg() == 1 {
+		name = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		device = ""
+		name = ""
 	}
-	var p firmware.Policy
+	var c device.Change
 	switch *updates {
 	case "":
 	case "on", "off":
 		on := *updates == "on"
-		p.UpdatesEnabled = &on
+		c.UpdatesEnabled = &on
 	default:
 		return fmt.Errorf("-updates %q is not on or off", *updates)
 	}
@@ -201,9 +202,13 @@ func firmwareDevice(ctx context.Context, args []string, out io.Writer) error {
 		if v == "none" {
 			v = ""
 		}
-		p.Pin = &v
+		v, err := firmware.CleanPin(v)
+		if err != nil {
+			return err
+		}
+		c.FwPin = &v
 	}
-	if device == "" || (p.UpdatesEnabled == nil && p.Pin == nil) {
+	if name == "" || (c.UpdatesEnabled == nil && c.FwPin == nil) {
 		return errors.New("usage: trmnl-byos firmware device [-data dir] [-updates on|off] [-pin version|none] <friendly ID or MAC>")
 	}
 	client, err := openDB(ctx, *data)
@@ -211,7 +216,7 @@ func firmwareDevice(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	dev, err := firmware.SetPolicy(ctx, client, device, p)
+	dev, err := device.Update(ctx, client, name, c)
 	if err != nil {
 		return err
 	}

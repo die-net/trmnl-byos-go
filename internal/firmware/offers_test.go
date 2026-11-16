@@ -149,7 +149,7 @@ func TestDeviceOffers(t *testing.T) {
 			fw := f.add("1.8.19")
 			f.start(fw)
 			f.setVersion(canaryID, "1.8.19")
-			if _, err := SetPolicy(f.t.Context(), f.client, otherID, Policy{UpdatesEnabled: ptr(false)}); err != nil {
+			if _, err := device.Update(f.t.Context(), f.client, otherID, device.Change{UpdatesEnabled: ptr(false)}); err != nil {
 				f.t.Fatal(err)
 			}
 			return fw, otherID
@@ -158,7 +158,7 @@ func TestDeviceOffers(t *testing.T) {
 			fw := f.add("1.8.19")
 			f.start(fw)
 			f.setVersion(canaryID, "1.8.19")
-			if _, err := SetPolicy(f.t.Context(), f.client, otherID, Policy{Pin: ptr("1.8.17")}); err != nil {
+			if _, err := device.Update(f.t.Context(), f.client, otherID, device.Change{FwPin: ptr("1.8.17")}); err != nil {
 				f.t.Fatal(err)
 			}
 			return fw, otherID

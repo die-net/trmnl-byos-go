@@ -52,7 +52,7 @@ func addCanaryDevice(t *testing.T, tu *testUI, name string) {
 		t.Fatal(err)
 	}
 	updates := true
-	if _, err := firmware.SetPolicy(t.Context(), tu.db, canaryID, firmware.Policy{UpdatesEnabled: &updates}); err != nil {
+	if _, err := device.Update(t.Context(), tu.db, canaryID, device.Change{UpdatesEnabled: &updates}); err != nil {
 		t.Fatal(err)
 	}
 }

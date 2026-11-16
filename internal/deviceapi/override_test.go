@@ -64,6 +64,15 @@ func TestDisplayProfileOverride(t *testing.T) {
 	if got := shown(); got != image {
 		t.Errorf("a stale override: shown %q, want the reported model's render %q", got, image)
 	}
+	// It is warned about once, not at every wake.
+	for range 3 {
+		shown()
+	}
+	warned := 0
+	ts.srv.overrideWarned.Range(func(any, any) bool { warned++; return true })
+	if warned != 1 {
+		t.Errorf("%d warnings recorded for one stale override over four wakes, want 1", warned)
+	}
 }
 
 // TestBlockedScreenProfileOverride checks that the Blocked screens a
