@@ -69,7 +69,7 @@ func TestDisplayOffersFirmware(t *testing.T) {
 	if _, err := firmware.StartRollout(t.Context(), ts.db, fw.ID, testMAC, ts.now); err == nil {
 		t.Fatal("rollout started for a canary with updates off")
 	}
-	if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
+	if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{UpdatesEnabled: ptr(true)}); err != nil {
 		t.Fatal(err)
 	}
 	m = ts.getJSON(t, "/api/display", firmwareDisplayHeaders(token, "1.8.17"))
@@ -113,17 +113,17 @@ func TestDisplayOffersFirmware(t *testing.T) {
 	// Pinned, updates off, and a canceled rollout each stop the offer.
 	for name, stop := range map[string]func(){
 		"pinned": func() {
-			if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{Pin: ptr("1.8.17")}); err != nil {
+			if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{FwPin: ptr("1.8.17")}); err != nil {
 				t.Fatal(err)
 			}
 		},
 		"updates off": func() {
-			if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{Pin: ptr(""), UpdatesEnabled: ptr(false)}); err != nil {
+			if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{FwPin: ptr(""), UpdatesEnabled: ptr(false)}); err != nil {
 				t.Fatal(err)
 			}
 		},
 		"canceled": func() {
-			if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
+			if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{UpdatesEnabled: ptr(true)}); err != nil {
 				t.Fatal(err)
 			}
 			if err := firmware.CancelRollout(t.Context(), ts.db, fw.ID); err != nil {
@@ -164,7 +164,7 @@ func TestDisplayFirmwareOnlyToTheCanary(t *testing.T) {
 		t.Fatalf("setup = %v", setup)
 	}
 	for _, mac := range []string{testMAC, otherMAC} {
-		if _, err := firmware.SetPolicy(t.Context(), ts.db, mac, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
+		if _, err := device.Update(t.Context(), ts.db, mac, device.Change{UpdatesEnabled: ptr(true)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -225,7 +225,7 @@ func TestFirmwareDownloadHeaders(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t)
 	ts.register(t)
-	if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
+	if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{UpdatesEnabled: ptr(true)}); err != nil {
 		t.Fatal(err)
 	}
 	body := bytes.Repeat([]byte("0123456789abcdef"), 1000)
@@ -254,7 +254,7 @@ func TestDisplayFirmwareOfferCap(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t)
 	token := ts.register(t)
-	if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
+	if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{UpdatesEnabled: ptr(true)}); err != nil {
 		t.Fatal(err)
 	}
 	ts.getJSON(t, "/api/display", firmwareDisplayHeaders(token, "1.8.17"))
@@ -282,7 +282,7 @@ func TestDisplayNoModelHeaderNoOffer(t *testing.T) {
 	ts := newTestServer(t)
 	token := ts.register(t)
 	fw := ts.addFirmware(t, []byte("image"))
-	if _, err := firmware.SetPolicy(t.Context(), ts.db, testMAC, firmware.Policy{UpdatesEnabled: ptr(true)}); err != nil {
+	if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{UpdatesEnabled: ptr(true)}); err != nil {
 		t.Fatal(err)
 	}
 	// Record 1.8.17 as the device's version, so the next request changes it.

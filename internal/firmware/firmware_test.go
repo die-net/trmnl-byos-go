@@ -53,7 +53,7 @@ func (f *fixture) device(friendly, mac, model, version string) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if _, err := SetPolicy(ctx, f.client, friendly, Policy{UpdatesEnabled: ptr(true)}); err != nil {
+	if _, err := device.Update(ctx, f.client, friendly, device.Change{UpdatesEnabled: ptr(true)}); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -298,7 +298,7 @@ func TestStartRollout(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
 			f.device(canaryID, "AA:00:00:00:00:01", tc.model, tc.version)
-			if _, err := SetPolicy(t.Context(), f.client, canaryID, Policy{UpdatesEnabled: &tc.updates, Pin: &tc.pin}); err != nil {
+			if _, err := device.Update(t.Context(), f.client, canaryID, device.Change{UpdatesEnabled: &tc.updates, FwPin: &tc.pin}); err != nil {
 				t.Fatal(err)
 			}
 			fw := f.add("1.8.19")
@@ -338,24 +338,22 @@ func TestStartRolloutErrors(t *testing.T) {
 	}
 }
 
-func TestSetPolicy(t *testing.T) {
+func TestCleanPin(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.device(canaryID, "AA:00:00:00:00:01", testModel, "1.8.17")
-	dev, err := SetPolicy(t.Context(), f.client, canaryID, Policy{Pin: ptr("1.08.17")})
-	if err != nil || dev.FwPin != "1.8.17" || dev.UpdatesEnabled != 1 {
-		t.Fatalf("pin: %+v, %v", dev, err)
-	}
-	dev, err = SetPolicy(t.Context(), f.client, canaryID, Policy{UpdatesEnabled: ptr(false), Pin: ptr("")})
-	if err != nil || dev.FwPin != "" || dev.UpdatesEnabled != 0 {
-		t.Fatalf("clear: %+v, %v", dev, err)
-	}
-	got, _ := device.FindDevice(t.Context(), f.client.Read, canaryID)
-	if got.FwPin != "" || got.UpdatesEnabled != 0 {
-		t.Errorf("stored %+v", got)
-	}
-	if _, err := SetPolicy(t.Context(), f.client, canaryID, Policy{Pin: ptr("latest")}); !errors.Is(err, errkind.ErrInvalid) {
-		t.Errorf("bad pin: %v", err)
+	for _, tc := range []struct {
+		in, want string
+		invalid  bool
+	}{
+		{"1.08.17", "1.8.17", false},
+		{"1.8.17", "1.8.17", false},
+		{"", "", false},
+		{"latest", "", true},
+		{"1.8.", "", true},
+	} {
+		got, err := CleanPin(tc.in)
+		if got != tc.want || errors.Is(err, errkind.ErrInvalid) != tc.invalid {
+			t.Errorf("CleanPin(%q) = %q, %v; want %q, invalid %v", tc.in, got, err, tc.want, tc.invalid)
+		}
 	}
 }
 
@@ -434,7 +432,7 @@ func TestOffer(t *testing.T) {
 			if tc.asksOther {
 				asks = otherID
 			}
-			if _, err := SetPolicy(t.Context(), f.client, asks, Policy{UpdatesEnabled: ptr(!tc.updatesOff), Pin: &tc.pin}); err != nil {
+			if _, err := device.Update(t.Context(), f.client, asks, device.Change{UpdatesEnabled: ptr(!tc.updatesOff), FwPin: &tc.pin}); err != nil {
 				t.Fatal(err)
 			}
 			d, err := device.FindDevice(t.Context(), f.client.Read, asks)

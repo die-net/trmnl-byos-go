@@ -506,33 +506,10 @@ func Get(ctx context.Context, q *db.Queries, id int64) (Entry, error) {
 	return newEntry(&r), nil
 }
 
-// Policy is a change to a device's firmware policy. A nil field is left as
-// it is.
-type Policy struct {
-	// UpdatesEnabled turns on or off offering the device firmware.
-	UpdatesEnabled *bool
-	// Pin is a version the device stays on, or "" to clear the pin.
-	Pin *string
-}
-
-// SetPolicy changes the policy of the device named by its friendly ID or
-// MAC, and returns the device.
-func SetPolicy(ctx context.Context, client *db.Client, name string, p Policy) (db.Device, error) {
-	c := device.Change{UpdatesEnabled: p.UpdatesEnabled}
-	if p.Pin != nil {
-		pin, err := CleanPin(*p.Pin)
-		if err != nil {
-			return db.Device{}, err
-		}
-		c.FwPin = &pin
-	}
-	return device.Update(ctx, client, name, c)
-}
-
 // CleanPin returns a firmware pin as it is stored, a version in its
 // canonical form, or "" for none, and an error of kind errkind.ErrInvalid
-// for one that is not a version. A caller building a device.Change with a
-// pin passes it through here.
+// for one that is not a version. The API, the web UI and the command line
+// pass a pin through here before they put it in a device.Change.
 func CleanPin(pin string) (string, error) {
 	if pin == "" {
 		return "", nil

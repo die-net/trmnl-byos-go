@@ -63,6 +63,11 @@ type Server struct {
 	// if image expiry deleted it, or if it was dropped to stay within
 	// maxScreens.
 	screens map[string]string
+
+	// overrideWarned holds each device ID and profile problem a warning was
+	// logged for, so a stale override is logged once per process and not
+	// at every wake. The device's JSON shows it for as long as it lasts.
+	overrideWarned sync.Map
 }
 
 // New returns a Server that keeps state in client and images in images.
