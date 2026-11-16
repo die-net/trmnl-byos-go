@@ -137,6 +137,11 @@ type deviceForm struct {
 	// Seen is the device.SettingsState of the settings stored when the page
 	// was made, which the form posts back.
 	Seen string
+	// Device is the row ID of the device the page showed, which the form
+	// posts back. A friendly ID can pass to a newer device once its device
+	// is deleted, and this is how a refused save tells that from a change
+	// to the same device's settings.
+	Device int64
 	// Problem says why the stored profile or palette is ignored, as
 	// device.OverrideProblem does, or is "".
 	Problem string
@@ -466,7 +471,9 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		Palette: r.PostForm.Get("palette"),
 		Seen:    r.PostForm.Get("settings_state"),
 	}
-	if form.Seen == "" {
+	seenDevice, err := strconv.ParseInt(r.PostForm.Get("seen_device"), 10, 64)
+	form.Device = seenDevice
+	if form.Seen == "" || err != nil {
 		// The post says nothing of what its page showed, so its values
 		// cannot be checked against what is stored. The page sent back has
 		// the stored settings, not the posted ones, so its Save cannot
@@ -474,7 +481,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, nil, reloadText, "", "")
 		return
 	}
-	err := s.saveDevice(r, dev.FriendlyID, &form)
+	err = s.saveDevice(r, dev.FriendlyID, &form)
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/devices/"+dev.FriendlyID, http.StatusSeeOther)
@@ -482,7 +489,9 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		s.renderNotFound(w, r, noDevice)
 	case errors.Is(err, device.ErrSettingsChanged):
 		// The page says what is stored now, and its form has the typed
-		// values and the current state, so saving again applies them.
+		// values and the current state, so saving again applies them. If
+		// the friendly ID is another device's now, renderDevice drops the
+		// typed values instead.
 		s.renderDevice(w, r, http.StatusConflict, dev.FriendlyID, &form, settingsChanged, "", "")
 	case errors.Is(err, errkind.ErrInvalid):
 		msg := strings.TrimPrefix(err.Error(), errkind.ErrInvalid.Error()+": ")
@@ -496,6 +505,12 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 // settingsChanged is what a refused save of the settings form says. The
 // page then lists what is stored now where it differs from the form.
 const settingsChanged = "This device's settings changed after the page loaded, so nothing was saved."
+
+// deviceReplaced is what a refused save says when the device its page
+// showed was deleted and a newer device got its friendly ID. The page then
+// has the newer device's settings, never the typed ones, so that saving
+// again cannot put the deleted device's settings on it.
+const deviceReplaced = "The device this page showed was deleted, and a new device has its ID now, so nothing was saved. The values below are the new device's."
 
 // saveDevice stores the form in one transaction, so a refused field changes
 // nothing, and a form whose page showed other settings than are stored now
@@ -625,6 +640,9 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	}
 	stored := deviceForm{Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin, Profile: dev.ProfileOverride, Palette: dev.PaletteOverride}
 	stale := form != nil && status == http.StatusConflict && msg == settingsChanged
+	if stale && form.Device != dev.ID {
+		form, stale, msg = nil, false, deviceReplaced
+	}
 	if form == nil {
 		form = &stored
 	}
@@ -649,12 +667,13 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	// and when a stale save was refused and the page says what is stored.
 	// A form refused for another reason keeps the state it posted: that
 	// state may not have been checked, and the next save must check it.
+	// The device's row ID goes with the state, for the same reason.
 	if stale {
 		msg = settingsChangedText(form, &stored)
 		form.Seen = ""
 	}
 	if form.Seen == "" {
-		form.Seen = device.SettingsState(dev)
+		form.Seen, form.Device = device.SettingsState(dev), dev.ID
 	}
 	for i := range catalog {
 		// A rollout at the canary stage becomes blocked with its canary.
