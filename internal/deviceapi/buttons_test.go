@@ -182,10 +182,22 @@ func (ts *testServer) lastImage(t *testing.T, b buttonDevice) string {
 	return img
 }
 
+// lastRate returns the device's stored last_refresh_rate_sent, the interval
+// the firmware keeps until an answer it applies a refresh_rate from.
+func (ts *testServer) lastRate(t *testing.T, b buttonDevice) float64 {
+	t.Helper()
+	st, err := ts.db.Read.GetDeviceStatus(t.Context(), b.devID)
+	if err != nil || st.LastRefreshRateSent == nil {
+		t.Fatalf("device state: %+v, %v", st, err)
+	}
+	return float64(*st.LastRefreshRateSent)
+}
+
 // TestDisplaySpecialFunction checks the answer to each special function a
 // device can ask for, with true for the configured one and with a name, and
 // that every normal answer carries the configured function, rewind by
-// default.
+// default. Each answer but sleep sends and records the interval the device
+// stored from its last normal answer, since the firmware applies no other.
 func TestDisplaySpecialFunction(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t)
@@ -206,11 +218,28 @@ func TestDisplaySpecialFunction(t *testing.T) {
 		t.Fatalf("last image %q, want item 1's render", got)
 	}
 
+	// Item 1 started a minute ago and lasts 10, so the device stored 540 s.
+	if m["refresh_rate"] != float64(540) {
+		t.Fatalf("normal answer: %v; want refresh 540", m)
+	}
+	// stored is the interval the device keeps, so a special function other
+	// than sleep is answered and recorded with it.
+	var stored float64
 	ask := func(value string) map[string]any {
 		t.Helper()
+		stored = ts.lastRate(t, b)
 		h := displayHeaders(testMAC, b.key) // A button wake, as a double-click is.
 		h["special_function"] = value
 		return ts.getJSON(t, "/api/display", h)
+	}
+	kept := func(name string, got map[string]any) {
+		t.Helper()
+		if got["refresh_rate"] != stored {
+			t.Errorf("%s: refresh %v, want %v, the interval the device stored", name, got["refresh_rate"], stored)
+		}
+		if r := ts.lastRate(t, b); r != stored {
+			t.Errorf("%s: recorded refresh %v, want %v", name, r, stored)
+		}
 	}
 	// Without an image, the device keeps what it shows and the cursor stays.
 	for _, tc := range []struct {
@@ -225,9 +254,10 @@ func TestDisplaySpecialFunction(t *testing.T) {
 	} {
 		got := ask(tc.ask)
 		if got["status"] != float64(0) || got["action"] != tc.action || got["image_url"] != nil || got["filename"] != nil ||
-			got["special_function"] != "rewind" || got["refresh_rate"] != float64(900) {
-			t.Errorf("%s: %v; want action %s, no image, special_function rewind and refresh 900", tc.ask, got, tc.action)
+			got["special_function"] != "rewind" {
+			t.Errorf("%s: %v; want action %s, no image and special_function rewind", tc.ask, got, tc.action)
 		}
+		kept(tc.ask, got)
 		if i, started := ts.cursor(t, b); i != 1 || started != ts.now.Add(-time.Minute).Unix() {
 			t.Errorf("%s moved the cursor to item %d started %d", tc.ask, i, started)
 		}
@@ -249,9 +279,10 @@ func TestDisplaySpecialFunction(t *testing.T) {
 	want := ts.identifyScreen(t, "Kitchen")
 	for _, v := range []string{"identify", "IDENTIFY"} {
 		got := ask(v)
-		if got["action"] != "identify" || got["filename"] != want || got["image_url"] == nil || got["refresh_rate"] != float64(900) || got["special_function"] != "rewind" {
+		if got["action"] != "identify" || got["filename"] != want || got["image_url"] == nil || got["special_function"] != "rewind" {
 			t.Errorf("%s: %v; want the Identify screen %s", v, got, want)
 		}
+		kept(v, got)
 		ts.fetchImage(t, got["image_url"].(string), want)
 		if i, _ := ts.cursor(t, b); i != 1 {
 			t.Errorf("%s moved the cursor to item %d", v, i)
@@ -275,27 +306,36 @@ func TestDisplaySpecialFunction(t *testing.T) {
 	if i, started := ts.cursor(t, b); i != 0 || started != ts.now.Unix() {
 		t.Errorf("restart_playlist left the cursor on item %d started %d", i, started)
 	}
+	kept("restart_playlist", m)
 
 	// The configured function is what true asks for, and is sent on every
 	// normal answer, in the same answer to a name that asks for another.
 	configured := "identify"
 	ts.setDevice(t, device.Change{SpecialFunction: &configured})
-	if m := ask("true"); m["action"] != "identify" || m["special_function"] != "identify" {
-		t.Errorf("true with identify configured: %v", m)
+	if got := ask("true"); got["action"] != "identify" || got["special_function"] != "identify" {
+		t.Errorf("true with identify configured: %v", got)
 	}
-	if m := ask("add_wifi"); m["action"] != "add_wifi" || m["special_function"] != "identify" {
-		t.Errorf("add_wifi with identify configured: %v", m)
+	if got := ask("add_wifi"); got["action"] != "add_wifi" || got["special_function"] != "identify" {
+		t.Errorf("add_wifi with identify configured: %v", got)
 	}
-	if m := ts.getJSON(t, "/api/display", timer); m["special_function"] != "identify" || m["action"] != nil {
-		t.Errorf("normal answer with identify configured: %v", m)
+	if got := ts.getJSON(t, "/api/display", timer); got["special_function"] != "identify" || got["action"] != nil {
+		t.Errorf("normal answer with identify configured: %v", got)
 	}
-	// With none configured, true asks for nothing and is a normal wake.
+	// With none configured since the device saved a function, true is that
+	// saved function, which draws nothing for an answer without its action.
+	// So it is a timer wake: the cursor stays, and the device keeps its
+	// interval.
 	none := "none"
 	ts.setDevice(t, device.Change{SpecialFunction: &none})
 	ts.cursorAt(t, b, 0)
-	if m := ask("true"); m["action"] != nil || m["special_function"] != "none" || m["filename"] != b.images[1] {
-		t.Errorf("true with none configured: %v; want a normal press", m)
+	m = ask("true")
+	if m["action"] != nil || m["special_function"] != "none" || m["filename"] != b.images[0] {
+		t.Errorf("true with none configured: %v; want item 0 again, as a timer wake", m)
 	}
+	if i, _ := ts.cursor(t, b); i != 0 {
+		t.Errorf("true with none configured moved the cursor to item %d", i)
+	}
+	kept("true with none configured", m)
 }
 
 // TestDisplaySpecialFunctionSleep checks the refresh_rate of the sleep
@@ -341,8 +381,9 @@ func TestDisplaySpecialFunctionSleep(t *testing.T) {
 
 // TestDisplaySpecialFunctionAsleep checks that a restart_playlist in the
 // device's sleep window wakes it for one screen, as a press does: it is
-// shown the first item, with the cursor there, and its next timer wake,
-// still in the window, gets the Sleeping screen and leaves the cursor.
+// shown the first item, with the cursor there. The firmware applies no
+// refresh_rate to it, so the answer sends and records the Sleeping answer's
+// rate, which is what the device sleeps from the double-click.
 func TestDisplaySpecialFunctionAsleep(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t)
@@ -351,23 +392,25 @@ func TestDisplaySpecialFunctionAsleep(t *testing.T) {
 	window := "23:00-06:30"
 	ts.setDevice(t, device.Change{Sleep: &window})
 	ts.cursorAt(t, b, 2)
+	timer := displayHeaders(testMAC, b.key)
+	timer["Update-Source"] = "timer"
+	m := ts.getJSON(t, "/api/display", timer)
+	if m["filename"] != ts.sleepingScreen(t, "06:30") || m["refresh_rate"] != float64(7*3600) {
+		t.Fatalf("the timer wake in the window: %v; want the Sleeping screen and 25200 s", m)
+	}
+
+	ts.now = ts.now.Add(10 * time.Minute)
 	h := displayHeaders(testMAC, b.key)
 	h["special_function"] = "restart_playlist"
-	m := ts.getJSON(t, "/api/display", h)
-	if m["action"] != "restart_playlist" || m["filename"] != b.images[0] {
-		t.Errorf("%v; want the first item", m)
+	m = ts.getJSON(t, "/api/display", h)
+	if m["action"] != "restart_playlist" || m["filename"] != b.images[0] || m["refresh_rate"] != float64(7*3600) {
+		t.Errorf("%v; want the first item and the Sleeping answer's 25200 s", m)
 	}
 	if i, started := ts.cursor(t, b); i != 0 || started != ts.now.Unix() {
 		t.Errorf("the cursor is at item %d started %d, want item 0 started now", i, started)
 	}
-	ts.now = ts.now.Add(time.Minute)
-	timer := displayHeaders(testMAC, b.key)
-	timer["Update-Source"] = "timer"
-	if m = ts.getJSON(t, "/api/display", timer); m["filename"] != ts.sleepingScreen(t, "06:30") {
-		t.Errorf("the timer wake after it: %v; want the Sleeping screen", m)
-	}
-	if i, _ := ts.cursor(t, b); i != 0 {
-		t.Errorf("the timer wake moved the cursor to item %d", i)
+	if r := ts.lastRate(t, b); r != float64(7*3600) {
+		t.Errorf("recorded refresh %v, want the 25200 s the device keeps", r)
 	}
 }
 
