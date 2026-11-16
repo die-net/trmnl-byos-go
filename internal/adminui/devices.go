@@ -707,10 +707,11 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		RemoveError: removeMsg,
 		Seen:        newStandingView(&st),
 	}
-	zone := device.ZoneOf(dev.TimeZone, s.zone).String()
+	deviceZone := device.ZoneOf(dev.TimeZone, s.zone)
+	zone := deviceZone.String()
 	d.Zone = inUse(dev.TimeZone, zone, "does not load on this server")
 	d.Locale = inUse(dev.Locale, device.LocaleOf(dev.Locale, serverLocale), "is not a locale the server has")
-	d.ZoneNote = zoneNote{Page: s.zone.String(), Device: zone, Same: sameZone(s.zone, device.ZoneOf(dev.TimeZone, s.zone), now)}
+	d.ZoneNote = zoneNote{Page: s.zone.String(), Device: zone, Same: sameZone(s.zone, deviceZone, now)}
 	order := make([]int64, len(linked))
 	for i := range linked {
 		order[i] = linked[i].ID
@@ -742,7 +743,7 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	// The playlist the device would show at its next wake, none if it is
 	// asleep then, and its items that are shown then. Its schedules and sleep
 	// window are read in its own time zone.
-	at := now.Add(playlist.WakeSlack).In(device.ZoneOf(dev.TimeZone, s.zone))
+	at := now.Add(playlist.WakeSlack).In(deviceZone)
 	lists, groups := playlist.DeviceLists(items)
 	if c := playlist.Choose(lists, playlist.Awake(dev.SleepStart, dev.SleepEnd), at); c >= 0 {
 		for i := range groups[c] {

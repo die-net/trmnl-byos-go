@@ -428,18 +428,24 @@ func TestDevicePlaylist(t *testing.T) {
 	}
 }
 
-// TestDevicePlaylistZone checks that the device page reads item schedules in
-// the server's zone. The test clock reads 19:16 there and 13:46 in UTC.
+// TestDevicePlaylistZone checks that the device page reads item schedules on
+// the device's clock: in the server's zone for a device that sets none, and
+// in the device's own otherwise. The test clock reads 19:16 in the server's
+// zone and 13:46 in UTC.
 func TestDevicePlaylistZone(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	for _, tc := range []struct {
-		name       string
+		name string
+		// zone is the device's time zone, or "" for the server's.
+		zone       string
 		start, end int64
 		shown      bool
 	}{
-		{"open in the server's zone", 19 * 60, 20 * 60, true},
-		{"open in UTC only", 13 * 60, 14 * 60, false},
+		{"open in the server's zone", "", 19 * 60, 20 * 60, true},
+		{"open in UTC only", "", 13 * 60, 14 * 60, false},
+		{"device in UTC, open in UTC", "UTC", 13 * 60, 14 * 60, true},
+		{"device in UTC, open in the server's zone only", "UTC", 19 * 60, 20 * 60, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -448,6 +454,9 @@ func TestDevicePlaylistZone(t *testing.T) {
 				t.Fatalf("the test clock reads %s in the server's zone, want 19:16", got)
 			}
 			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
+			if _, err := device.Update(ctx, tu.db, testMAC, device.Change{TimeZone: &tc.zone}); err != nil {
+				t.Fatal(err)
+			}
 			recipe, err := tu.db.Write.CreateRecipe(ctx, db.CreateRecipeParams{Name: "weather", Source: "x", RefreshInterval: 15, InstalledAt: 1})
 			if err != nil {
 				t.Fatal(err)
