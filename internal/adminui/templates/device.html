@@ -27,10 +27,11 @@
 </section>
 </div>
 <div class="detail-side">
-<section class="panel" aria-labelledby="settings-title">
+<section class="panel" id="settings" aria-labelledby="settings-title">
 <h2 id="settings-title">Settings</h2>
 {{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
-<form method="post" action="/devices/{{.ID}}">
+<form method="post" action="/devices/{{.ID}}#settings">
+<input type="hidden" name="settings_state" value="{{.Form.Seen}}">
 <div class="field">
 <label for="name">Name</label>
 <input id="name" name="name" type="text" value="{{.Form.Name}}" autocomplete="off" placeholder="{{.ID}}">
@@ -44,6 +45,20 @@
 {{range .Form.Pins}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Value}}</option>
 {{end}}</select>
 <p class="hint">A pinned device is offered no firmware.</p>
+</div>
+<div class="field">
+<label for="profile">Panel profile</label>
+<select id="profile" name="profile" aria-describedby="profile-hint">
+{{range .Form.Profiles}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+<p class="hint" id="profile-hint">Set this when the panel is not the one the firmware reports, such as a 4-color OG on firmware 1.8.10 or older. It changes what is drawn: the size and palettes of this device's screens. The image size limit never goes above the one for the model the device reports, and firmware updates stay on that model.</p>
+</div>
+<div class="field">
+<label for="palette">Palette</label>
+<select id="palette" name="palette" aria-describedby="palette-hint">
+{{range .Form.Palettes}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+<p class="hint" id="palette-hint">Used when an instance asks for no palette. These are the palettes of {{.Form.PaletteModel}}. To pick a palette of another profile, save the profile first.</p>
 </div>
 <button class="btn btn-primary" type="submit">Save</button>
 </form>

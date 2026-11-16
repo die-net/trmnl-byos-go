@@ -156,7 +156,7 @@ func TestDeviceDetail(t *testing.T) {
 		`<time datetime="1970-01-12T13:56:40Z">12 Jan 1970 19:26 TST</time>`,
 		`<time datetime="1970-01-01T00:00:01Z">1 Jan 1970 05:30 TST</time>`,
 		"<dd>3.90 V</dd>", "<dd>-70 dBm</dd>", "<dd>1.2 s</dd>", "<dd>button</dd>", "<dd>800 × 480</dd>",
-		`<form method="post" action="/devices/ABC123">`, "This device has no playlist items.",
+		`<form method="post" action="/devices/ABC123#settings">`, "This device has no playlist items.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q:\n%s", want, body)
@@ -238,6 +238,18 @@ func TestDevicePlaylistMoveTooBig(t *testing.T) {
 	}
 }
 
+// withState returns the form with the settings state a page of the device
+// with testMAC would post now.
+func withState(t *testing.T, tu *testUI, form url.Values) url.Values {
+	t.Helper()
+	dev, err := device.FindDevice(t.Context(), tu.db.Read, testMAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.Set("settings_state", device.SettingsState(&dev))
+	return form
+}
+
 func TestDeviceSettingsSave(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -256,7 +268,7 @@ func TestDeviceSettingsSave(t *testing.T) {
 			tu := newTestUI(t, Config{}, true)
 			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 			c := tu.signIn(t)
-			w := tu.post(t, c, "/devices/ABC123", tc.form)
+			w := tu.post(t, c, "/devices/ABC123", withState(t, tu, tc.form))
 			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/devices/ABC123" {
 				t.Fatalf("status %d to %q, want 303 to the device: %s", w.Code, w.Header().Get("Location"), w.Body)
 			}
@@ -300,7 +312,7 @@ func TestDeviceSettingsInvalid(t *testing.T) {
 			tu := newTestUI(t, Config{}, true)
 			addDevice(t, tu, testMAC, "ABC123", "Kitchen", 0)
 			c := tu.signIn(t)
-			w := tu.post(t, c, "/devices/ABC123", tc.form)
+			w := tu.post(t, c, "/devices/ABC123", withState(t, tu, tc.form))
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("status %d, want 400", w.Code)
 			}
@@ -373,7 +385,7 @@ func TestPinOptions(t *testing.T) {
 		t.Errorf("page lacks the pin list %q:\n%s", want, body)
 	}
 	// A pin that is no longer in the catalog stays selected.
-	if w := tu.post(t, c, "/devices/ABC123", url.Values{"fw_pin": {"1.7.0"}}); w.Code != http.StatusSeeOther {
+	if w := tu.post(t, c, "/devices/ABC123", withState(t, tu, url.Values{"fw_pin": {"1.7.0"}})); w.Code != http.StatusSeeOther {
 		t.Fatalf("status %d", w.Code)
 	}
 	body = tu.get(t, c, "/devices/ABC123").Body.String()
