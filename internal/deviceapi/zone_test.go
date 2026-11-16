@@ -1,10 +1,14 @@
 package deviceapi
 
 import (
+	"context"
+	"database/sql"
+	"sync/atomic"
 	"testing"
 	"time"
 	_ "time/tzdata" // So the zones the tests name load on any host.
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
@@ -131,5 +135,67 @@ func TestDisplayDeviceLocale(t *testing.T) {
 		if got == name {
 			t.Errorf("a device with locale ja was shown the %s render", locale)
 		}
+	}
+}
+
+// failLocale is a db.DBTX that fails a read of the locale setting while
+// fail is set, and passes every other query to the database.
+type failLocale struct {
+	db.DBTX
+	fail *atomic.Bool
+}
+
+// QueryRowContext fails a read of the locale setting by running it with a
+// context that is already canceled.
+func (f failLocale) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if f.fail.Load() && len(args) == 1 && args[0] == settings.KeyLocale {
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		ctx = canceled
+	}
+	return f.DBTX.QueryRowContext(ctx, query, args...)
+}
+
+// TestDisplayLocaleReadFails checks that a wake whose read of the server's
+// locale setting fails is answered with no image, so the device keeps its
+// screen, and does not move the cursor. Looking the render up under the
+// default locale instead would find none on a server set to de, and send
+// the Rendering screen over a good image.
+func TestDisplayLocaleReadFails(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t)
+	var fail atomic.Bool
+	ts.db.Read = db.New(failLocale{DBTX: ts.db.Reader, fail: &fail})
+	if err := settings.Set(t.Context(), ts.db, settings.KeyLocale, "de", ts.now); err != nil {
+		t.Fatal(err)
+	}
+	key, first, second := ts.playlistDevice(t)
+	imgFirst := ts.saveRenderAt(t, first, 0, "first", "", testZone.String(), "de")
+	imgSecond := ts.saveRenderAt(t, second, 0, "second", "", testZone.String(), "de")
+	h := displayHeaders(testMAC, key)
+	h["Update-Source"] = "button"
+	if m := ts.getJSON(t, "/api/display", h); m["filename"] != imgFirst {
+		t.Fatalf("first press: %v; want the first item's de render", m)
+	}
+	cursor := func() int64 {
+		t.Helper()
+		cur, err := ts.db.Read.GetDeviceCursor(t.Context(), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cur.ItemID
+	}
+	before := cursor()
+
+	fail.Store(true)
+	if m := ts.getJSON(t, "/api/display", h); m["image_url"] != nil || m["filename"] != nil {
+		t.Errorf("with the locale unreadable: %v; want no image", m)
+	}
+	fail.Store(false)
+	if got := cursor(); got != before {
+		t.Errorf("the cursor moved on a failed wake: item %d, was %d", got, before)
+	}
+	if m := ts.getJSON(t, "/api/display", h); m["filename"] != imgSecond {
+		t.Errorf("the next press: %v; want the second item's de render", m)
 	}
 }
