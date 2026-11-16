@@ -194,3 +194,48 @@ func TestDeviceZoneStaleZoneOnly(t *testing.T) {
 		t.Errorf("cleared zone: %q, want %q", got, want)
 	}
 }
+
+// TestDeviceSettingsLeftOut checks that a post that leaves a setting out
+// keeps it, as a form from a release without the field does. Only the
+// checkbox is read as off when it is left out, as a browser posts it.
+func TestDeviceSettingsLeftOut(t *testing.T) {
+	t.Parallel()
+	tu := newProfileUI(t)
+	zone, loc, pin, model, palette, on := "Europe/Berlin", "de", "1.8.19", "og_bwry", "color-4bwry", true
+	_, err := device.Update(t.Context(), tu.db, testMAC, device.Change{
+		TimeZone: &zone, Locale: &loc, FwPin: &pin, Profile: &model, Palette: &palette, UpdatesEnabled: &on,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := tu.signIn(t)
+	form := withState(t, tu, url.Values{"name": {"Hall"}})
+	for _, name := range []string{"fw_pin", "profile", "palette", "time_zone", "locale"} {
+		form.Del(name)
+	}
+	if w := tu.post(t, c, "/devices/ABC123", form); w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	dev := testDevice(t, tu)
+	if dev.Name != "Hall" || dev.TimeZone != zone || dev.Locale != loc || dev.FwPin != pin || dev.ProfileOverride != model || dev.PaletteOverride != palette {
+		t.Errorf("a setting the post left out changed: %+v", dev)
+	}
+	if dev.UpdatesEnabled != 0 {
+		t.Errorf("updates_enabled = %d, want 0 for a box left out", dev.UpdatesEnabled)
+	}
+	// A refused post shows what it left out as stored, so saving the page
+	// that comes back keeps it too.
+	form = withState(t, tu, url.Values{"name": {strings.Repeat("x", 65)}})
+	for _, name := range []string{"fw_pin", "profile", "palette", "time_zone", "locale"} {
+		form.Del(name)
+	}
+	w := tu.post(t, c, "/devices/ABC123", form)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", w.Code, w.Body)
+	}
+	for _, want := range []string{`name="time_zone" type="text" value="Europe/Berlin"`, `<option value="de" selected>`, `<option value="og_bwry" selected>`, `<option value="color-4bwry" selected>`, `<option value="1.8.19" selected>`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the refused page lacks the stored %q:\n%s", want, w.Body)
+		}
+	}
+}

@@ -71,6 +71,7 @@ func TestSettingsPage(t *testing.T) {
 			t.Errorf("page has inline %q, which the CSP refuses", bad)
 		}
 	}
+	wantOneScript(t, body)
 }
 
 func TestSaveSetting(t *testing.T) {

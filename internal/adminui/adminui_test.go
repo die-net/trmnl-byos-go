@@ -390,10 +390,8 @@ func TestStaticAndMarkup(t *testing.T) {
 		if strings.Contains(page, bad) {
 			t.Errorf("login page has inline %q, which the CSP refuses", bad)
 		}
-	} // The one script is a file of the server's own, which the CSP allows.
-	if n := strings.Count(page, "<script"); n != 1 || !strings.Contains(page, `<script src="/static/time.js" defer></script>`) {
-		t.Errorf("login page has %d scripts, want only /static/time.js", n)
 	}
+	wantOneScript(t, page)
 	js := tu.do(t, "GET", "/static/time.js", "")
 	if ct := js.Header().Get("Content-Type"); js.Code != http.StatusOK || !strings.Contains(ct, "javascript") {
 		t.Errorf("time.js: status %d, Content-Type %q", js.Code, ct)
@@ -406,6 +404,16 @@ func TestStaticAndMarkup(t *testing.T) {
 		if !strings.Contains(js.Body.String(), `case "`+kind+`":`) {
 			t.Errorf("time.js has no case for %q", kind)
 		}
+	}
+}
+
+// wantOneScript fails unless the page's only script element is the server's
+// own /static/time.js, which the CSP allows. Any other, inline or from
+// another place, is one the CSP refuses or one the page must not load.
+func wantOneScript(t *testing.T, page string) {
+	t.Helper()
+	if n := strings.Count(page, "<script"); n != 1 || !strings.Contains(page, `<script src="/static/time.js" defer></script>`) {
+		t.Errorf("page has %d script elements, want only /static/time.js:\n%s", n, page)
 	}
 }
 
