@@ -4,7 +4,7 @@
 //	trmnl-byos join       let new devices register for a while
 //	trmnl-byos device     list, delete and block devices
 //	trmnl-byos calibrate  show a device the gray calibration screen
-//	trmnl-byos recipe     install and list recipes
+//	trmnl-byos recipe     install, replace and list recipes
 //	trmnl-byos instance   create, list, change and remove plugin instances
 //	trmnl-byos playlist   edit what devices show
 //	trmnl-byos token      create and remove API tokens
@@ -51,7 +51,7 @@ commands:
   join       let new devices register for a while
   device     list, delete and block devices: list, delete, block, unblock, blocked
   calibrate  show a device the gray calibration screen
-  recipe     install and list recipes: add, list
+  recipe     install, replace and list recipes: add, list, replace
   instance   create, list, change and remove plugin instances: add, list, set, remove
   playlist   edit what devices show: add, remove, list, move, set, schedule, create, rename, delete, link, unlink, order
   token      create and remove API tokens: add, list, remove

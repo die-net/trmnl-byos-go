@@ -51,9 +51,9 @@ func (q *Queries) CreateInstance(ctx context.Context, arg CreateInstanceParams) 
 }
 
 const createRecipe = `-- name: CreateRecipe :one
-INSERT INTO recipe (name, source, refresh_interval, installed_at)
-VALUES (?, ?, ?, ?)
-RETURNING id, name, source, refresh_interval, installed_at
+INSERT INTO recipe (name, source, refresh_interval, installed_at, source_hash)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, name, source, refresh_interval, installed_at, revision, source_hash, replaced_at
 `
 
 type CreateRecipeParams struct {
@@ -61,6 +61,7 @@ type CreateRecipeParams struct {
 	Source          string `json:"source"`
 	RefreshInterval int64  `json:"refresh_interval"`
 	InstalledAt     int64  `json:"installed_at"`
+	SourceHash      string `json:"source_hash"`
 }
 
 func (q *Queries) CreateRecipe(ctx context.Context, arg CreateRecipeParams) (Recipe, error) {
@@ -69,6 +70,7 @@ func (q *Queries) CreateRecipe(ctx context.Context, arg CreateRecipeParams) (Rec
 		arg.Source,
 		arg.RefreshInterval,
 		arg.InstalledAt,
+		arg.SourceHash,
 	)
 	var i Recipe
 	err := row.Scan(
@@ -77,6 +79,9 @@ func (q *Queries) CreateRecipe(ctx context.Context, arg CreateRecipeParams) (Rec
 		&i.Source,
 		&i.RefreshInterval,
 		&i.InstalledAt,
+		&i.Revision,
+		&i.SourceHash,
+		&i.ReplacedAt,
 	)
 	return i, err
 }
@@ -116,7 +121,7 @@ func (q *Queries) GetInstance(ctx context.Context, id int64) (PluginInstance, er
 }
 
 const getRecipe = `-- name: GetRecipe :one
-SELECT id, name, source, refresh_interval, installed_at FROM recipe WHERE id = ?
+SELECT id, name, source, refresh_interval, installed_at, revision, source_hash, replaced_at FROM recipe WHERE id = ?
 `
 
 func (q *Queries) GetRecipe(ctx context.Context, id int64) (Recipe, error) {
@@ -128,6 +133,9 @@ func (q *Queries) GetRecipe(ctx context.Context, id int64) (Recipe, error) {
 		&i.Source,
 		&i.RefreshInterval,
 		&i.InstalledAt,
+		&i.Revision,
+		&i.SourceHash,
+		&i.ReplacedAt,
 	)
 	return i, err
 }
@@ -255,8 +263,46 @@ func (q *Queries) ListPlaylistsOfInstance(ctx context.Context, instanceID int64)
 	return items, nil
 }
 
+const listRecipeInstances = `-- name: ListRecipeInstances :many
+SELECT id, recipe_id, name, field_values, secret_values, palette, created_at, settings_at, secret_keys FROM plugin_instance WHERE recipe_id = ? ORDER BY id
+`
+
+// Every instance of one recipe, in ID order.
+func (q *Queries) ListRecipeInstances(ctx context.Context, recipeID int64) ([]PluginInstance, error) {
+	rows, err := q.db.QueryContext(ctx, listRecipeInstances, recipeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PluginInstance{}
+	for rows.Next() {
+		var i PluginInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecipeID,
+			&i.Name,
+			&i.FieldValues,
+			&i.SecretValues,
+			&i.Palette,
+			&i.CreatedAt,
+			&i.SettingsAt,
+			&i.SecretKeys,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecipes = `-- name: ListRecipes :many
-SELECT id, name, source, refresh_interval, installed_at FROM recipe ORDER BY id
+SELECT id, name, source, refresh_interval, installed_at, revision, source_hash, replaced_at FROM recipe ORDER BY id
 `
 
 func (q *Queries) ListRecipes(ctx context.Context) ([]Recipe, error) {
@@ -274,6 +320,9 @@ func (q *Queries) ListRecipes(ctx context.Context) ([]Recipe, error) {
 			&i.Source,
 			&i.RefreshInterval,
 			&i.InstalledAt,
+			&i.Revision,
+			&i.SourceHash,
+			&i.ReplacedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -286,6 +335,49 @@ func (q *Queries) ListRecipes(ctx context.Context) ([]Recipe, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const replaceRecipe = `-- name: ReplaceRecipe :one
+UPDATE recipe
+SET name = ?, source = ?, refresh_interval = ?, revision = ?, source_hash = ?, replaced_at = ?
+WHERE id = ?
+RETURNING id, name, source, refresh_interval, installed_at, revision, source_hash, replaced_at
+`
+
+type ReplaceRecipeParams struct {
+	Name            string `json:"name"`
+	Source          string `json:"source"`
+	RefreshInterval int64  `json:"refresh_interval"`
+	Revision        int64  `json:"revision"`
+	SourceHash      string `json:"source_hash"`
+	ReplacedAt      int64  `json:"replaced_at"`
+	ID              int64  `json:"id"`
+}
+
+// Records a recipe's new files: its revision, and what its settings.yml and
+// source say now.
+func (q *Queries) ReplaceRecipe(ctx context.Context, arg ReplaceRecipeParams) (Recipe, error) {
+	row := q.db.QueryRowContext(ctx, replaceRecipe,
+		arg.Name,
+		arg.Source,
+		arg.RefreshInterval,
+		arg.Revision,
+		arg.SourceHash,
+		arg.ReplacedAt,
+		arg.ID,
+	)
+	var i Recipe
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Source,
+		&i.RefreshInterval,
+		&i.InstalledAt,
+		&i.Revision,
+		&i.SourceHash,
+		&i.ReplacedAt,
+	)
+	return i, err
 }
 
 const setInstanceSecrets = `-- name: SetInstanceSecrets :exec

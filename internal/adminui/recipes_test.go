@@ -50,7 +50,7 @@ func addRecipe(t *testing.T, tu *testUI, name string) db.Recipe {
 // of it reads, which has no custom fields.
 func writeSettings(t *testing.T, recipesDir string, recipeID int64) {
 	t.Helper()
-	dir := recipe.Dir(recipesDir, recipeID)
+	dir := recipe.Dir(recipesDir, recipeID, 1)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestRecipeUpload(t *testing.T) {
 	if rec.Name != "Test Recipe" || rec.Source != "upload" || rec.RefreshInterval != 20*60 {
 		t.Errorf("recipe = %+v", rec)
 	}
-	if _, err := os.Stat(filepath.Join(recipe.Dir(dir, rec.ID), "full.liquid")); err != nil {
+	if _, err := os.Stat(filepath.Join(recipe.Dir(dir, rec.ID, 1), "full.liquid")); err != nil {
 		t.Errorf("recipe files are not installed: %v", err)
 	}
 	if page := tu.get(t, tu.signIn(t), "/recipes").Body.String(); !strings.Contains(page, `id="recipe-`+id(rec.ID)+`"`) || !strings.Contains(page, "Test Recipe") {

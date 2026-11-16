@@ -376,7 +376,7 @@ func (q *Queries) ListRenderRows(ctx context.Context) ([]ListRenderRowsRow, erro
 }
 
 const listRenderTargets = `-- name: ListRenderTargets :many
-SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
+SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id, recipe.revision AS recipe_revision,
   recipe.refresh_interval, device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device_state.width, device_state.height,
   device_state.device_id IS NOT NULL AS woken,
   CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at,
@@ -397,6 +397,7 @@ type ListRenderTargetsRow struct {
 	InstanceID      int64  `json:"instance_id"`
 	Palette         string `json:"palette"`
 	RecipeID        int64  `json:"recipe_id"`
+	RecipeRevision  int64  `json:"recipe_revision"`
 	RefreshInterval int64  `json:"refresh_interval"`
 	DeviceID        int64  `json:"device_id"`
 	FwModel         string `json:"fw_model"`
@@ -432,6 +433,7 @@ func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow
 			&i.InstanceID,
 			&i.Palette,
 			&i.RecipeID,
+			&i.RecipeRevision,
 			&i.RefreshInterval,
 			&i.DeviceID,
 			&i.FwModel,
@@ -526,7 +528,7 @@ SELECT device.id AS device_id, playlist.id AS playlist_id, playlist.days AS play
   playlist_item.id, playlist_item.duration, playlist_item.hidden, playlist_item.days AS item_days,
   playlist_item.window_start AS item_window_start, playlist_item.window_end AS item_window_end,
   playlist_item.starts_at AS item_starts_at, playlist_item.ends_at AS item_ends_at,
-  playlist_slot.instance_id, plugin_instance.palette, recipe.id AS recipe_id, recipe.refresh_interval
+  playlist_slot.instance_id, plugin_instance.palette, recipe.id AS recipe_id, recipe.revision AS recipe_revision, recipe.refresh_interval
 FROM device
 JOIN playlist_device ON playlist_device.device_id = device.id
 JOIN playlist ON playlist.id = playlist_device.playlist_id
@@ -556,6 +558,7 @@ type ListShownItemsRow struct {
 	InstanceID          int64  `json:"instance_id"`
 	Palette             string `json:"palette"`
 	RecipeID            int64  `json:"recipe_id"`
+	RecipeRevision      int64  `json:"recipe_revision"`
 	RefreshInterval     int64  `json:"refresh_interval"`
 }
 
@@ -589,6 +592,7 @@ func (q *Queries) ListShownItems(ctx context.Context) ([]ListShownItemsRow, erro
 			&i.InstanceID,
 			&i.Palette,
 			&i.RecipeID,
+			&i.RecipeRevision,
 			&i.RefreshInterval,
 		); err != nil {
 			return nil, err

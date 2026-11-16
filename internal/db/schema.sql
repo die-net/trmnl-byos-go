@@ -158,7 +158,17 @@ CREATE TABLE IF NOT EXISTS recipe (
   -- refresh_interval is how often, in seconds, an instance is rendered
   -- again.
   refresh_interval INTEGER NOT NULL,
-  installed_at INTEGER NOT NULL
+  installed_at INTEGER NOT NULL,
+  -- revision numbers the recipe's files, which are under
+  -- recipes/<id>/<revision>/. A replace adds a revision and makes it this
+  -- one in the same transaction, so the commit is the switch.
+  revision INTEGER NOT NULL DEFAULT 1,
+  -- source_hash is the hex SHA-256 of the installed files (recipe.TreeHash),
+  -- so a replace with the same files changes nothing. It is '' for a recipe
+  -- installed before it was recorded.
+  source_hash TEXT NOT NULL DEFAULT '',
+  -- replaced_at is when the files were last replaced, 0 if never.
+  replaced_at INTEGER NOT NULL DEFAULT 0
 );
 
 -- plugin_instance is a recipe with its settings filled in: what a playlist

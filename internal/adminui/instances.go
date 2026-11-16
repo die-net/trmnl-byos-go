@@ -68,7 +68,7 @@ func (s *Server) loadInstance(w http.ResponseWriter, r *http.Request) (*instance
 		return nil, false
 	}
 	inst := &st.inst
-	if st.fields, ok = s.recipeFields(w, r, inst.RecipeID); !ok {
+	if st.fields, ok = s.recipeFields(w, r, &st.rec); !ok {
 		return nil, false
 	}
 	if st.stored, st.secretNames, err = recipe.PublicFields(inst, s.secrets); err != nil {
@@ -79,7 +79,7 @@ func (s *Server) loadInstance(w http.ResponseWriter, r *http.Request) (*instance
 		serverError(w, r, "read instance marks", err)
 		return nil, false
 	}
-	if st.state, err = recipe.InstanceState(inst); err != nil {
+	if st.state, err = recipe.InstanceState(inst, st.rec.Revision); err != nil {
 		serverError(w, r, "read instance state", err)
 		return nil, false
 	}

@@ -169,6 +169,9 @@ type Recipe struct {
 	Source          string `json:"source"`
 	RefreshInterval int64  `json:"refresh_interval"`
 	InstalledAt     int64  `json:"installed_at"`
+	Revision        int64  `json:"revision"`
+	SourceHash      string `json:"source_hash"`
+	ReplacedAt      int64  `json:"replaced_at"`
 }
 
 type Render struct {

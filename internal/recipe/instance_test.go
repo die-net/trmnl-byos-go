@@ -600,7 +600,7 @@ func TestInstanceNames(t *testing.T) {
 // the type, as a changed recipe would.
 func retype(t *testing.T, f fixture, keyname, from, to string) {
 	t.Helper()
-	root, err := os.OpenRoot(Dir(f.recipesDir, f.recipe.ID))
+	root, err := os.OpenRoot(FilesDir(f.recipesDir, &f.recipe))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1086,7 +1086,7 @@ func TestSealedStaysSealed(t *testing.T) {
 // settings.yml, as a recipe update that drops it would.
 func dropField(t *testing.T, f fixture, keyname string) {
 	t.Helper()
-	root, err := os.OpenRoot(Dir(f.recipesDir, f.recipe.ID))
+	root, err := os.OpenRoot(FilesDir(f.recipesDir, &f.recipe))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1146,7 +1146,7 @@ func TestUpdateInstanceSeen(t *testing.T) {
 	marks := map[string]bool{"notes": true}
 	stateOf := func(t *testing.T, inst *db.PluginInstance) string {
 		t.Helper()
-		s, err := InstanceState(inst)
+		s, err := InstanceState(inst, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1242,7 +1242,7 @@ func TestInstanceState(t *testing.T) {
 	t.Parallel()
 	state := func(inst db.PluginInstance) string {
 		t.Helper()
-		s, err := InstanceState(&inst)
+		s, err := InstanceState(&inst, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1267,7 +1267,7 @@ func TestInstanceState(t *testing.T) {
 	}
 	bad := base
 	bad.FieldValues = `{`
-	if _, err := InstanceState(&bad); err == nil {
+	if _, err := InstanceState(&bad, 1); err == nil {
 		t.Error("undecodable field_values gave a state")
 	}
 }

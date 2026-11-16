@@ -40,6 +40,11 @@ type InstanceParams struct {
 	// Secret marks fields secret by keyname, as InstanceUpdate.Secret does.
 	// A password field is always secret.
 	Secret map[string]bool
+	// Revision, if not 0, is the recipe revision whose fields the caller
+	// showed. The instance is refused with ErrRecipeChanged if the recipe's
+	// files were replaced since. 0 checks the values against whatever the
+	// recipe has, as for the API and the command line.
+	Revision int64
 }
 
 // InstanceUpdate is a change to a plugin instance. What it leaves nil or
@@ -82,8 +87,18 @@ const SealedUnmarkText = "is secret; give it a new value or clear it to make it 
 // change was refused.
 var ErrInstanceChanged = errkind.New(errkind.ErrConflict, "the instance has changed")
 
+// ErrRecipeChanged means a recipe's files were replaced since the caller
+// read its fields, so a form drawn from them is out of date.
+var ErrRecipeChanged = errkind.New(errkind.ErrConflict, "the recipe has been replaced")
+
+// errRecipeMoved means the recipe's revision changed between reading its
+// fields and the transaction that uses them, so the call is made again with
+// the new fields.
+var errRecipeMoved = errors.New("recipe replaced during the call")
+
 // InstanceState returns a digest of what a page shows of an instance: its
-// name, palette, plain field values and marks. A form sends it back as
+// name, palette, plain field values and marks, and the revision of its
+// recipe's files, whose fields the page shows. A form sends it back as
 // InstanceUpdate.Seen, so a save from a page that is out of date is refused
 // instead of undoing a change made since, without posting every value back.
 // Sealed values are left out: a page never shows them, and reading them
@@ -91,11 +106,11 @@ var ErrInstanceChanged = errkind.New(errkind.ErrConflict, "the instance has chan
 // digested decoded, in a canonical encoding, so a write that does not change
 // them, such as sealing the secrets again, leaves the digest alone.
 //
-// It is the hex SHA-256 of four parts, each framed by its length as an
+// It is the hex SHA-256 of five parts, each framed by its length as an
 // unsigned varint, so no two different states encode to the same bytes:
-// the name, the palette, the plain values as JSON with sorted keys, and the
-// sorted marks as a JSON array.
-func InstanceState(inst *db.PluginInstance) (string, error) {
+// the name, the palette, the plain values as JSON with sorted keys, the
+// sorted marks as a JSON array, and the revision in decimal.
+func InstanceState(inst *db.PluginInstance, revision int64) (string, error) {
 	plain, _, err := decodeFields(inst, nil, false)
 	if err != nil {
 		return "", err
@@ -115,21 +130,50 @@ func InstanceState(inst *db.PluginInstance) (string, error) {
 		return "", fmt.Errorf("encode secret marks: %w", err)
 	}
 	h := sha256.New()
-	for _, part := range [][]byte{[]byte(inst.Name), []byte(inst.Palette), values, marked} {
+	for _, part := range [][]byte{[]byte(inst.Name), []byte(inst.Palette), values, marked, strconv.AppendInt(nil, revision, 10)} {
 		h.Write(binary.AppendUvarint(nil, uint64(len(part))))
 		h.Write(part)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// readFields returns the custom fields of the recipe with the given ID. It
-// reads a file, so it is not called while holding the write lock.
-func readFields(recipesDir string, recipeID int64) ([]Field, error) {
-	s, err := ReadSettings(Dir(recipesDir, recipeID))
+// readFields returns the custom fields of the current revision of rec's
+// files. It reads a file, so it is not called while holding the write lock.
+func readFields(recipesDir string, rec *db.Recipe) ([]Field, error) {
+	s, err := ReadSettings(FilesDir(recipesDir, rec))
 	if err != nil {
-		return nil, fmt.Errorf("recipe %d: %w", recipeID, err)
+		return nil, fmt.Errorf("recipe %d: %w", rec.ID, err)
 	}
 	return s.CustomFields, nil
+}
+
+// checkRevision returns errRecipeMoved when rec, read in a transaction, is
+// not at revision, the one the caller read fields for, and ErrRecipeChanged
+// when it is not at seen either, the caller's own, if any.
+func checkRevision(rec *db.Recipe, revision, seen int64) error {
+	switch {
+	case seen != 0 && rec.Revision != seen:
+		return fmt.Errorf("%w: recipe %d", ErrRecipeChanged, rec.ID)
+	case rec.Revision != revision:
+		return errRecipeMoved
+	}
+	return nil
+}
+
+// retryMoved calls f, and calls it once more if the recipe's files were
+// replaced while it ran, so a call that raced a replace checks its values
+// against the new fields. Two replaces in a row during one call are a
+// conflict.
+func retryMoved[T any](f func() (T, error)) (T, error) {
+	out, err := f()
+	if errors.Is(err, errRecipeMoved) {
+		out, err = f()
+	}
+	if errors.Is(err, errRecipeMoved) {
+		var zero T
+		return zero, fmt.Errorf("%w: twice during one change", ErrRecipeChanged)
+	}
+	return out, err
 }
 
 // checkPalette returns an error that wraps errkind.ErrInvalid for a palette
@@ -148,11 +192,20 @@ func checkPalette(palette string) error {
 // for a secret value with no key, and an error wrapping errkind.ErrInvalid
 // for an unknown palette. A value that does not fit its field, a missing
 // required one, a field the recipe does not have, and a mark that is refused
-// are a FieldErrors.
+// are a FieldErrors. It returns an error wrapping ErrRecipeChanged when
+// p.Revision is set and the recipe's files are another revision. Without it,
+// a replace during the call makes it check the values again against the new
+// fields.
 func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, recipesDir string, p InstanceParams, now time.Time) (db.PluginInstance, error) {
 	if err := checkPalette(p.Palette); err != nil {
 		return db.PluginInstance{}, err
 	}
+	return retryMoved(func() (db.PluginInstance, error) { return createInstanceOnce(ctx, client, key, recipesDir, p, now) })
+}
+
+// createInstanceOnce is one try of CreateInstance, which returns errRecipeMoved
+// when the recipe's files were replaced after it read their fields.
+func createInstanceOnce(ctx context.Context, client *db.Client, key *secrets.Key, recipesDir string, p InstanceParams, now time.Time) (db.PluginInstance, error) {
 	rec, err := client.Read.GetRecipe(ctx, p.RecipeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return db.PluginInstance{}, fmt.Errorf("%w: %d", ErrNoRecipe, p.RecipeID)
@@ -160,7 +213,10 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 	if err != nil {
 		return db.PluginInstance{}, fmt.Errorf("get recipe: %w", err)
 	}
-	fields, err := readFields(recipesDir, p.RecipeID)
+	if err := checkRevision(&rec, rec.Revision, p.Revision); err != nil {
+		return db.PluginInstance{}, err
+	}
+	fields, err := readFields(recipesDir, &rec)
 	if err != nil {
 		return db.PluginInstance{}, err
 	}
@@ -200,7 +256,16 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 	}
 	var inst db.PluginInstance
 	err = client.InTx(ctx, func(q *db.Queries) error {
-		var err error
+		cur, err := q.GetRecipe(ctx, p.RecipeID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %d", ErrNoRecipe, p.RecipeID)
+		}
+		if err != nil {
+			return fmt.Errorf("get recipe: %w", err)
+		}
+		if err := checkRevision(&cur, rec.Revision, p.Revision); err != nil {
+			return err
+		}
 		inst, err = q.CreateInstance(ctx, db.CreateInstanceParams{
 			RecipeID:    p.RecipeID,
 			Name:        p.Name,
@@ -257,6 +322,11 @@ func CreateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 // When u.Seen is set, the instance's InstanceState is compared with it
 // first, inside the transaction, which needs no key.
 //
+// The values are checked against the fields of the recipe's current files.
+// If a replace changed them after they were read, the update is made again
+// with the new ones, so it never writes values checked against fields the
+// recipe no longer has.
+//
 // It returns ErrNoInstance for an unknown ID, an error wrapping
 // ErrInstanceChanged when the instance is not what u.Seen says,
 // secrets.ErrNoKey when the secrets have to be opened or sealed and key is
@@ -274,8 +344,14 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		}
 		u.Name = &name
 	}
-	// An instance's recipe never changes, so the definitions read here are
-	// the ones for the row read again inside the transaction.
+	return retryMoved(func() (db.PluginInstance, error) { return updateInstanceOnce(ctx, client, key, recipesDir, id, u, now) })
+}
+
+// updateInstanceOnce is one try of UpdateInstance, which returns errRecipeMoved
+// when the recipe's files were replaced after it read their fields.
+func updateInstanceOnce(ctx context.Context, client *db.Client, key *secrets.Key, recipesDir string, id int64, u InstanceUpdate, now time.Time) (db.PluginInstance, error) {
+	// An instance's recipe never changes, but its files can be replaced,
+	// so the revision read here is checked again inside the transaction.
 	inst, err := client.Read.GetInstance(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return db.PluginInstance{}, fmt.Errorf("%w: %d", ErrNoInstance, id)
@@ -283,7 +359,11 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 	if err != nil {
 		return db.PluginInstance{}, fmt.Errorf("get instance: %w", err)
 	}
-	fields, err := readFields(recipesDir, inst.RecipeID)
+	rec, err := client.Read.GetRecipe(ctx, inst.RecipeID)
+	if err != nil {
+		return db.PluginInstance{}, fmt.Errorf("get recipe: %w", err)
+	}
+	fields, err := readFields(recipesDir, &rec)
 	if err != nil {
 		return db.PluginInstance{}, err
 	}
@@ -297,6 +377,10 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		if err != nil {
 			return fmt.Errorf("get instance: %w", err)
 		}
+		curRec, err := q.GetRecipe(ctx, cur.RecipeID)
+		if err != nil {
+			return fmt.Errorf("get recipe: %w", err)
+		}
 		// The marks are read here, in the transaction, since which values
 		// are secret decides how the update's values are taken.
 		curMarks, err := decodeMarks(&cur)
@@ -304,13 +388,19 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 			return err
 		}
 		if u.Seen != nil {
-			state, err := InstanceState(&cur)
+			// A page drawn from fields the recipe no longer has is out of
+			// date like one drawn from other values, so this is checked
+			// before the fields are.
+			state, err := InstanceState(&cur, curRec.Revision)
 			if err != nil {
 				return err
 			}
 			if state != *u.Seen {
 				return fmt.Errorf("%w: instance %d", ErrInstanceChanged, id)
 			}
+		}
+		if err := checkRevision(&curRec, rec.Revision, 0); err != nil {
+			return err
 		}
 		bad := FieldErrors{}
 		marked := mark(byName, curMarks, u.Secret, bad)
@@ -444,11 +534,7 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		if u.Name != nil {
 			arg.Name = *u.Name
 			if arg.Name == "" {
-				rec, err := q.GetRecipe(ctx, cur.RecipeID)
-				if err != nil {
-					return fmt.Errorf("get recipe: %w", err)
-				}
-				arg.Name = rec.Name
+				arg.Name = curRec.Name
 			}
 		}
 		if u.Palette != nil {

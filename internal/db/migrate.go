@@ -38,6 +38,7 @@ var steps = []step{
 	{"add per-device sleep windows", addSleepWindow},
 	{"add per-device button command and double-click function, and the function last sent", addButtons},
 	{"record the settings a render's images were made from, and its latest counted failure", addRenderedSettingsAt},
+	{"add recipe revisions and source hashes, for replacing a recipe", addRecipeRevision},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -704,6 +705,23 @@ UPDATE render SET failed_settings_at = settings_at, failed_error = error WHERE f
 func addRenderedSettingsAt(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addRenderedSettingsAtSQL); err != nil {
 		return fmt.Errorf("add rendered_settings_at: %w", err)
+	}
+	return nil
+}
+
+// addRecipeRevisionSQL is step 14: recipe.revision, source_hash and
+// replaced_at, as in schema.sql. Every recipe is at revision 1, with no hash
+// and never replaced. A recipe's files move from recipes/<id>/ to
+// recipes/<id>/1/, which the step does not do: there are no deployments to
+// move them for.
+const addRecipeRevisionSQL = `ALTER TABLE recipe ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE recipe ADD COLUMN source_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE recipe ADD COLUMN replaced_at INTEGER NOT NULL DEFAULT 0`
+
+// addRecipeRevision is step 14: see addRecipeRevisionSQL.
+func addRecipeRevision(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addRecipeRevisionSQL); err != nil {
+		return fmt.Errorf("add recipe revisions: %w", err)
 	}
 	return nil
 }
