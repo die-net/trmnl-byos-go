@@ -144,8 +144,9 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	fn := requestedFunction(r, sent)
 	// A true that names no function, because the device saved none as far
 	// as the server knows, still runs whatever the device saved. That draws
-	// nothing for an answer without its action, so the wake is answered as a
-	// timer wake and the cursor does not skip an item the device never shows.
+	// nothing for an answer without its action, so the answer has no image
+	// and the cursor does not move, even at an item's end, since moving it
+	// would skip an item the device never shows.
 	saved := fn == "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("special_function")), "true")
 	// The TRMNL X's guest_mode and toggle_hold are answered as a timer wake,
 	// with the screen the device would show now and its usual refresh. The
@@ -172,7 +173,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	dot, calibrating := device.CalibrationDot(dev.ScreenOverride)
 	left := dev.ScreenOverrideUntil - s.now().Unix()
 	switch {
-	case fn != "" && fn != device.FuncRestartPlaylist && !guest:
+	case (fn != "" && fn != device.FuncRestartPlaylist && !guest) || saved:
 		choice, err = s.functionScreen(dev, sp, fn, choice.refresh)
 	case (fn == "" || guest) && calibrating && left > 0 && sp.Levels > 2:
 		choice.name, choice.size, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, sp), func(w io.Writer) error { return screen.Calibration(w, sp, dot) })
@@ -326,7 +327,8 @@ const sleepFunctionRefresh = 8 * 60 * 60
 // which device this is. The others send no image, and the device keeps what
 // it shows: rewind redraws its own previous image, send_to_me its last one,
 // add_wifi has opened its portal already, and sleep sets how long the device
-// sleeps. refresh is the usual seconds to the next wake.
+// sleeps. fn is "" for a true that names no function, which gets no image
+// either. refresh is the usual seconds to the next wake.
 func (s *Server) functionScreen(dev db.Device, sp screen.Profile, fn string, refresh int64) (screenChoice, error) {
 	switch fn {
 	case device.FuncIdentify:

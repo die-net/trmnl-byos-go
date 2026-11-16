@@ -349,8 +349,9 @@ func TestDisplaySpecialFunction(t *testing.T) {
 // since, which the firmware has not seen: with its action, the interval the
 // device stored, the cursor where it was and the last image kept. Once a
 // normal answer sends the new function, true asks for that. With none
-// recorded as sent, true runs a function the server does not know, so it is
-// answered as a timer wake.
+// recorded as sent, true runs a function the server does not know, which
+// draws nothing, so it gets no image and the cursor stays, even at an item's
+// end.
 func TestDisplaySpecialFunctionSaved(t *testing.T) {
 	t.Parallel()
 	for _, since := range []string{"sleep", "restart_playlist", "identify", "add_wifi", "none"} {
@@ -406,10 +407,26 @@ func TestDisplaySpecialFunctionSaved(t *testing.T) {
 			ts.cursorAt(t, b, 1)
 			m = ts.getJSON(t, "/api/display", double)
 			if since == "none" {
-				if m["action"] != nil || m["filename"] != b.images[1] {
-					t.Errorf("true with none sent: %v; want item 1 again, as a timer wake", m)
+				if m["action"] != nil || m["image_url"] != nil || m["filename"] != nil {
+					t.Errorf("true with none sent: %v; want no action and no image", m)
 				}
 				unchanged("true with none sent", m)
+				if got := ts.lastImage(t, b); got != b.images[1] {
+					t.Errorf("true with none sent: last image %q, want item 1's render, kept", got)
+				}
+				// Five seconds before item 1 ends, inside the slack a timer
+				// wake advances in, the cursor still stays.
+				started := ts.now.Add(-10*time.Minute + 5*time.Second).Unix()
+				if err := ts.db.Write.SetDeviceCursor(t.Context(), db.SetDeviceCursorParams{DeviceID: b.devID, ItemID: b.items[1], ItemStartedAt: started}); err != nil {
+					t.Fatal(err)
+				}
+				m = ts.getJSON(t, "/api/display", double)
+				if i, at := ts.cursor(t, b); i != 1 || at != started || m["image_url"] != nil {
+					t.Errorf("true with none sent at item 1's end: %v; cursor on item %d started %d, want item 1 started %d and no image", m, i, at, started)
+				}
+				if got := ts.lastImage(t, b); got != b.images[1] {
+					t.Errorf("true with none sent at item 1's end: last image %q, want item 1's render, kept", got)
+				}
 			} else if m["action"] != since {
 				t.Errorf("true after a normal answer sent %s: %v", since, m)
 			}
@@ -435,8 +452,8 @@ func TestDisplayFirmwareOnlyAtNormalWake(t *testing.T) {
 	if _, err := firmware.StartRollout(t.Context(), ts.db, fw.ID, testMAC, ts.now); err != nil {
 		t.Fatal(err)
 	}
-	// true is answered as a timer wake, and bogus as a normal one, but the
-	// firmware runs neither as a normal wake.
+	// true gets no action, and bogus is answered as a normal wake, but the
+	// firmware runs neither as one.
 	for _, v := range []string{"true", "bogus", "identify", "guest_mode", "rewind", "true", "bogus"} {
 		h := firmwareDisplayHeaders(key, "1.8.17")
 		h["special_function"] = v
