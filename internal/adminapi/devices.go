@@ -53,7 +53,7 @@ func newDevice(d *db.Device, lastSeen *int64, battery *float64, rssi, wakeMs *in
 		ID: d.FriendlyID, MAC: d.Mac, Name: d.Name, Model: d.FwModel, Firmware: d.FwVersion, CreatedAt: d.CreatedAt,
 		LastSeen: lastSeen, BatteryV: battery, RSSI: rssi, WakeTimeMs: wakeMs, UpdateSource: source,
 		UpdatesEnabled: d.UpdatesEnabled != 0, FWPin: d.FwPin, Blocked: blocked != 0,
-		Profile: d.ProfileOverride, Palette: d.PaletteOverride, ProfileProblem: device.OverrideProblem(d), SettingsState: device.SettingsState(d),
+		Profile: d.ProfileOverride, Palette: d.PaletteOverride, ProfileProblem: device.OverrideProblem(d, d.FwModel), SettingsState: device.SettingsState(d),
 	}
 }
 

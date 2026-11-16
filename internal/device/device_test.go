@@ -262,8 +262,8 @@ func TestUpdateStaleOverride(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if dev, err = client.Read.GetDevice(ctx, dev.ID); err != nil || OverrideProblem(&dev) != tc.problem {
-				t.Fatalf("problem = %q, %v; want %q", OverrideProblem(&dev), err, tc.problem)
+			if dev, err = client.Read.GetDevice(ctx, dev.ID); err != nil || OverrideProblem(&dev, dev.FwModel) != tc.problem {
+				t.Fatalf("problem = %q, %v; want %q", OverrideProblem(&dev, dev.FwModel), err, tc.problem)
 			}
 			on := true
 			for _, c := range []Change{
@@ -279,7 +279,7 @@ func TestUpdateStaleOverride(t *testing.T) {
 				t.Errorf("another bad value: %v, want invalid", err)
 			}
 			got, err := Update(ctx, client, "ABC123", Change{Profile: s(""), Palette: s("")})
-			if err != nil || got.ProfileOverride != "" || got.PaletteOverride != "" || OverrideProblem(&got) != "" {
+			if err != nil || got.ProfileOverride != "" || got.PaletteOverride != "" || OverrideProblem(&got, got.FwModel) != "" {
 				t.Errorf("clearing it: %+v, %v", got, err)
 			}
 		})

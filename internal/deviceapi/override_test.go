@@ -2,6 +2,8 @@ package deviceapi
 
 import (
 	"image/color"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
@@ -72,6 +74,50 @@ func TestDisplayProfileOverride(t *testing.T) {
 	ts.srv.overrideWarned.Range(func(any, any) bool { warned++; return true })
 	if warned != 1 {
 		t.Errorf("%d warnings recorded for one stale override over four wakes, want 1", warned)
+	}
+}
+
+// TestDisplayOverrideReportedModel checks that a stale override is warned
+// about for the model a wake reports, which is the one its profile is
+// resolved from, and not the stored fw_model, which is written later in the
+// request and kept for an empty Model header. The device's gray-4 palette
+// suits the DIY kit, an og_plus, and not og_4clr, an og_bwry.
+func TestDisplayOverrideReportedModel(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t)
+	key := ts.register(t)
+	gray := "gray-4"
+	if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{Palette: &gray}); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		bwry    = `palette "gray-4" is not one of og_bwry's palettes`
+		unknown = `palette "gray-4" is not one of an unknown model's palettes`
+	)
+	for _, tc := range []struct {
+		name, model string
+		// warned is every problem warned about so far, sorted.
+		warned []string
+	}{
+		{"the stored model", "xiao_epaper_display", nil},
+		{"reflashed as a model without the palette, warned at once", "og_4clr", []string{bwry}},
+		{"back to a model with it, after og_4clr was stored", "xiao_epaper_display", []string{bwry}},
+		{"no Model header, which keeps the stored model", "", []string{unknown, bwry}},
+	} {
+		h := displayHeaders(testMAC, key)
+		h["Update-Source"] = "timer"
+		h["Model"] = tc.model
+		ts.getJSON(t, "/api/display", h)
+		var got []string
+		ts.srv.overrideWarned.Range(func(k, _ any) bool {
+			_, problem, _ := strings.Cut(k.(string), " ")
+			got = append(got, problem)
+			return true
+		})
+		slices.Sort(got)
+		if !slices.Equal(got, tc.warned) {
+			t.Errorf("%s: warned %q, want %q", tc.name, got, tc.warned)
+		}
 	}
 }
 

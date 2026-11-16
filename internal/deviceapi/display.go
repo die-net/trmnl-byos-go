@@ -94,7 +94,11 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dev := c.dev
-	if problem := device.OverrideProblem(&dev); problem != "" {
+	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
+	// The override is checked against the model this request reports, which
+	// is the one Resolve applies it to. The stored fw_model is updated only
+	// later in the request, and not at all for an empty Model header.
+	if problem := device.OverrideProblem(&dev, model); problem != "" {
 		// Resolve falls back to what the firmware reports, so the device
 		// is not stuck. The device's JSON shows the problem for as long as
 		// it lasts, so it is logged once per process, not at every wake.
@@ -103,7 +107,6 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
 	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), device.ProfileOverride(&dev))
 	sp := screenProfile(p)
 	choice := screenChoice{refresh: s.refreshRate(ctx)}
