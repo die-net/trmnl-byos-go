@@ -36,6 +36,7 @@ var steps = []step{
 	{"add per-device profile and palette overrides", addProfileOverride},
 	{"add per-device time zone and locale, and key renders by them", addZoneLocale},
 	{"add per-device sleep windows", addSleepWindow},
+	{"add per-device button command and double-click function", addButtons},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -665,6 +666,20 @@ ALTER TABLE device ADD COLUMN sleep_end INTEGER NOT NULL DEFAULT -1`
 func addSleepWindow(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addSleepColumnsSQL); err != nil {
 		return fmt.Errorf("add sleep windows: %w", err)
+	}
+	return nil
+}
+
+// addButtonColumnsSQL is step 12: the device's button command and
+// double-click function, as in schema.sql, empty in every existing row, for
+// the defaults.
+const addButtonColumnsSQL = `ALTER TABLE device ADD COLUMN button_command TEXT NOT NULL DEFAULT '';
+ALTER TABLE device ADD COLUMN special_function TEXT NOT NULL DEFAULT ''`
+
+// addButtons is step 12: see addButtonColumnsSQL.
+func addButtons(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addButtonColumnsSQL); err != nil {
+		return fmt.Errorf("add button settings: %w", err)
 	}
 	return nil
 }

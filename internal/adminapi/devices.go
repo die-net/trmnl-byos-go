@@ -56,6 +56,14 @@ type deviceJSON struct {
 	// Sleep is the window in which the device is shown no playlist item,
 	// written HH:MM-HH:MM in its time zone, or "" for none.
 	Sleep string `json:"sleep"`
+	// ButtonCommand is what a single button press does, as set, or "" for
+	// the default. ButtonCommandInUse is the one in effect.
+	ButtonCommand      string `json:"button_command"`
+	ButtonCommandInUse string `json:"button_command_in_use"`
+	// SpecialFunction is what a double-click does, as set, or "" for the
+	// default. SpecialFunctionInUse is the one in effect.
+	SpecialFunction      string `json:"special_function"`
+	SpecialFunctionInUse string `json:"special_function_in_use"`
 	// SettingsState is a digest of the device's settings, which a PATCH
 	// can send back to be refused if they changed since.
 	SettingsState string `json:"settings_state"`
@@ -85,6 +93,8 @@ func newDevice(d *db.Device, def serverDefaults, lastSeen *int64, battery *float
 		Profile: d.ProfileOverride, Palette: d.PaletteOverride, ProfileProblem: device.OverrideProblem(d, d.FwModel), SettingsState: device.SettingsState(d),
 		TimeZone: d.TimeZone, TimeZoneInUse: device.ZoneOf(d.TimeZone, def.zone).String(),
 		Locale: d.Locale, LocaleInUse: device.LocaleOf(d.Locale, def.locale), Sleep: device.FormatSleep(d.SleepStart, d.SleepEnd),
+		ButtonCommand: d.ButtonCommand, ButtonCommandInUse: device.ButtonCommandOf(d.ButtonCommand),
+		SpecialFunction: d.SpecialFunction, SpecialFunctionInUse: device.SpecialFunctionOf(d.SpecialFunction),
 	}
 }
 

@@ -368,7 +368,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 		if w.ItemID != nil && w.ItemStartedAt != nil {
 			cur = &playlist.Cursor{ItemID: *w.ItemID, Started: time.Unix(*w.ItemStartedAt, 0)}
 		}
-		j, _ := playlist.Advance(lists[c].Items(at), cur, next, false)
+		j, _ := playlist.Advance(lists[c].Items(at), cur, next, "")
 		if j < 0 {
 			continue
 		}

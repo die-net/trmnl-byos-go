@@ -48,13 +48,19 @@ type Cursor struct {
 // Advance returns the index of the item to show now and when it started,
 // from the device's cursor, which is nil before the device has shown an
 // item. items is the whole playlist, with the items that are not shown now
-// marked Skip. A press moves to the next item that is shown. Otherwise each
-// item whose duration has passed gives way to the next one that is shown,
-// which starts when it ended, so timing does not drift. A cursor on an item
-// that is no longer in items starts over at the first one that is shown. A
-// cursor on one that is skipped moves to the next one that is shown, which
-// starts now. It returns -1 when no item is shown.
-func Advance(items []Item, cur *Cursor, now time.Time, pressed bool) (int, time.Time) {
+// marked Skip. command is the device's button command when the wake is a
+// press, one of device.ButtonCommands, and empty for a timer wake. A press
+// moves the cursor to an item that is shown, which starts now: for next the
+// one after the current item, wrapping, for previous the one before it,
+// wrapping, for first the first, and for refresh the current item itself,
+// whatever its duration, so it starts over and the device picks up a newer
+// render. Otherwise each item whose duration has passed gives way to the next
+// one that is shown, which starts when it ended, so timing does not drift. A
+// cursor on an item that is no longer in items starts over at the first one
+// that is shown, whatever the command. A cursor on one that is skipped moves
+// to the one that is shown after it, or before it for previous, which starts
+// now. It returns -1 when no item is shown.
+func Advance(items []Item, cur *Cursor, now time.Time, command string) (int, time.Time) {
 	i := -1
 	if cur != nil {
 		for j := range items {
@@ -64,13 +70,24 @@ func Advance(items []Item, cur *Cursor, now time.Time, pressed bool) (int, time.
 			}
 		}
 	}
-	if i < 0 || pressed || items[i].Skip {
+	if i < 0 || command != "" || items[i].Skip {
 		// With no cursor on an item, the first shown one is the one after the last.
 		from := i
 		if i < 0 {
 			from = len(items) - 1
 		}
-		if j := nextShown(items, from); j >= 0 {
+		var j int
+		switch {
+		case i >= 0 && command == device.ButtonRefresh && !items[i].Skip:
+			j = i
+		case i >= 0 && command == device.ButtonPrevious:
+			j = prevShown(items, from)
+		case i >= 0 && command == device.ButtonFirst:
+			j = nextShown(items, len(items)-1)
+		default:
+			j = nextShown(items, from)
+		}
+		if j >= 0 {
 			return j, now
 		}
 		return -1, time.Time{}
@@ -103,6 +120,18 @@ func Advance(items []Item, cur *Cursor, now time.Time, pressed bool) (int, time.
 		i = nextShown(items, i)
 	}
 	return i, started
+}
+
+// prevShown returns the index of the first item before index i, wrapping
+// around, that is not skipped, which is i itself when no other is. It returns
+// -1 if every item is skipped, and for an empty list.
+func prevShown(items []Item, i int) int {
+	for k := 1; k <= len(items); k++ {
+		if j := ((i-k)%len(items) + len(items)) % len(items); !items[j].Skip {
+			return j
+		}
+	}
+	return -1
 }
 
 // nextShown returns the index of the first item after index i, wrapping

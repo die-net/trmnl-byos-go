@@ -12,7 +12,7 @@ import (
 const createDevice = `-- name: CreateDevice :one
 INSERT INTO device (mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end
+RETURNING id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end, button_command, special_function
 `
 
 type CreateDeviceParams struct {
@@ -55,6 +55,8 @@ func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) (Dev
 		&i.Locale,
 		&i.SleepStart,
 		&i.SleepEnd,
+		&i.ButtonCommand,
+		&i.SpecialFunction,
 	)
 	return i, err
 }
@@ -71,7 +73,7 @@ func (q *Queries) FriendlyIDExists(ctx context.Context, friendlyID string) (int6
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE id = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end, button_command, special_function FROM device WHERE id = ?
 `
 
 func (q *Queries) GetDevice(ctx context.Context, id int64) (Device, error) {
@@ -96,12 +98,14 @@ func (q *Queries) GetDevice(ctx context.Context, id int64) (Device, error) {
 		&i.Locale,
 		&i.SleepStart,
 		&i.SleepEnd,
+		&i.ButtonCommand,
+		&i.SpecialFunction,
 	)
 	return i, err
 }
 
 const getDeviceByAPIKeyHash = `-- name: GetDeviceByAPIKeyHash :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE api_key_hash = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end, button_command, special_function FROM device WHERE api_key_hash = ?
 `
 
 func (q *Queries) GetDeviceByAPIKeyHash(ctx context.Context, apiKeyHash []byte) (Device, error) {
@@ -126,12 +130,14 @@ func (q *Queries) GetDeviceByAPIKeyHash(ctx context.Context, apiKeyHash []byte) 
 		&i.Locale,
 		&i.SleepStart,
 		&i.SleepEnd,
+		&i.ButtonCommand,
+		&i.SpecialFunction,
 	)
 	return i, err
 }
 
 const getDeviceByFriendlyID = `-- name: GetDeviceByFriendlyID :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE friendly_id = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end, button_command, special_function FROM device WHERE friendly_id = ?
 `
 
 func (q *Queries) GetDeviceByFriendlyID(ctx context.Context, friendlyID string) (Device, error) {
@@ -156,12 +162,14 @@ func (q *Queries) GetDeviceByFriendlyID(ctx context.Context, friendlyID string) 
 		&i.Locale,
 		&i.SleepStart,
 		&i.SleepEnd,
+		&i.ButtonCommand,
+		&i.SpecialFunction,
 	)
 	return i, err
 }
 
 const getDeviceByMAC = `-- name: GetDeviceByMAC :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE mac = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end, button_command, special_function FROM device WHERE mac = ?
 `
 
 func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error) {
@@ -186,6 +194,8 @@ func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error
 		&i.Locale,
 		&i.SleepStart,
 		&i.SleepEnd,
+		&i.ButtonCommand,
+		&i.SpecialFunction,
 	)
 	return i, err
 }
@@ -209,7 +219,7 @@ func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDevic
 }
 
 const getDeviceStatus = `-- name: GetDeviceStatus :one
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device.button_command, device.special_function, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
@@ -252,6 +262,8 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 		&i.Device.Locale,
 		&i.Device.SleepStart,
 		&i.Device.SleepEnd,
+		&i.Device.ButtonCommand,
+		&i.Device.SpecialFunction,
 		&i.LastSeen,
 		&i.BatteryV,
 		&i.Rssi,
@@ -301,7 +313,7 @@ func (q *Queries) ListDeviceNames(ctx context.Context) ([]ListDeviceNamesRow, er
 }
 
 const listDeviceStatus = `-- name: ListDeviceStatus :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device.button_command, device.special_function, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
@@ -350,6 +362,8 @@ func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, 
 			&i.Device.Locale,
 			&i.Device.SleepStart,
 			&i.Device.SleepEnd,
+			&i.Device.ButtonCommand,
+			&i.Device.SpecialFunction,
 			&i.LastSeen,
 			&i.BatteryV,
 			&i.Rssi,
@@ -441,7 +455,7 @@ func (q *Queries) UpdateDeviceFirmware(ctx context.Context, arg UpdateDeviceFirm
 }
 
 const updateDeviceSettings = `-- name: UpdateDeviceSettings :exec
-UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ?, sleep_start = ?, sleep_end = ? WHERE id = ?
+UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ?, sleep_start = ?, sleep_end = ?, button_command = ?, special_function = ? WHERE id = ?
 `
 
 type UpdateDeviceSettingsParams struct {
@@ -454,6 +468,8 @@ type UpdateDeviceSettingsParams struct {
 	Locale          string `json:"locale"`
 	SleepStart      int64  `json:"sleep_start"`
 	SleepEnd        int64  `json:"sleep_end"`
+	ButtonCommand   string `json:"button_command"`
+	SpecialFunction string `json:"special_function"`
 	ID              int64  `json:"id"`
 }
 
@@ -470,6 +486,8 @@ func (q *Queries) UpdateDeviceSettings(ctx context.Context, arg UpdateDeviceSett
 		arg.Locale,
 		arg.SleepStart,
 		arg.SleepEnd,
+		arg.ButtonCommand,
+		arg.SpecialFunction,
 		arg.ID,
 	)
 	return err
@@ -485,7 +503,7 @@ ON CONFLICT (device_id) DO UPDATE SET
   wake_time_ms = excluded.wake_time_ms,
   update_source = excluded.update_source,
   last_refresh_rate_sent = excluded.last_refresh_rate_sent,
-  last_image = excluded.last_image,
+  last_image = COALESCE(NULLIF(excluded.last_image, ''), device_state.last_image),
   width = excluded.width,
   height = excluded.height
 `
@@ -503,6 +521,8 @@ type UpsertDeviceStateParams struct {
 	Height              *int64   `json:"height"`
 }
 
+// An empty last_image keeps the one stored, for an answer that sends the device
+// no image.
 func (q *Queries) UpsertDeviceState(ctx context.Context, arg UpsertDeviceStateParams) error {
 	_, err := q.db.ExecContext(ctx, upsertDeviceState,
 		arg.DeviceID,
