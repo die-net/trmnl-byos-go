@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,6 +40,11 @@ type harness struct {
 	// first field's value in its output.
 	leakFile string
 	now      time.Time
+	// mu guards configs.
+	mu sync.Mutex
+	// configs holds the .trmnlp.yml of each build the fake renderer got, in
+	// order.
+	configs []string
 }
 
 // testZone is the server's zone in these tests. It is neither UTC nor any
@@ -122,9 +128,10 @@ func (h *harness) renderOf(t *testing.T, instance int64) db.ListRenderRowsRow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range rows {
+	for i := range rows {
+		r := &rows[i]
 		if r.InstanceID == instance && r.Width == int64(p.Width) && r.Height == int64(p.Height) && r.Palette == p.RenderPalette("") {
-			return r
+			return *r
 		}
 	}
 	t.Fatalf("no render of instance %d in %+v", instance, rows)
@@ -245,7 +252,7 @@ func (h *harness) screenBody(t *testing.T, device, instance int64) string {
 	t.Helper()
 	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	row, err := h.db.Read.GetItemScreen(t.Context(), db.GetItemScreenParams{
-		Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), Layout: "full",
+		Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), TimeZone: testZone.String(), Locale: "en", Layout: "full",
 		DeviceID: device, InstanceID: instance,
 	})
 	if err != nil || row.Image == nil {
@@ -791,7 +798,7 @@ func TestRenderMissingRecipeDir(t *testing.T) {
 		t.Helper()
 		p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 		row, err := h.db.Read.GetItemScreen(t.Context(), db.GetItemScreenParams{
-			Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), Layout: "full", DeviceID: 1, InstanceID: 1,
+			Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), TimeZone: testZone.String(), Locale: "en", Layout: "full", DeviceID: 1, InstanceID: 1,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -1207,7 +1214,7 @@ func TestRebuildAfterRenderDeleted(t *testing.T) {
 	h.renderDue(t, 1)
 	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	row, err := h.db.Read.GetItemScreen(t.Context(), db.GetItemScreenParams{
-		Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), Layout: "full", DeviceID: 1, InstanceID: 1,
+		Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), TimeZone: testZone.String(), Locale: "en", Layout: "full", DeviceID: 1, InstanceID: 1,
 	})
 	if err != nil || row.RenderID == nil || row.Image == nil {
 		t.Fatalf("screen %+v, %v", row, err)

@@ -42,6 +42,10 @@ func (h *harness) fakeRenderer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.mu.Lock()
+	h.configs = append(h.configs, string(files[".trmnlp.yml"]))
+	h.mu.Unlock()
+
 	var log strings.Builder
 	failed := false
 	switch {

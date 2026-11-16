@@ -40,7 +40,13 @@ CREATE TABLE IF NOT EXISTS device (
   -- palette_override is the palette the device renders with when a plugin
   -- instance asks for none, one of its model's palettes. Empty means the
   -- model's default.
-  palette_override TEXT NOT NULL DEFAULT ''
+  palette_override TEXT NOT NULL DEFAULT '',
+  -- time_zone is the IANA zone the device's schedules are read in and its
+  -- renders are made for. Empty means the server's.
+  time_zone TEXT NOT NULL DEFAULT '',
+  -- locale is the language the device's renders are made for, one of
+  -- trmnlp's locales. Empty means the server's locale setting.
+  locale TEXT NOT NULL DEFAULT ''
 );
 
 -- device_state is what a device reported on its last /api/display call, and
@@ -247,11 +253,14 @@ CREATE TABLE IF NOT EXISTS instance_data (
   updated_at INTEGER NOT NULL
 );
 
--- render is the latest build of an instance at one size and palette, the
--- render target. device_id is 0 for a render every device shares, and a
--- device's ID for a recipe that reads trmnl.device, which is built once per
--- device. It has no foreign key because 0 is no device; the
+-- render is the latest build of an instance at one size, palette, time zone
+-- and locale, the render target. device_id is 0 for a render every device
+-- shares, and a device's ID for a recipe that reads trmnl.device, which is
+-- built once per device. It has no foreign key because 0 is no device; the
 -- render_device_deleted trigger removes a deleted device's renders.
+-- time_zone and locale are the ones in effect for the devices that show the
+-- render, never empty, so a change of the server's time zone or locale makes
+-- new targets.
 -- rendered_at and the render_image rows are from the latest build that
 -- succeeded. attempted_at, error and log are from the latest build, so an
 -- error is kept next to the last good images.
@@ -262,6 +271,8 @@ CREATE TABLE IF NOT EXISTS render (
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
   palette TEXT NOT NULL,
+  time_zone TEXT NOT NULL,
+  locale TEXT NOT NULL,
   -- rendered_at is when the latest successful build finished, 0 if none
   -- has.
   rendered_at INTEGER NOT NULL DEFAULT 0,
@@ -282,7 +293,7 @@ CREATE TABLE IF NOT EXISTS render (
   -- build read. The instance's settings are newer than the render when its
   -- settings_at is greater.
   settings_at INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (instance_id, device_id, width, height, palette)
+  UNIQUE (instance_id, device_id, width, height, palette, time_zone, locale)
 );
 
 CREATE TRIGGER IF NOT EXISTS render_device_deleted AFTER DELETE ON device

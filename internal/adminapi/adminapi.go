@@ -5,6 +5,7 @@
 package adminapi
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,9 @@ type Config struct {
 	RecipesDir string
 	// FirmwareDir is where uploaded firmware is stored.
 	FirmwareDir string
+	// Zone is the server's time zone, which a device with none of its own is
+	// in. Nil is UTC.
+	Zone *time.Location
 }
 
 // Server handles admin API requests.
@@ -60,6 +64,7 @@ type Server struct {
 
 // New returns a Server that keeps state in client.
 func New(client *db.Client, cfg Config) *Server {
+	cfg.Zone = cmp.Or(cfg.Zone, time.UTC)
 	return &Server{db: client, cfg: cfg, now: time.Now, cop: http.NewCrossOriginProtection()}
 }
 

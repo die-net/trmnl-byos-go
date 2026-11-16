@@ -15,6 +15,9 @@ type settingsJSON struct {
 	RefreshSeconds int64 `json:"refresh_seconds"`
 	// MinPasswordLength is the fewest bytes a new admin password may have.
 	MinPasswordLength int64 `json:"min_password_length"`
+	// Locale is the locale renders are made for, unless a device sets its
+	// own. It is a string, one of trmnlp's locales.
+	Locale string `json:"locale"`
 	// Bad has the stored text of each setting whose stored value is not
 	// usable, for which the number above is the default. It is left out
 	// when none is.
@@ -27,13 +30,15 @@ type settingsJSON struct {
 type settingsBad struct {
 	RefreshSeconds    *string `json:"refresh_seconds,omitempty"`
 	MinPasswordLength *string `json:"min_password_length,omitempty"`
+	Locale            *string `json:"locale,omitempty"`
 }
 
 // settingsPatch is the body of a settings change. A field left out keeps
 // its value.
 type settingsPatch struct {
-	RefreshSeconds    *int64 `json:"refresh_seconds"`
-	MinPasswordLength *int64 `json:"min_password_length"`
+	RefreshSeconds    *int64  `json:"refresh_seconds"`
+	MinPasswordLength *int64  `json:"min_password_length"`
+	Locale            *string `json:"locale"`
 }
 
 // getSettings answers with every setting. settings.List reads each one
@@ -58,6 +63,8 @@ func (s *Server) getSettings(_ http.ResponseWriter, r *http.Request) (settingsJS
 			out.RefreshSeconds, bad.RefreshSeconds = st.Value, st.Bad
 		case settings.KeyMinPasswordLength:
 			out.MinPasswordLength, bad.MinPasswordLength = st.Value, st.Bad
+		case settings.KeyLocale:
+			out.Locale, bad.Locale = st.Text, st.Bad
 		}
 	}
 	if bad != (settingsBad{}) {
@@ -82,6 +89,9 @@ func (s *Server) patchSettings(w http.ResponseWriter, r *http.Request) (settings
 		if c.val != nil {
 			changes = append(changes, settings.Change{Key: c.key, Value: strconv.FormatInt(*c.val, 10)})
 		}
+	}
+	if req.Locale != nil {
+		changes = append(changes, settings.Change{Key: settings.KeyLocale, Value: *req.Locale})
 	}
 	if err := settings.SetMany(r.Context(), s.db, changes, s.now()); err != nil {
 		return settingsJSON{}, err

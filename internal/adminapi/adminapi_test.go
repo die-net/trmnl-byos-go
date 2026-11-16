@@ -1235,7 +1235,7 @@ func TestVanishedRowIsNotFound(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)
 	ctx := t.Context()
-	if _, err := deviceStatus(ctx, ta.db.Read, 999); !errors.Is(err, device.ErrNoDevice) || !errors.Is(err, errkind.ErrNotFound) {
+	if _, err := ta.srv.deviceStatus(ctx, ta.db.Read, 999); !errors.Is(err, device.ErrNoDevice) || !errors.Is(err, errkind.ErrNotFound) {
 		t.Errorf("deviceStatus of a missing device: %v", err)
 	}
 	gone := db.PluginInstance{ID: 7, RecipeID: 999}

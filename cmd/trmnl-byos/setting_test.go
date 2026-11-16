@@ -41,7 +41,7 @@ func TestSetting(t *testing.T) {
 	same := func(got []string, want ...string) bool { return strings.Join(got, " ") == strings.Join(want, " ") }
 
 	rows := list()
-	if !same(rows["refresh_seconds"], "900", "900", "yes") || !same(rows["min_password_length"], "12", "12", "yes") || len(rows) != 2 {
+	if !same(rows["refresh_seconds"], "900", "900", "yes") || !same(rows["min_password_length"], "12", "12", "yes") || !same(rows["locale"], "en", "en", "yes") || len(rows) != 3 {
 		t.Fatalf("defaults: %v", rows)
 	}
 	if _, err := runSetting(t, "set", "-data", dir, "refresh_seconds", "600"); err != nil {
@@ -55,6 +55,19 @@ func TestSetting(t *testing.T) {
 	}
 	if rows := list(); !same(rows["refresh_seconds"], "900", "900", "yes") {
 		t.Fatalf("after reset: %v", rows)
+	}
+	// A setting that is one of a fixed set of values.
+	if out, err := runSetting(t, "set", "-data", dir, "locale", "de"); err != nil || out != "Set locale to de.\n" {
+		t.Fatalf("set locale: %q, %v", out, err)
+	}
+	if rows := list(); !same(rows["locale"], "de", "en", "no") || !same(rows["refresh_seconds"], "900", "900", "yes") {
+		t.Fatalf("after set locale: %v", rows)
+	}
+	if _, err := runSetting(t, "reset", "-data", dir, "locale"); err != nil {
+		t.Fatal(err)
+	}
+	if rows := list(); !same(rows["locale"], "en", "en", "yes") {
+		t.Fatalf("after reset locale: %v", rows)
 	}
 }
 
@@ -75,7 +88,7 @@ func TestSettingBadRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 3 {
+	if len(lines) != 4 {
 		t.Fatalf("want a header and one line per setting: %q", out)
 	}
 	for _, want := range []string{"refresh_seconds", "900", "bad", `stored value "abc" is not usable, using the default`, "trmnl-byos setting set refresh_seconds VALUE", "setting reset refresh_seconds"} {
@@ -103,6 +116,9 @@ func TestSettingRefused(t *testing.T) {
 	}{
 		{"set out of range", []string{"set", "refresh_seconds", "0"}, errkind.ErrInvalid},
 		{"set not a number", []string{"set", "refresh_seconds", "15m"}, errkind.ErrInvalid},
+		{"set a locale trmnlp lacks", []string{"set", "locale", "xx"}, errkind.ErrInvalid},
+		{"set a locale in the wrong case", []string{"set", "locale", "DE"}, errkind.ErrInvalid},
+		{"set an empty locale", []string{"set", "locale", ""}, errkind.ErrInvalid},
 		{"set unknown key", []string{"set", "nope", "1"}, errkind.ErrNotFound},
 		{"set join_until", []string{"set", "join_until", "1"}, errkind.ErrNotFound},
 		{"set the password hash", []string{"set", "admin_password_hash", "x"}, errkind.ErrNotFound},

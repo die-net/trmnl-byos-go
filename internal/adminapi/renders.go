@@ -12,8 +12,8 @@ import (
 // errNoRender means no render target has the ID.
 var errNoRender = errkind.New(errkind.ErrNotFound, "no such render")
 
-// renderJSON is the status of one render target: an instance at one size
-// and palette, for one device or shared by all.
+// renderJSON is the status of one render target: an instance at one size,
+// palette, time zone and locale, for one device or shared by all.
 type renderJSON struct {
 	ID         int64 `json:"id"`
 	InstanceID int64 `json:"instance_id"`
@@ -23,6 +23,9 @@ type renderJSON struct {
 	Width   int64   `json:"width"`
 	Height  int64   `json:"height"`
 	Palette string  `json:"palette"`
+	// TimeZone and Locale are the zone and locale the render is made for.
+	TimeZone string `json:"time_zone"`
+	Locale   string `json:"locale"`
 	// RenderedAt is when the latest successful build finished, 0 if none
 	// has.
 	RenderedAt  int64 `json:"rendered_at"`
@@ -45,9 +48,10 @@ func (s *Server) listRenders(_ http.ResponseWriter, r *http.Request) ([]renderJS
 		return nil, fmt.Errorf("list renders: %w", err)
 	}
 	out := make([]renderJSON, 0, len(rows))
-	for _, x := range rows {
+	for i := range rows {
+		x := &rows[i]
 		out = append(out, renderJSON{
-			ID: x.ID, InstanceID: x.InstanceID, Device: x.Device, Width: x.Width, Height: x.Height, Palette: x.Palette,
+			ID: x.ID, InstanceID: x.InstanceID, Device: x.Device, Width: x.Width, Height: x.Height, Palette: x.Palette, TimeZone: x.TimeZone, Locale: x.Locale,
 			RenderedAt: x.RenderedAt, AttemptedAt: x.AttemptedAt, DurationSeconds: float64(x.DurationMs) / 1000, Error: x.Error,
 		})
 	}
@@ -68,7 +72,7 @@ func (s *Server) getRender(_ http.ResponseWriter, r *http.Request) (renderDetail
 	}
 	return renderDetailJSON{
 		renderJSON: renderJSON{
-			ID: x.ID, InstanceID: x.InstanceID, Device: x.Device, Width: x.Width, Height: x.Height, Palette: x.Palette,
+			ID: x.ID, InstanceID: x.InstanceID, Device: x.Device, Width: x.Width, Height: x.Height, Palette: x.Palette, TimeZone: x.TimeZone, Locale: x.Locale,
 			RenderedAt: x.RenderedAt, AttemptedAt: x.AttemptedAt, DurationSeconds: float64(x.DurationMs) / 1000, Error: x.Error,
 		},
 		Log: x.Log,

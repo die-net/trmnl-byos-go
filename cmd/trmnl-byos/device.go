@@ -24,17 +24,20 @@ func devices(ctx context.Context, args []string, out io.Writer) error {
 	})
 }
 
-// deviceSet changes a device's name, profile and palette. A flag left out
-// keeps its setting, and none clears a profile or palette.
+// deviceSet changes a device's name, profile, palette, time zone and locale.
+// A flag left out keeps its setting, and none clears a profile, palette, time
+// zone or locale.
 func deviceSet(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("device set", flag.ExitOnError)
 	data := dataFlag(fs)
 	name := fs.String("name", "", "the device's name; empty for none")
 	prof := fs.String("profile", "", "the registry model the device's panel is, such as og_bwry, or none for the one its firmware reports")
 	palette := fs.String("palette", "", "the palette to render with when a plugin instance asks for none, one of the model's, or none for the model's default")
+	zone := fs.String("zone", "", "the IANA time zone the device's schedules are read in and its renders are made for, such as America/Los_Angeles, or none for the server's")
+	locale := fs.String("locale", "", "the locale the device's renders are made for, such as de or pt-BR, or none for the server's locale setting")
 	rest := parseInterspersed(fs, args)
 	if len(rest) != 1 {
-		return errors.New("usage: trmnl-byos device set [-data dir] [-name name] [-profile model|none] [-palette id|none] <friendly ID or MAC>")
+		return errors.New("usage: trmnl-byos device set [-data dir] [-name name] [-profile model|none] [-palette id|none] [-zone name|none] [-locale code|none] <friendly ID or MAC>")
 	}
 	var c device.Change
 	noneIsEmpty := func(v *string) *string {
@@ -51,10 +54,14 @@ func deviceSet(ctx context.Context, args []string, out io.Writer) error {
 			c.Profile = noneIsEmpty(prof)
 		case "palette":
 			c.Palette = noneIsEmpty(palette)
+		case "zone":
+			c.TimeZone = noneIsEmpty(zone)
+		case "locale":
+			c.Locale = noneIsEmpty(locale)
 		}
 	})
-	if c.Name == nil && c.Profile == nil && c.Palette == nil {
-		return errors.New("device set: give -name, -profile or -palette")
+	if c.Name == nil && c.Profile == nil && c.Palette == nil && c.TimeZone == nil && c.Locale == nil {
+		return errors.New("device set: give -name, -profile, -palette, -zone or -locale")
 	}
 	client, err := openDB(ctx, *data)
 	if err != nil {
@@ -65,7 +72,8 @@ func deviceSet(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "%s: name %s, profile %s, palette %s.\n", dev.FriendlyID, orNone(dev.Name), orNone(dev.ProfileOverride), orNone(dev.PaletteOverride))
+	_, err = fmt.Fprintf(out, "%s: name %s, profile %s, palette %s, zone %s, locale %s.\n", dev.FriendlyID,
+		orNone(dev.Name), orNone(dev.ProfileOverride), orNone(dev.PaletteOverride), orNone(dev.TimeZone), orNone(dev.Locale))
 	return err
 }
 

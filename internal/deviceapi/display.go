@@ -228,14 +228,21 @@ func untilChange(lists []playlist.List, now time.Time, refresh int64) int64 {
 }
 
 // playlistScreen picks what a device shows from its playlists, moving its
-// cursor first. The refresh rate it returns is refresh, shortened to wake the
-// device when the item ends, a schedule changes or a render is ready.
+// cursor first. Its schedules are read in the device's time zone, and it is
+// shown the render made for that zone and its locale. The refresh rate it
+// returns is refresh, shortened to wake the device when the item ends, a
+// schedule changes or a render is ready.
 func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, pressed bool, refresh int64) (screenChoice, error) {
-	pick, err := s.advance(ctx, dev.ID, pressed)
+	zone := device.ZoneOf(dev.TimeZone, s.cfg.Zone)
+	pick, err := s.advance(ctx, dev.ID, zone, pressed)
 	if err != nil || len(pick.lists) == 0 {
 		return screenChoice{refresh: refresh}, err
 	}
-	now := s.now().In(s.cfg.Zone)
+	serverLocale, err := settings.Locale(ctx, s.db.Read)
+	if err != nil {
+		slog.Error("display: read the locale setting; using the default", "err", err)
+	}
+	now := s.now().In(zone)
 	refresh = untilChange(pick.lists, now, refresh)
 	if !pick.ok {
 		// Nothing is scheduled, so there is no cursor to move. The text is
@@ -256,6 +263,8 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 		Width:      int64(p.Width),
 		Height:     int64(p.Height),
 		Palette:    p.RenderPalette(item.Palette),
+		TimeZone:   zone.String(),
+		Locale:     device.LocaleOf(dev.Locale, serverLocale),
 		Layout:     "full",
 		DeviceID:   dev.ID,
 		InstanceID: item.InstanceID,
@@ -342,9 +351,9 @@ type pick struct {
 
 // advance moves a device's playlist cursor for this wake and returns the
 // item it now shows. The playlist is the first that is scheduled at the
-// wake plus the slack a timer wake may come early, and has an item that is
-// shown then.
-func (s *Server) advance(ctx context.Context, deviceID int64, pressed bool) (pick, error) {
+// wake plus the slack a timer wake may come early, read in zone, and has an
+// item that is shown then.
+func (s *Server) advance(ctx context.Context, deviceID int64, zone *time.Location, pressed bool) (pick, error) {
 	var out pick
 	err := s.db.InTx(ctx, func(q *db.Queries) error {
 		out = pick{}
@@ -354,7 +363,7 @@ func (s *Server) advance(ctx context.Context, deviceID int64, pressed bool) (pic
 		}
 		lists, groups := playlist.DeviceLists(rows)
 		out.lists = lists
-		now := s.now().In(s.cfg.Zone)
+		now := s.now().In(zone)
 		c := playlist.Choose(lists, now.Add(playlist.WakeSlack))
 		if c < 0 {
 			return nil

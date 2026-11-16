@@ -1,13 +1,14 @@
 -- name: ListRenderTargets :many
 -- Every instance in a visible item of a playlist linked to a device that is
 -- not blocked, with what the device reported about itself, from which its
--- render size and palette follow.
+-- render size and palette follow, and its time zone and locale settings,
+-- which are empty for the server's.
 -- A recipe's device_id is the device the render is for, which the caller
 -- drops for a recipe whose renders every device shares. data_at is when
 -- the instance's pushed data last changed, 0 if it has none. settings_at is
 -- when its field values last changed.
 SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
-  recipe.refresh_interval, device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
+  recipe.refresh_interval, device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device_state.width, device_state.height,
   device_state.device_id IS NOT NULL AS woken,
   CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at,
   plugin_instance.settings_at
@@ -25,8 +26,8 @@ WHERE playlist_item.hidden = 0
 -- name: ListDeviceWakes :many
 -- What the scheduler needs to know about each device that has woken and is
 -- not blocked: its size, when it last woke and how long it was told to
--- sleep, and its playlist cursor.
-SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
+-- sleep, its playlist cursor, and its time zone and locale settings.
+SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device_state.width, device_state.height,
   device_state.last_seen, device_state.last_refresh_rate_sent, device_cursor.item_id, device_cursor.item_started_at
 FROM device_state
 JOIN device ON device.id = device_state.device_id
@@ -63,13 +64,13 @@ WHERE device.id = ?;
 -- name: ListRenderRows :many
 -- Every render's row without its build log, which is large, for the
 -- scheduler to decide in one read what is due.
-SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, data_at, settings_at, failures
+SELECT id, instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, data_at, settings_at, failures
 FROM render;
 
 -- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
-ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
@@ -85,9 +86,9 @@ RETURNING id;
 -- failures is 1 for a failure that counts toward the backoff and 0 for one
 -- that does not, such as an unreachable renderer. It is added to the row's
 -- count.
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
-VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
   error = excluded.error,
@@ -103,10 +104,10 @@ ON CONFLICT (render_id, layout) DO UPDATE SET image = excluded.image, bytes = ex
 
 -- name: GetItemScreen :one
 -- What a device showing an instance gets: the instance's name and refresh
--- interval, and the render for the device's size and palette, if any. A
--- recipe's renders are either shared (device 0) or all per device, so the
--- device's own render is the one that matches, and the shared one is the
--- fallback.
+-- interval, and the render for the device's size, palette, time zone and
+-- locale, if any. A recipe's renders are either shared (device 0) or all per
+-- device, so the device's own render is the one that matches, and the shared
+-- one is the fallback.
 SELECT plugin_instance.name, recipe.refresh_interval,
   render.id AS render_id, render.rendered_at, render.attempted_at, render.error,
   render_image.image, render_image.bytes
@@ -115,6 +116,7 @@ JOIN recipe ON recipe.id = plugin_instance.recipe_id
 LEFT JOIN render ON render.instance_id = plugin_instance.id
   AND render.device_id IN (0, sqlc.arg(device_id))
   AND render.width = sqlc.arg(width) AND render.height = sqlc.arg(height) AND render.palette = sqlc.arg(palette)
+  AND render.time_zone = sqlc.arg(time_zone) AND render.locale = sqlc.arg(locale)
 LEFT JOIN render_image ON render_image.render_id = render.id AND render_image.layout = sqlc.arg(layout)
 WHERE plugin_instance.id = sqlc.arg(instance_id)
 ORDER BY render.device_id DESC
@@ -124,15 +126,15 @@ LIMIT 1;
 -- Every render target's status, without the build log. device is the
 -- friendly ID of the device a per-device render is for, NULL for a shared
 -- render.
-SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette,
+SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette, render.time_zone, render.locale,
   render.rendered_at, render.attempted_at, render.duration_ms, render.error
 FROM render
 LEFT JOIN device ON device.id = render.device_id
-ORDER BY render.instance_id, render.device_id, render.width, render.height, render.palette;
+ORDER BY render.instance_id, render.device_id, render.width, render.height, render.palette, render.time_zone, render.locale;
 
 -- name: GetRenderStatus :one
 -- One render target's status with its build log.
-SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette,
+SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette, render.time_zone, render.locale,
   render.rendered_at, render.attempted_at, render.duration_ms, render.error, render.log
 FROM render
 LEFT JOIN device ON device.id = render.device_id
@@ -140,7 +142,7 @@ WHERE render.id = ?;
 
 -- name: ListRenderKeys :many
 -- Every render's target, for finding the ones no device needs.
-SELECT id, instance_id, device_id, width, height, palette FROM render;
+SELECT id, instance_id, device_id, width, height, palette, time_zone, locale FROM render;
 
 -- name: DeleteRender :exec
 -- Deletes a render and, by cascade, its images, which image expiry then

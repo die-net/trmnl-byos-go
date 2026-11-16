@@ -48,8 +48,9 @@ JOIN recipe ON recipe.id = plugin_instance.recipe_id
 LEFT JOIN render ON render.instance_id = plugin_instance.id
   AND render.device_id IN (0, ?1)
   AND render.width = ?2 AND render.height = ?3 AND render.palette = ?4
-LEFT JOIN render_image ON render_image.render_id = render.id AND render_image.layout = ?5
-WHERE plugin_instance.id = ?6
+  AND render.time_zone = ?5 AND render.locale = ?6
+LEFT JOIN render_image ON render_image.render_id = render.id AND render_image.layout = ?7
+WHERE plugin_instance.id = ?8
 ORDER BY render.device_id DESC
 LIMIT 1
 `
@@ -59,6 +60,8 @@ type GetItemScreenParams struct {
 	Width      int64  `json:"width"`
 	Height     int64  `json:"height"`
 	Palette    string `json:"palette"`
+	TimeZone   string `json:"time_zone"`
+	Locale     string `json:"locale"`
 	Layout     string `json:"layout"`
 	InstanceID int64  `json:"instance_id"`
 }
@@ -75,16 +78,18 @@ type GetItemScreenRow struct {
 }
 
 // What a device showing an instance gets: the instance's name and refresh
-// interval, and the render for the device's size and palette, if any. A
-// recipe's renders are either shared (device 0) or all per device, so the
-// device's own render is the one that matches, and the shared one is the
-// fallback.
+// interval, and the render for the device's size, palette, time zone and
+// locale, if any. A recipe's renders are either shared (device 0) or all per
+// device, so the device's own render is the one that matches, and the shared
+// one is the fallback.
 func (q *Queries) GetItemScreen(ctx context.Context, arg GetItemScreenParams) (GetItemScreenRow, error) {
 	row := q.db.QueryRowContext(ctx, getItemScreen,
 		arg.DeviceID,
 		arg.Width,
 		arg.Height,
 		arg.Palette,
+		arg.TimeZone,
+		arg.Locale,
 		arg.Layout,
 		arg.InstanceID,
 	)
@@ -134,7 +139,7 @@ func (q *Queries) GetRenderDevice(ctx context.Context, id int64) (GetRenderDevic
 }
 
 const getRenderStatus = `-- name: GetRenderStatus :one
-SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette,
+SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette, render.time_zone, render.locale,
   render.rendered_at, render.attempted_at, render.duration_ms, render.error, render.log
 FROM render
 LEFT JOIN device ON device.id = render.device_id
@@ -148,6 +153,8 @@ type GetRenderStatusRow struct {
 	Width       int64   `json:"width"`
 	Height      int64   `json:"height"`
 	Palette     string  `json:"palette"`
+	TimeZone    string  `json:"time_zone"`
+	Locale      string  `json:"locale"`
 	RenderedAt  int64   `json:"rendered_at"`
 	AttemptedAt int64   `json:"attempted_at"`
 	DurationMs  int64   `json:"duration_ms"`
@@ -166,6 +173,8 @@ func (q *Queries) GetRenderStatus(ctx context.Context, id int64) (GetRenderStatu
 		&i.Width,
 		&i.Height,
 		&i.Palette,
+		&i.TimeZone,
+		&i.Locale,
 		&i.RenderedAt,
 		&i.AttemptedAt,
 		&i.DurationMs,
@@ -176,7 +185,7 @@ func (q *Queries) GetRenderStatus(ctx context.Context, id int64) (GetRenderStatu
 }
 
 const listDeviceWakes = `-- name: ListDeviceWakes :many
-SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
+SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device_state.width, device_state.height,
   device_state.last_seen, device_state.last_refresh_rate_sent, device_cursor.item_id, device_cursor.item_started_at
 FROM device_state
 JOIN device ON device.id = device_state.device_id
@@ -189,6 +198,8 @@ type ListDeviceWakesRow struct {
 	FwModel             string `json:"fw_model"`
 	ProfileOverride     string `json:"profile_override"`
 	PaletteOverride     string `json:"palette_override"`
+	TimeZone            string `json:"time_zone"`
+	Locale              string `json:"locale"`
 	Width               *int64 `json:"width"`
 	Height              *int64 `json:"height"`
 	LastSeen            int64  `json:"last_seen"`
@@ -199,7 +210,7 @@ type ListDeviceWakesRow struct {
 
 // What the scheduler needs to know about each device that has woken and is
 // not blocked: its size, when it last woke and how long it was told to
-// sleep, and its playlist cursor.
+// sleep, its playlist cursor, and its time zone and locale settings.
 func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDeviceWakes)
 	if err != nil {
@@ -214,6 +225,8 @@ func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, er
 			&i.FwModel,
 			&i.ProfileOverride,
 			&i.PaletteOverride,
+			&i.TimeZone,
+			&i.Locale,
 			&i.Width,
 			&i.Height,
 			&i.LastSeen,
@@ -235,7 +248,7 @@ func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, er
 }
 
 const listRenderKeys = `-- name: ListRenderKeys :many
-SELECT id, instance_id, device_id, width, height, palette FROM render
+SELECT id, instance_id, device_id, width, height, palette, time_zone, locale FROM render
 `
 
 type ListRenderKeysRow struct {
@@ -245,6 +258,8 @@ type ListRenderKeysRow struct {
 	Width      int64  `json:"width"`
 	Height     int64  `json:"height"`
 	Palette    string `json:"palette"`
+	TimeZone   string `json:"time_zone"`
+	Locale     string `json:"locale"`
 }
 
 // Every render's target, for finding the ones no device needs.
@@ -264,6 +279,8 @@ func (q *Queries) ListRenderKeys(ctx context.Context) ([]ListRenderKeysRow, erro
 			&i.Width,
 			&i.Height,
 			&i.Palette,
+			&i.TimeZone,
+			&i.Locale,
 		); err != nil {
 			return nil, err
 		}
@@ -279,7 +296,7 @@ func (q *Queries) ListRenderKeys(ctx context.Context) ([]ListRenderKeysRow, erro
 }
 
 const listRenderRows = `-- name: ListRenderRows :many
-SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, data_at, settings_at, failures
+SELECT id, instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, data_at, settings_at, failures
 FROM render
 `
 
@@ -290,6 +307,8 @@ type ListRenderRowsRow struct {
 	Width       int64  `json:"width"`
 	Height      int64  `json:"height"`
 	Palette     string `json:"palette"`
+	TimeZone    string `json:"time_zone"`
+	Locale      string `json:"locale"`
 	RenderedAt  int64  `json:"rendered_at"`
 	AttemptedAt int64  `json:"attempted_at"`
 	DurationMs  int64  `json:"duration_ms"`
@@ -317,6 +336,8 @@ func (q *Queries) ListRenderRows(ctx context.Context) ([]ListRenderRowsRow, erro
 			&i.Width,
 			&i.Height,
 			&i.Palette,
+			&i.TimeZone,
+			&i.Locale,
 			&i.RenderedAt,
 			&i.AttemptedAt,
 			&i.DurationMs,
@@ -340,7 +361,7 @@ func (q *Queries) ListRenderRows(ctx context.Context) ([]ListRenderRowsRow, erro
 
 const listRenderTargets = `-- name: ListRenderTargets :many
 SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
-  recipe.refresh_interval, device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
+  recipe.refresh_interval, device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device_state.width, device_state.height,
   device_state.device_id IS NOT NULL AS woken,
   CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at,
   plugin_instance.settings_at
@@ -365,6 +386,8 @@ type ListRenderTargetsRow struct {
 	FwModel         string `json:"fw_model"`
 	ProfileOverride string `json:"profile_override"`
 	PaletteOverride string `json:"palette_override"`
+	TimeZone        string `json:"time_zone"`
+	Locale          string `json:"locale"`
 	Width           *int64 `json:"width"`
 	Height          *int64 `json:"height"`
 	Woken           bool   `json:"woken"`
@@ -374,7 +397,8 @@ type ListRenderTargetsRow struct {
 
 // Every instance in a visible item of a playlist linked to a device that is
 // not blocked, with what the device reported about itself, from which its
-// render size and palette follow.
+// render size and palette follow, and its time zone and locale settings,
+// which are empty for the server's.
 // A recipe's device_id is the device the render is for, which the caller
 // drops for a recipe whose renders every device shares. data_at is when
 // the instance's pushed data last changed, 0 if it has none. settings_at is
@@ -397,6 +421,8 @@ func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow
 			&i.FwModel,
 			&i.ProfileOverride,
 			&i.PaletteOverride,
+			&i.TimeZone,
+			&i.Locale,
 			&i.Width,
 			&i.Height,
 			&i.Woken,
@@ -417,11 +443,11 @@ func (q *Queries) ListRenderTargets(ctx context.Context) ([]ListRenderTargetsRow
 }
 
 const listRenders = `-- name: ListRenders :many
-SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette,
+SELECT render.id, render.instance_id, device.friendly_id AS device, render.width, render.height, render.palette, render.time_zone, render.locale,
   render.rendered_at, render.attempted_at, render.duration_ms, render.error
 FROM render
 LEFT JOIN device ON device.id = render.device_id
-ORDER BY render.instance_id, render.device_id, render.width, render.height, render.palette
+ORDER BY render.instance_id, render.device_id, render.width, render.height, render.palette, render.time_zone, render.locale
 `
 
 type ListRendersRow struct {
@@ -431,6 +457,8 @@ type ListRendersRow struct {
 	Width       int64   `json:"width"`
 	Height      int64   `json:"height"`
 	Palette     string  `json:"palette"`
+	TimeZone    string  `json:"time_zone"`
+	Locale      string  `json:"locale"`
 	RenderedAt  int64   `json:"rendered_at"`
 	AttemptedAt int64   `json:"attempted_at"`
 	DurationMs  int64   `json:"duration_ms"`
@@ -456,6 +484,8 @@ func (q *Queries) ListRenders(ctx context.Context) ([]ListRendersRow, error) {
 			&i.Width,
 			&i.Height,
 			&i.Palette,
+			&i.TimeZone,
+			&i.Locale,
 			&i.RenderedAt,
 			&i.AttemptedAt,
 			&i.DurationMs,
@@ -559,9 +589,9 @@ func (q *Queries) ListShownItems(ctx context.Context) ([]ListShownItemsRow, erro
 }
 
 const saveRenderFailure = `-- name: SaveRenderFailure :exec
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
-VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
   error = excluded.error,
@@ -577,6 +607,8 @@ type SaveRenderFailureParams struct {
 	Width       int64  `json:"width"`
 	Height      int64  `json:"height"`
 	Palette     string `json:"palette"`
+	TimeZone    string `json:"time_zone"`
+	Locale      string `json:"locale"`
 	AttemptedAt int64  `json:"attempted_at"`
 	DurationMs  int64  `json:"duration_ms"`
 	Error       string `json:"error"`
@@ -597,6 +629,8 @@ func (q *Queries) SaveRenderFailure(ctx context.Context, arg SaveRenderFailurePa
 		arg.Width,
 		arg.Height,
 		arg.Palette,
+		arg.TimeZone,
+		arg.Locale,
 		arg.AttemptedAt,
 		arg.DurationMs,
 		arg.Error,
@@ -632,9 +666,9 @@ func (q *Queries) SaveRenderImage(ctx context.Context, arg SaveRenderImageParams
 }
 
 const saveRenderSuccess = `-- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
-ON CONFLICT (instance_id, device_id, width, height, palette) DO UPDATE SET
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
@@ -652,6 +686,8 @@ type SaveRenderSuccessParams struct {
 	Width       int64  `json:"width"`
 	Height      int64  `json:"height"`
 	Palette     string `json:"palette"`
+	TimeZone    string `json:"time_zone"`
+	Locale      string `json:"locale"`
 	RenderedAt  int64  `json:"rendered_at"`
 	AttemptedAt int64  `json:"attempted_at"`
 	DurationMs  int64  `json:"duration_ms"`
@@ -667,6 +703,8 @@ func (q *Queries) SaveRenderSuccess(ctx context.Context, arg SaveRenderSuccessPa
 		arg.Width,
 		arg.Height,
 		arg.Palette,
+		arg.TimeZone,
+		arg.Locale,
 		arg.RenderedAt,
 		arg.AttemptedAt,
 		arg.DurationMs,

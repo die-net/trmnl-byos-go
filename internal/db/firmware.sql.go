@@ -414,7 +414,7 @@ func (q *Queries) ListFirmwareClashes(ctx context.Context, arg ListFirmwareClash
 }
 
 const listFirmwareDevices = `-- name: ListFirmwareDevices :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale,
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers,
   CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS last_offered_at,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
@@ -462,6 +462,8 @@ func (q *Queries) ListFirmwareDevices(ctx context.Context, arg ListFirmwareDevic
 			&i.Device.FwPin,
 			&i.Device.ProfileOverride,
 			&i.Device.PaletteOverride,
+			&i.Device.TimeZone,
+			&i.Device.Locale,
 			&i.Offers,
 			&i.LastOfferedAt,
 			&i.Blocked,

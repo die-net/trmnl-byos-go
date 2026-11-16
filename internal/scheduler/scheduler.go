@@ -2,9 +2,9 @@
 // devices' playlists show, so a device's request never waits on a render.
 //
 // Renders follow data, not wakes: an instance is rendered again when its
-// recipe's refresh interval has passed, for each size and palette a device
-// showing it needs, and every device of that size and palette shares the
-// render. A build starts shortly before the wake that would otherwise
+// recipe's refresh interval has passed, for each size, palette, time zone and
+// locale a device showing it needs, and every device of that size, palette,
+// time zone and locale shares the render. A build starts shortly before the wake that would otherwise
 // show a render older than the interval, and when data pushed to the
 // instance changes. A recipe that reads trmnl.device is rendered once per device
 // instead, with that device's values.
@@ -26,12 +26,14 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
 	"github.com/die-net/trmnl-byos-go/internal/render"
 	"github.com/die-net/trmnl-byos-go/internal/secrets"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 // maxRetryAfter is the longest wait between builds of a target that keeps
@@ -69,8 +71,9 @@ type Config struct {
 	RecipesDir string
 	// Secrets opens instances' secret field values.
 	Secrets *secrets.Key
-	// Zone is the server's time zone. Schedules are read in it, and recipes
-	// render in it. Nil is UTC.
+	// Zone is the server's time zone, which a device with none of its own
+	// has. Its schedules are read in its zone, and recipes render in it. Nil
+	// is UTC.
 	Zone *time.Location
 	// AssetHosts are the hosts whose assets the renderer's proxy caches.
 	AssetHosts []string
@@ -116,15 +119,19 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
-// target is one render: an instance at a size and palette, for one device
-// when the recipe reads trmnl.device.
+// target is one render: an instance at a size, palette, time zone and
+// locale, for one device when the recipe reads trmnl.device.
 type target struct {
 	instance int64
 	// device is the device's ID, or 0 for a render every device shares.
 	device        int64
 	width, height int
 	palette       string
-	refresh       time.Duration
+	// zone and locale are the IANA time zone name and the locale the render
+	// is made for, which are the ones in effect for the devices that show
+	// it, never empty.
+	zone, locale string
+	refresh      time.Duration
 	// broken is why the target cannot be built, empty if it can. A broken
 	// target is not sent to the renderer. It gets a render failure with
 	// this reason, so its devices show it and it is retried after
@@ -149,7 +156,7 @@ func (s *Scheduler) RenderNext(ctx context.Context) (built bool, err error) {
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		slog.Warn("render failed", "instance", t.instance, "device", t.device, "width", t.width, "height", t.height, "palette", t.palette, "err", err)
+		slog.Warn("render failed", "instance", t.instance, "device", t.device, "width", t.width, "height", t.height, "palette", t.palette, "zone", t.zone, "locale", t.locale, "err", err)
 	}
 	return recorded, nil
 }
@@ -208,14 +215,14 @@ func (s *Scheduler) dueTargets(ctx context.Context) ([]job, error) {
 	for i := range rows {
 		r := &rows[i]
 		// Only what due and lead read. The build log is not loaded.
-		renders[renderKey{r.InstanceID, r.DeviceID, r.Width, r.Height, r.Palette}] = &db.Render{
+		renders[renderKey{r.InstanceID, r.DeviceID, r.Width, r.Height, r.Palette, r.TimeZone, r.Locale}] = &db.Render{
 			RenderedAt: r.RenderedAt, AttemptedAt: r.AttemptedAt, DurationMs: r.DurationMs, Error: r.Error, DataAt: r.DataAt, SettingsAt: r.SettingsAt, Failures: r.Failures,
 		}
 	}
 	now := s.now()
 	var list []job
 	for _, c := range cands {
-		if ok, by := due(c.target, renders[renderKey{c.instance, c.device, int64(c.width), int64(c.height), c.palette}], c.wanted, c.woken, c.read, now); ok {
+		if ok, by := due(c.target, renders[c.key()], c.wanted, c.woken, c.read, now); ok {
 			list = append(list, job{target: c.target, seen: c.read, by: by})
 		}
 	}
@@ -236,7 +243,12 @@ func (s *Scheduler) dueTargets(ctx context.Context) ([]job, error) {
 // renderKey is the columns that identify a render row, as a target has them.
 type renderKey struct {
 	instance, device, width, height int64
-	palette                         string
+	palette, zone, locale           string
+}
+
+// key returns the render row the target is stored in.
+func (t target) key() renderKey {
+	return renderKey{t.instance, t.device, int64(t.width), int64(t.height), t.palette, t.zone, t.locale}
 }
 
 // keepSet is the renders pruning keeps: the exact targets that are wanted,
@@ -252,7 +264,8 @@ func (k keepSet) has(key renderKey) bool {
 }
 
 // pruneRenders deletes the renders that match no candidate: an instance
-// that left every playlist, or a size or palette no device has now. Their
+// that left every playlist, or a size, palette, time zone or locale no device
+// has now, such as after a device's zone changed or the server's locale did. Their
 // rows would otherwise keep their images referenced, and so stored,
 // forever. A candidate is every item of every playlist a device is linked
 // to, at the size the device last reported, so no device can show a render
@@ -262,7 +275,7 @@ func (k keepSet) has(key renderKey) bool {
 func (s *Scheduler) pruneRenders(ctx context.Context, cands []*candidate) error {
 	keep := keepSet{keys: make(map[renderKey]bool, len(cands)), instances: map[int64]bool{}}
 	for _, c := range cands {
-		keep.keys[renderKey{c.instance, c.device, int64(c.width), int64(c.height), c.palette}] = true
+		keep.keys[c.key()] = true
 		if c.broken != "" {
 			// Its recipe could not be scanned, so it is not known which of
 			// its renders are per device. It says nothing about which are
@@ -276,13 +289,13 @@ func (s *Scheduler) pruneRenders(ctx context.Context, cands []*candidate) error 
 			return fmt.Errorf("list renders: %w", err)
 		}
 		for _, r := range rows {
-			if keep.has(renderKey{r.InstanceID, r.DeviceID, r.Width, r.Height, r.Palette}) {
+			if keep.has(renderKey{r.InstanceID, r.DeviceID, r.Width, r.Height, r.Palette, r.TimeZone, r.Locale}) {
 				continue
 			}
 			if err := q.DeleteRender(ctx, r.ID); err != nil {
 				return fmt.Errorf("delete render: %w", err)
 			}
-			slog.Info("deleted a render no device needs", "instance", r.InstanceID, "device", r.DeviceID, "width", r.Width, "height", r.Height, "palette", r.Palette)
+			slog.Info("deleted a render no device needs", "instance", r.InstanceID, "device", r.DeviceID, "width", r.Width, "height", r.Height, "palette", r.Palette, "zone", r.TimeZone, "locale", r.Locale)
 		}
 		return nil
 	})
@@ -292,10 +305,14 @@ func (s *Scheduler) pruneRenders(ctx context.Context, cands []*candidate) error 
 // fixed order, with when each is wanted. A device wants the item it will
 // show at its next wake, which is playlist.Advance's answer, without a
 // press, for last_seen plus the refresh_rate it was sent, from the playlist
-// playlist.Choose picks at that wake plus playlist.WakeSlack. A target that is
-// per device is wanted by that device alone, and a shared one by every
-// device that will show it.
+// playlist.Choose picks at that wake plus playlist.WakeSlack, read in the
+// device's time zone. A target that is per device is wanted by that device
+// alone, and a shared one by every device that will show it.
 func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
+	serverLocale, err := settings.Locale(ctx, s.cfg.DB.Read)
+	if err != nil {
+		return nil, fmt.Errorf("read the locale setting: %w", err)
+	}
 	rows, err := s.cfg.DB.Read.ListRenderTargets(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list render targets: %w", err)
@@ -303,7 +320,8 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 	byTarget := make(map[target]*candidate, len(rows))
 	for i := range rows {
 		r := &rows[i]
-		t := s.newTarget(r.InstanceID, r.RecipeID, r.DeviceID, r.FwModel, profile.Override{Model: r.ProfileOverride, Palette: r.PaletteOverride}, r.Width, r.Height, r.Palette, r.RefreshInterval)
+		zone, locale := device.ZoneOf(r.TimeZone, s.cfg.Zone).String(), device.LocaleOf(r.Locale, serverLocale)
+		t := s.newTarget(r.InstanceID, r.RecipeID, r.DeviceID, r.FwModel, profile.Override{Model: r.ProfileOverride, Palette: r.PaletteOverride}, r.Width, r.Height, r.Palette, zone, locale, r.RefreshInterval)
 		c := byTarget[t]
 		if c == nil {
 			c = &candidate{target: t}
@@ -336,8 +354,9 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 			}
 		})
 		// The device chooses at its wake plus the slack a wake may come
-		// early, as /api/display does.
-		next := time.Unix(w.LastSeen+w.LastRefreshRateSent, 0).In(s.cfg.Zone)
+		// early, as /api/display does, in its own time zone.
+		zone := device.ZoneOf(w.TimeZone, s.cfg.Zone)
+		next := time.Unix(w.LastSeen+w.LastRefreshRateSent, 0).In(zone)
 		at := next.Add(playlist.WakeSlack)
 		c := playlist.Choose(lists, at)
 		if c < 0 {
@@ -352,7 +371,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 			continue
 		}
 		it := &groups[c][j]
-		t := s.newTarget(it.InstanceID, it.RecipeID, w.DeviceID, w.FwModel, profile.Override{Model: w.ProfileOverride, Palette: w.PaletteOverride}, w.Width, w.Height, it.Palette, it.RefreshInterval)
+		t := s.newTarget(it.InstanceID, it.RecipeID, w.DeviceID, w.FwModel, profile.Override{Model: w.ProfileOverride, Palette: w.PaletteOverride}, w.Width, w.Height, it.Palette, zone.String(), device.LocaleOf(w.Locale, serverLocale), it.RefreshInterval)
 		if c := byTarget[t]; c != nil {
 			c.wanted = append(c.wanted, next)
 		}
@@ -365,11 +384,12 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 }
 
 // newTarget returns the target for an instance shown on a device of the
-// given model, override and size. A target that cannot be built, because its recipe
+// given model, override and size, in the given time zone and locale, which
+// are the ones in effect for the device. A target that cannot be built, because its recipe
 // cannot be scanned, is returned with broken set, so that it is recorded as
 // a failed render and does not stop the others.
-func (s *Scheduler) newTarget(instance, recipeID, device int64, fwModel string, o profile.Override, width, height *int64, palette string, refreshSeconds int64) target {
-	t := target{instance: instance, device: device, palette: palette, refresh: time.Duration(refreshSeconds) * time.Second}
+func (s *Scheduler) newTarget(instance, recipeID, deviceID int64, fwModel string, o profile.Override, width, height *int64, palette, zone, locale string, refreshSeconds int64) target {
+	t := target{instance: instance, device: deviceID, palette: palette, zone: zone, locale: locale, refresh: time.Duration(refreshSeconds) * time.Second}
 	p := profile.Resolve(fwModel, width, height, o)
 	t.width, t.height, t.palette = p.Width, p.Height, p.RenderPalette(palette)
 	per, err := s.readsDevice(recipeID)
@@ -513,7 +533,7 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 	images, log, read, err := s.build(bctx, t, seen)
 	took := s.now().Sub(start)
 	slog.Info("render", "instance", t.instance, "device", t.device, "width", t.width, "height", t.height, "palette", t.palette,
-		"seconds", took.Seconds(), "err", err)
+		"zone", t.zone, "locale", t.locale, "seconds", took.Seconds(), "err", err)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, ctx.Err()
@@ -530,6 +550,8 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 			Width:       int64(t.width),
 			Height:      int64(t.height),
 			Palette:     t.palette,
+			TimeZone:    t.zone,
+			Locale:      t.locale,
 			AttemptedAt: start.Unix(),
 			DurationMs:  took.Milliseconds(),
 			Error:       describe(err, log),
@@ -550,6 +572,8 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 			Width:       int64(t.width),
 			Height:      int64(t.height),
 			Palette:     t.palette,
+			TimeZone:    t.zone,
+			Locale:      t.locale,
 			RenderedAt:  s.now().Unix(),
 			AttemptedAt: start.Unix(),
 			DurationMs:  took.Milliseconds(),
@@ -592,7 +616,7 @@ func (s *Scheduler) build(ctx context.Context, t target, seen version) (images m
 	if err != nil {
 		return nil, "", read, err
 	}
-	proj := recipe.NewProject(recipe.Dir(s.cfg.RecipesDir, inst.RecipeID), fields, s.cfg.Zone.String(), s.cfg.AssetHosts)
+	proj := recipe.NewProject(recipe.Dir(s.cfg.RecipesDir, inst.RecipeID), fields, t.zone, t.locale, s.cfg.AssetHosts)
 	data, err := s.cfg.DB.Read.GetInstanceData(ctx, t.instance)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):

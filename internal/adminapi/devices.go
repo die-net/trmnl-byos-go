@@ -10,6 +10,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 // deviceJSON is a device and what it last reported. It has no api_key or
@@ -43,29 +44,66 @@ type deviceJSON struct {
 	// that does not take the palette, or "" when they apply. Renders then
 	// use what the firmware reports.
 	ProfileProblem string `json:"profile_problem"`
+	// TimeZone is the IANA time zone set for the device, or "" for the
+	// server's, and TimeZoneInUse is the zone its schedules are read in and
+	// its renders are made for.
+	TimeZone      string `json:"time_zone"`
+	TimeZoneInUse string `json:"time_zone_in_use"`
+	// Locale is the locale set for the device, or "" for the server's, and
+	// LocaleInUse is the one its renders are made for.
+	Locale      string `json:"locale"`
+	LocaleInUse string `json:"locale_in_use"`
 	// SettingsState is a digest of the device's settings, which a PATCH
 	// can send back to be refused if they changed since.
 	SettingsState string `json:"settings_state"`
 }
 
-func newDevice(d *db.Device, lastSeen *int64, battery *float64, rssi, wakeMs *int64, source *string, blocked int64) deviceJSON {
+// serverDefaults is what a device that sets none of its own has.
+type serverDefaults struct {
+	zone   *time.Location
+	locale string
+}
+
+// defaults returns the server's time zone and locale, reading the locale
+// setting through q.
+func (s *Server) defaults(ctx context.Context, q *db.Queries) (serverDefaults, error) {
+	locale, err := settings.Locale(ctx, q)
+	if err != nil {
+		return serverDefaults{}, err
+	}
+	return serverDefaults{zone: s.cfg.Zone, locale: locale}, nil
+}
+
+func newDevice(d *db.Device, def serverDefaults, lastSeen *int64, battery *float64, rssi, wakeMs *int64, source *string, blocked int64) deviceJSON {
 	return deviceJSON{
 		ID: d.FriendlyID, MAC: d.Mac, Name: d.Name, Model: d.FwModel, Firmware: d.FwVersion, CreatedAt: d.CreatedAt,
 		LastSeen: lastSeen, BatteryV: battery, RSSI: rssi, WakeTimeMs: wakeMs, UpdateSource: source,
 		UpdatesEnabled: d.UpdatesEnabled != 0, FWPin: d.FwPin, Blocked: blocked != 0,
 		Profile: d.ProfileOverride, Palette: d.PaletteOverride, ProfileProblem: device.OverrideProblem(d, d.FwModel), SettingsState: device.SettingsState(d),
+		TimeZone: d.TimeZone, TimeZoneInUse: device.ZoneOf(d.TimeZone, def.zone).String(),
+		Locale: d.Locale, LocaleInUse: device.LocaleOf(d.Locale, def.locale),
 	}
 }
 
 func (s *Server) listDevices(_ http.ResponseWriter, r *http.Request) ([]deviceJSON, error) {
-	rows, err := device.ListStatus(r.Context(), s.db.Read)
+	ctx := r.Context()
+	var rows []db.ListDeviceStatusRow
+	var def serverDefaults
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if rows, err = device.ListStatus(ctx, q); err != nil {
+			return err
+		}
+		def, err = s.defaults(ctx, q)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]deviceJSON, 0, len(rows))
 	for i := range rows {
 		x := &rows[i]
-		out = append(out, newDevice(&x.Device, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource, x.Blocked))
+		out = append(out, newDevice(&x.Device, def, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource, x.Blocked))
 	}
 	return out, nil
 }
@@ -80,7 +118,7 @@ func (s *Server) getDevice(_ http.ResponseWriter, r *http.Request) (deviceJSON, 
 		if err != nil {
 			return err
 		}
-		out, err = deviceStatus(ctx, q, dev.ID)
+		out, err = s.deviceStatus(ctx, q, dev.ID)
 		return err
 	})
 	return out, err
@@ -89,7 +127,7 @@ func (s *Server) getDevice(_ http.ResponseWriter, r *http.Request) (deviceJSON, 
 // deviceStatus returns a device and what it last reported, read through q.
 // A device that is gone, as after a delete that came in just after a write
 // the caller made, wraps device.ErrNoDevice.
-func deviceStatus(ctx context.Context, q *db.Queries, id int64) (deviceJSON, error) {
+func (s *Server) deviceStatus(ctx context.Context, q *db.Queries, id int64) (deviceJSON, error) {
 	x, err := q.GetDeviceStatus(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return deviceJSON{}, fmt.Errorf("%w: %d", device.ErrNoDevice, id)
@@ -97,7 +135,11 @@ func deviceStatus(ctx context.Context, q *db.Queries, id int64) (deviceJSON, err
 	if err != nil {
 		return deviceJSON{}, fmt.Errorf("get device status: %w", err)
 	}
-	return newDevice(&x.Device, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource, x.Blocked), nil
+	def, err := s.defaults(ctx, q)
+	if err != nil {
+		return deviceJSON{}, err
+	}
+	return newDevice(&x.Device, def, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource, x.Blocked), nil
 }
 
 // calibrateRequest is the body of a calibrate request. A field left out

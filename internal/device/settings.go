@@ -5,11 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/locale"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 )
 
@@ -35,6 +41,14 @@ type Change struct {
 	// for none, one of its model's palettes, or empty for the model's
 	// default.
 	Palette *string
+	// TimeZone is the IANA time zone the device's schedules are read in and
+	// its renders are made for, or empty for the server's. It is checked by
+	// time.LoadLocation, and Local is refused, since it names the server
+	// process's zone, which the empty value already is.
+	TimeZone *string
+	// Locale is the locale the device's renders are made for, one of
+	// locale.Codes, or empty for the server's locale setting.
+	Locale *string
 	// Seen is the SettingsState the caller read, from a page or an API client.
 	// Nil means none was sent, as from the command line, and is not checked.
 	Seen *string
@@ -54,7 +68,7 @@ func SettingsState(dev *db.Device) string {
 	}
 	for _, s := range []string{
 		strconv.FormatInt(dev.ID, 10), strconv.FormatInt(dev.UpdatesEnabled, 10),
-		dev.Name, dev.FwPin, dev.ProfileOverride, dev.PaletteOverride,
+		dev.Name, dev.FwPin, dev.ProfileOverride, dev.PaletteOverride, dev.TimeZone, dev.Locale,
 	} {
 		put(s)
 	}
@@ -68,9 +82,11 @@ func SettingsState(dev *db.Device) string {
 // one of the palettes of the device's model: its new profile, else its
 // stored one, else the one its Model header gives. A profile change that
 // leaves the stored palette outside the new model's palettes is refused
-// unless the change sets the palette too. A change of neither does not
-// check the palette, so a stored one that stopped fitting does not block
-// it.
+// unless the change sets the palette too. A time zone must load, and a
+// locale must be one of locale.Codes. Each of the profile, palette, zone
+// and locale is checked only when the change changes it from what is
+// stored, so a stored one that stopped applying does not block a change of
+// the others, nor a form that posts it back as it is.
 func Update(ctx context.Context, client *db.Client, device string, c Change) (db.Device, error) {
 	var name string
 	if c.Name != nil {
@@ -121,9 +137,22 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 		if (profileChanged || paletteChanged) && paletteProblem != "" {
 			return fmt.Errorf("%w: %s", errkind.ErrInvalid, paletteProblem)
 		}
+		if c.TimeZone != nil && *c.TimeZone != dev.TimeZone {
+			if err := checkZone(*c.TimeZone); err != nil {
+				return err
+			}
+			dev.TimeZone = *c.TimeZone
+		}
+		if c.Locale != nil && *c.Locale != dev.Locale {
+			if *c.Locale != "" && !locale.Valid(*c.Locale) {
+				return fmt.Errorf("%w: locale %q is not one of %s", errkind.ErrInvalid, *c.Locale, strings.Join(locale.Codes(), ", "))
+			}
+			dev.Locale = *c.Locale
+		}
 		err = q.UpdateDeviceSettings(ctx, db.UpdateDeviceSettingsParams{
 			Name: dev.Name, UpdatesEnabled: dev.UpdatesEnabled, FwPin: dev.FwPin,
-			ProfileOverride: dev.ProfileOverride, PaletteOverride: dev.PaletteOverride, ID: dev.ID,
+			ProfileOverride: dev.ProfileOverride, PaletteOverride: dev.PaletteOverride,
+			TimeZone: dev.TimeZone, Locale: dev.Locale, ID: dev.ID,
 		})
 		if err != nil {
 			return fmt.Errorf("update device: %w", err)
@@ -156,4 +185,80 @@ func OverrideProblem(dev *db.Device, fwModel string) string {
 		return model
 	}
 	return palette
+}
+
+// zones caches the locations loaded by name, so a request does not read the
+// time zone database again. Only names that load are kept.
+var zones sync.Map // string to *time.Location
+
+// warned holds the stored values that did not load or are not allowed, so
+// each is logged once and not at every request.
+var warned sync.Map // string to struct{}
+
+// loadZone returns the location named name, which is not empty. It refuses
+// Local, which time.LoadLocation takes to mean the server process's zone.
+func loadZone(name string) (*time.Location, error) {
+	if v, ok := zones.Load(name); ok {
+		return v.(*time.Location), nil
+	}
+	if name == "Local" {
+		return nil, errors.New(`"Local" is the server's own zone, so leave the zone empty instead`)
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, err
+	}
+	zones.Store(name, loc)
+	return loc, nil
+}
+
+// checkZone returns an error of kind errkind.ErrInvalid if name is not empty
+// and does not name a time zone.
+func checkZone(name string) error {
+	if name == "" {
+		return nil
+	}
+	if _, err := loadZone(name); err != nil {
+		return fmt.Errorf("%w: time zone %q: %w", errkind.ErrInvalid, name, err)
+	}
+	return nil
+}
+
+// warnOnce logs msg, with the stored value, the first time it sees the
+// value under kind.
+func warnOnce(kind, value, msg string) {
+	if _, seen := warned.LoadOrStore(kind+" "+value, struct{}{}); !seen {
+		slog.Warn(msg, kind, value)
+	}
+}
+
+// ZoneOf returns the time zone in effect for a device whose time_zone
+// setting is name: the zone it names, or server when name is empty. A name
+// that no longer loads, which a change of the host's time zone database can
+// cause, gives server, with one warning.
+func ZoneOf(name string, server *time.Location) *time.Location {
+	if name == "" {
+		return server
+	}
+	loc, err := loadZone(name)
+	if err != nil {
+		warnOnce("time_zone", name, "device: stored time zone does not load; using the server's")
+		return server
+	}
+	return loc
+}
+
+// LocaleOf returns the locale in effect for a device whose locale setting
+// is code: code, or server, the server's locale setting, when code is empty.
+// A code that is not one of locale.Codes, which a release that drops a
+// locale can cause, gives server, with one warning.
+func LocaleOf(code, server string) string {
+	if code == "" {
+		return server
+	}
+	if !locale.Valid(code) {
+		warnOnce("locale", code, "device: stored locale is not one of the locales; using the server's")
+		return server
+	}
+	return code
 }

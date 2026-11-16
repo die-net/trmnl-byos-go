@@ -188,7 +188,7 @@ func TestProject(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
-	p := NewProject(dir, map[string]Value{"city": {One: "{{ evil }}"}, "api_key": {One: "hunter2"}, "tags": {Many: []string{"a b", "{% x %}"}}}, "America/Los_Angeles",
+	p := NewProject(dir, map[string]Value{"city": {One: "{{ evil }}"}, "api_key": {One: "hunter2"}, "tags": {Many: []string{"a b", "{% x %}"}}}, "America/Los_Angeles", "",
 		[]string{"trmnl.com", "fonts.gstatic.com"})
 	wantEnv := map[string]string{"FIELD_0": "hunter2", "FIELD_1": "{{ evil }}", "FIELD_2_0": "a b", "FIELD_2_1": "{% x %}"}
 	if !maps.Equal(p.Env, wantEnv) {
@@ -315,7 +315,7 @@ func TestProjectDevice(t *testing.T) {
 	dir := t.TempDir()
 	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
 	config := func(p Project) string { return projectConfig(t, p) }
-	shared := NewProject(dir, nil, "UTC", nil)
+	shared := NewProject(dir, nil, "UTC", "", nil)
 	if got := config(shared); strings.Contains(got, "variables") {
 		t.Errorf("shared project has variables:\n%s", got)
 	}
@@ -735,5 +735,56 @@ func TestInstallInvalidText(t *testing.T) {
 				t.Errorf("%v lost its cause %v", err, tc.cause)
 			}
 		})
+	}
+}
+
+// TestProjectLocale checks that a project carries the user's locale under
+// variables.trmnl.user, and that adding the device or the pushed data keeps
+// it, so trmnlp, which merges variables over its own, still sees the locale.
+// A project with no locale has no variables.
+func TestProjectLocale(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
+	config := func(p Project) string { return projectConfig(t, p) }
+	const locale = `        user:
+            locale: pt-BR
+`
+	p := NewProject(dir, nil, "Europe/Lisbon", "pt-BR", nil)
+	const want = `time_zone: Europe/Lisbon
+variables:
+    trmnl:
+` + locale
+	if got := config(p); got != want {
+		t.Errorf("shared project:\n%s\nwant:\n%s", got, want)
+	}
+	// The device's values go next to the locale, not in place of it.
+	got := config(p.WithDevice(Device{FriendlyID: "ABC123"}))
+	for _, part := range []string{locale, "        device:\n            friendly_id: ABC123\n"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("per-device project lacks %q:\n%s", part, got)
+		}
+	}
+	// So do the pushed data, and the two together.
+	withData, err := p.WithData(`{"headline": "hi"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config(withData); !strings.Contains(got, locale) || !strings.Contains(got, "headline: hi") {
+		t.Errorf("project with data:\n%s", got)
+	}
+	both, err := p.WithDevice(Device{FriendlyID: "ABC123"}).WithData(`{"headline": "hi"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config(both); !strings.Contains(got, locale) || !strings.Contains(got, "friendly_id: ABC123") || !strings.Contains(got, "headline: hi") {
+		t.Errorf("project with the device and data:\n%s", got)
+	}
+	// WithDevice does not change the project it is called on.
+	if strings.Contains(config(p), "device") {
+		t.Errorf("WithDevice changed the project it was called on:\n%s", config(p))
+	}
+	if got := config(NewProject(dir, nil, "UTC", "", nil)); strings.Contains(got, "variables") || strings.Contains(got, "locale") {
+		t.Errorf("a project with no locale has variables:\n%s", got)
 	}
 }

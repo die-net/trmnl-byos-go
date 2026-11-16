@@ -638,9 +638,20 @@ type variables struct {
 	Data map[string]any `yaml:",inline"`
 }
 
-// trmnlVariables is the part of the trmnl variables the server sets.
+// trmnlVariables is the part of the trmnl variables the server sets. trmnlp
+// merges it deeply over its own, so a field left out keeps trmnlp's value.
 type trmnlVariables struct {
-	Device Device `yaml:"device"`
+	// User has the device's locale, in every build.
+	User *userVariables `yaml:"user,omitempty"`
+	// Device is set only for a build that reads trmnl.device.
+	Device *Device `yaml:"device,omitempty"`
+}
+
+// userVariables is the part of trmnl.user the server sets. The time zone is
+// set by .trmnlp.yml's time_zone instead, which trmnlp turns into
+// trmnl.user.time_zone, time_zone_iana and utc_offset.
+type userVariables struct {
+	Locale string `yaml:"locale"`
 }
 
 // Device is the trmnl.device a per-device build shows the recipe: the
@@ -685,10 +696,16 @@ func NewDevice(row *db.GetRenderDeviceRow) Device {
 	return d
 }
 
-// WithDevice returns the project with trmnl.device set to d.
+// WithDevice returns the project with trmnl.device set to d. The rest of
+// the trmnl variables, such as the user's locale, are kept.
 func (p Project) WithDevice(d Device) Project {
 	v := p.config.Variables.clone()
-	v.Trmnl = &trmnlVariables{Device: d}
+	var t trmnlVariables
+	if v.Trmnl != nil {
+		t = *v.Trmnl
+	}
+	t.Device = &d
+	v.Trmnl = &t
 	p.config.Variables = v
 	return p
 }
@@ -789,16 +806,20 @@ func envFor(fields map[string]Value) (env map[string]string, refs map[string]env
 }
 
 // NewProject returns the project for an instance of the recipe in dir, with
-// the given field values and time zone. cachedHosts are the hosts whose
-// assets the proxy caches.
+// the given field values, time zone and locale. A time zone or locale that is
+// empty leaves trmnlp's own. cachedHosts are the hosts whose assets the proxy
+// caches.
 //
 // Every field value, secret or not, travels in Env, as FIELD_n for the nth
 // field by keyname, and FIELD_n_k for the kth element of a list. trmnlp
 // renders each custom_fields value as Liquid, so a value placed in the file
 // would have any {{ or {% in it run as Liquid; a value from the environment
 // is not.
-func NewProject(dir string, fields map[string]Value, timeZone string, cachedHosts []string) Project {
+func NewProject(dir string, fields map[string]Value, timeZone, locale string, cachedHosts []string) Project {
 	p := Project{dir: dir, config: trmnlpConfig{TimeZone: timeZone}}
+	if locale != "" {
+		p.config.Variables = &variables{Trmnl: &trmnlVariables{User: &userVariables{Locale: locale}}}
+	}
 	p.Env, p.config.CustomFields = envFor(fields)
 	if len(cachedHosts) > 0 {
 		p.config.AssetOverrides = make(map[string]string, len(cachedHosts))

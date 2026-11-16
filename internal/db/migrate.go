@@ -34,6 +34,7 @@ var steps = []step{
 	{"never reuse a surrogate ID", useAutoincrement},
 	{"add device tombstones and the MAC blocklist", addBlocklist},
 	{"add per-device profile and palette overrides", addProfileOverride},
+	{"add per-device time zone and locale, and key renders by them", addZoneLocale},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -577,6 +578,67 @@ ALTER TABLE device ADD COLUMN palette_override TEXT NOT NULL DEFAULT ''`
 func addProfileOverride(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addProfileOverrideSQL); err != nil {
 		return fmt.Errorf("add profile overrides: %w", err)
+	}
+	return nil
+}
+
+// addZoneLocaleSQL is step 10. It adds device.time_zone and device.locale,
+// empty in every existing row, and puts time_zone and locale in the render
+// table's key, so a render is per time zone and locale as well as per size
+// and palette. SQLite cannot change a table's UNIQUE constraint, so render is
+// made anew, filled with the old rows and their IDs, and renamed over the old
+// one, as step 7 did, with explicit column lists. render_image refers to
+// render by name, so it keeps working, and its rows are kept.
+//
+// An existing render gets time_zone and locale of the empty string. A target
+// always has the zone and locale in effect, never an empty one, so no target
+// matches such a row. The scheduler's pruning deletes it, with its image
+// rows, and builds the render again once. There are no deployments, so
+// nothing is made to keep the rows.
+//
+// The trigger goes first and is made again at the end, for the reason given
+// at useAutoincrementSQL. migrate runs the step with foreign keys off, so
+// the drop does not cascade to render_image.
+//
+// sqlc cannot take this, because it is a migration (CLAUDE.md).
+const addZoneLocaleSQL = `DROP TRIGGER IF EXISTS render_device_deleted;
+
+ALTER TABLE device ADD COLUMN time_zone TEXT NOT NULL DEFAULT '';
+ALTER TABLE device ADD COLUMN locale TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE render_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id INTEGER NOT NULL REFERENCES plugin_instance (id) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  palette TEXT NOT NULL,
+  time_zone TEXT NOT NULL,
+  locale TEXT NOT NULL,
+  rendered_at INTEGER NOT NULL DEFAULT 0,
+  attempted_at INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  log TEXT NOT NULL DEFAULT '',
+  data_at INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  settings_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (instance_id, device_id, width, height, palette, time_zone, locale)
+);
+INSERT INTO render_new (id, instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at)
+  SELECT id, instance_id, device_id, width, height, palette, '', '', rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at FROM render;
+DROP TABLE render;
+ALTER TABLE render_new RENAME TO render;
+
+CREATE TRIGGER render_device_deleted AFTER DELETE ON device
+BEGIN
+  DELETE FROM render WHERE device_id = OLD.id;
+END`
+
+// addZoneLocale is step 10: see addZoneLocaleSQL.
+func addZoneLocale(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addZoneLocaleSQL); err != nil {
+		return fmt.Errorf("add time zone and locale: %w", err)
 	}
 	return nil
 }
