@@ -32,9 +32,10 @@ func (ts *testServer) sleepingScreen(t *testing.T, wake string) string {
 
 // TestDisplaySleep walks a device through its sleep window, read in its own
 // time zone: before it, the refresh is cut to the window's start. Inside it,
-// the device gets the Sleeping screen and a refresh to the window's end, a
-// button press included, and its playlist cursor does not move. After it,
-// the playlist shows again. The server's zone is UTC+5:30 and the device's is
+// a timer wake gets the Sleeping screen and a refresh to the window's end,
+// and its playlist cursor does not move. A press there gets what the device
+// would be shown awake, and its next timer wake sleeps again. After it, the
+// playlist shows again. The server's zone is UTC+5:30 and the device's is
 // Tokyo, UTC+9, so a window of 15:00 to 17:30 is closed at 12:00 on the
 // server's clock, and open at 15:30 on the device's.
 func TestDisplaySleep(t *testing.T) {
@@ -82,37 +83,51 @@ func TestDisplaySleep(t *testing.T) {
 	if m["filename"] != sleeping || m["refresh_rate"] != float64(2*3600) {
 		t.Fatalf("in the window: %v; want the Sleeping screen and a refresh of 7200 s", m)
 	}
-	// A press shows the same screen and sleeps as long. A wake a minute
-	// before the end sleeps only until it.
-	if m = ts.getJSON(t, "/api/display", press); m["filename"] != sleeping || m["refresh_rate"] != float64(2*3600) {
-		t.Errorf("a press in the window: %v; want the Sleeping screen and 7200 s", m)
-	}
+	// A timer wake in the window leaves the cursor where it was.
 	if item, started := cursor(); item != itemBefore || started != startedBefore {
 		t.Errorf("the cursor moved in the window: item %d started %d, was item %d started %d", item, started, itemBefore, startedBefore)
 	}
-	ts.now = ts.now.Add(2*time.Hour - time.Minute)
+	// A press wakes the device for one screen: what it would be shown awake,
+	// the second item, as a press moves on, with the second item's 10
+	// minutes and not the window's end.
+	m = ts.getJSON(t, "/api/display", press)
+	if m["filename"] != imgSecond || m["refresh_rate"] != float64(10*60) {
+		t.Errorf("a press in the window: %v; want the second item and 600 s", m)
+	}
+	itemPressed, startedPressed := cursor()
+	if itemPressed == itemBefore {
+		t.Error("a press in the window did not move the cursor")
+	}
+	// Its next timer wake, still in the window, puts it back to sleep, to
+	// the window's end, and leaves the cursor.
+	ts.now = ts.now.Add(10 * time.Minute)
+	if m = ts.getJSON(t, "/api/display", timer); m["filename"] != sleeping || m["refresh_rate"] != float64(2*3600-10*60) {
+		t.Errorf("the timer wake after a press: %v; want the Sleeping screen and 6600 s", m)
+	}
+	// A wake a minute before the end sleeps only until it.
+	ts.now = ts.now.Add(2*time.Hour - 11*time.Minute)
 	if m = ts.getJSON(t, "/api/display", timer); m["filename"] != sleeping || m["refresh_rate"] != float64(60) {
 		t.Errorf("a minute before the end: %v; want the Sleeping screen and 60 s", m)
 	}
-	if item, started := cursor(); item != itemBefore || started != startedBefore {
-		t.Errorf("the cursor moved late in the window: item %d started %d", item, started)
+	if item, started := cursor(); item != itemPressed || started != startedPressed {
+		t.Errorf("a timer wake moved the cursor in the window: item %d started %d", item, started)
 	}
 
-	// After it, the playlist shows again. The first item's 10 minutes are
-	// long up, so the cursor moves on to the second.
+	// After it, the playlist shows again, with the cursor moved on from
+	// where the press left it, as the item's time is long up.
 	ts.now = ts.now.Add(time.Minute)
 	m = ts.getJSON(t, "/api/display", timer)
-	if m["filename"] != imgSecond || m["refresh_rate"] == nil {
-		t.Errorf("after the window: %v; want the second item's render", m)
+	if f := m["filename"]; f != imgFirst && f != imgSecond {
+		t.Errorf("after the window: %v; want a playlist item's render", m)
 	}
-	if item, _ := cursor(); item == itemBefore {
+	if item, started := cursor(); item == itemPressed && started == startedPressed {
 		t.Error("the cursor did not move after the window")
 	}
 	// The device sleeps again at 15:00 tomorrow, which is far off, so the
 	// refresh is the rest of the item. The items alternate every 10 minutes
-	// from 14:55, so the second started at 17:25.
-	if m["refresh_rate"] != float64(5*60) {
-		t.Errorf("after the window: refresh %v, want the 300 s the item has left", m["refresh_rate"])
+	// from the press at 15:30, so one starts at 17:30 with all of its 600 s.
+	if m["refresh_rate"] != float64(10*60) {
+		t.Errorf("after the window: refresh %v, want the 600 s of an item that starts now", m["refresh_rate"])
 	}
 
 	// Clearing the window wakes the device into its playlist at its next wake.

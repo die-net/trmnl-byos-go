@@ -237,7 +237,9 @@ func untilChange(lists []playlist.List, awake playlist.Schedule, now time.Time, 
 // cursor first. Its schedules and sleep window are read in the device's time
 // zone, and it is shown the render made for that zone and its locale. A
 // device in its sleep window is shown a screen that says so, with the cursor
-// where it was, and sleeps until the window ends, a button press included.
+// where it was, and sleeps until the window ends. A button press in the
+// window is the exception: it is shown what it would be shown awake, and its
+// next timer wake puts it back to sleep.
 // The refresh rate it returns is refresh, shortened to wake the device when
 // the item ends, a schedule or its sleep changes or a render is ready.
 func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, pressed bool, refresh int64) (screenChoice, error) {
@@ -252,6 +254,12 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 		return screenChoice{refresh: refresh}, fmt.Errorf("read the locale setting: %w", err)
 	}
 	awake := playlist.Awake(dev.SleepStart, dev.SleepEnd)
+	if pressed && !awake.Active(s.now().In(zone).Add(playlist.WakeSlack)) {
+		// A press in the sleep window wakes the device for this screen: it
+		// is shown what it would show awake, as a press then. Its next timer
+		// wake is still in the window, so that wake puts it back to sleep.
+		awake = playlist.Always
+	}
 	pick, err := s.advance(ctx, dev.ID, zone, awake, pressed)
 	if err != nil {
 		return screenChoice{refresh: refresh}, err

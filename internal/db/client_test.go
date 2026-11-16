@@ -1599,7 +1599,7 @@ func TestMigrateZoneLocaleKeepsSequence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, stmt := range slices.Concat(dropZoneLocale, []string{
+			for _, stmt := range slices.Concat(dropSleep, dropZoneLocale, []string{
 				`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
 				`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
 				`PRAGMA user_version = 9`,
