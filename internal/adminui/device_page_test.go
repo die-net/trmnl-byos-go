@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -238,8 +239,8 @@ func TestDevicePlaylistMoveTooBig(t *testing.T) {
 	}
 }
 
-// withState returns the form with the settings state a page of the device
-// with testMAC would post now.
+// withState returns the form with the settings state and the row ID a page
+// of the device with testMAC would post now.
 func withState(t *testing.T, tu *testUI, form url.Values) url.Values {
 	t.Helper()
 	dev, err := device.FindDevice(t.Context(), tu.db.Read, testMAC)
@@ -247,6 +248,7 @@ func withState(t *testing.T, tu *testUI, form url.Values) url.Values {
 		t.Fatal(err)
 	}
 	form.Set("settings_state", device.SettingsState(&dev))
+	form.Set("seen_device", strconv.FormatInt(dev.ID, 10))
 	return form
 }
 

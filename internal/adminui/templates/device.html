@@ -31,7 +31,7 @@
 <h2 id="settings-title">Settings</h2>
 {{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
 <form method="post" action="/devices/{{.ID}}#settings">
-<input type="hidden" name="settings_state" value="{{.Form.Seen}}">
+<input type="hidden" name="settings_state" value="{{.Form.Seen}}"><input type="hidden" name="seen_device" value="{{.Form.Device}}">
 <div class="field">
 <label for="name">Name</label>
 <input id="name" name="name" type="text" value="{{.Form.Name}}" autocomplete="off" placeholder="{{.ID}}">

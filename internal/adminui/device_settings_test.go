@@ -1,8 +1,10 @@
 package adminui
 
 import (
+	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -82,7 +84,7 @@ func TestDeviceProfileFields(t *testing.T) {
 			}
 			body := tu.get(t, tu.signIn(t), "/devices/ABC123").Body.String()
 			dev := testDevice(t, tu)
-			tc.want = append(tc.want, `<input type="hidden" name="settings_state" value="`+device.SettingsState(&dev)+`">`)
+			tc.want = append(tc.want, `<input type="hidden" name="settings_state" value="`+device.SettingsState(&dev)+`"><input type="hidden" name="seen_device" value="`+strconv.FormatInt(dev.ID, 10)+`">`)
 			for _, want := range tc.want {
 				if !strings.Contains(body, want) {
 					t.Errorf("page lacks %q:\n%s", want, body)
@@ -211,7 +213,7 @@ func TestDeviceSettingsStale(t *testing.T) {
 		`role="alert">This device&#39;s settings changed after the page loaded, so nothing was saved. Stored now: the name is &#34;Kitchen&#34;, firmware updates are off, the profile is as the device reports, the palette is &#34;gray-4&#34;. Save again to use the values below.`,
 		`name="settings_state" value="`+device.SettingsState(&dev)+`"`, `value="Hall"`, ` checked`, `<option value="og_bwry" selected>`)
 	// The page's own form saves.
-	again := url.Values{"name": {"Hall"}, "updates_enabled": {"1"}, "profile": {"og_bwry"}, "settings_state": {device.SettingsState(&dev)}}
+	again := withState(t, tu, url.Values{"name": {"Hall"}, "updates_enabled": {"1"}, "profile": {"og_bwry"}})
 	if w := tu.post(t, c, "/devices/ABC123", again); w.Code != http.StatusSeeOther {
 		t.Fatalf("second save: status %d: %s", w.Code, w.Body)
 	}
@@ -254,9 +256,17 @@ func TestDeviceSettingsNoState(t *testing.T) {
 	if strings.Contains(body, `value="Hall"`) || strings.Contains(body, `<option value="1.8.19" selected>`) {
 		t.Errorf("the page has a posted value:\n%s", body)
 	}
+	// A post with the state but not the device it is for is refused too.
+	noDevice := withState(t, tu, url.Values{"name": {"Hall"}})
+	noDevice.Del("seen_device")
+	if w := tu.post(t, c, "/devices/ABC123", noDevice); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `role="alert">`+reloadText) {
+		t.Fatalf("no seen_device: status %d, want 400 saying to reload: %s", w.Code, w.Body)
+	}
+	if dev := testDevice(t, tu); dev.Name != "Kitchen" {
+		t.Fatalf("a post with no seen_device changed the device: %+v", dev)
+	}
 	// Saving the page that came back keeps the profile.
-	dev := testDevice(t, tu)
-	again := url.Values{"name": {"Kitchen"}, "profile": {"og_bwry"}, "settings_state": {device.SettingsState(&dev)}}
+	again := withState(t, tu, url.Values{"name": {"Kitchen"}, "profile": {"og_bwry"}})
 	if w := tu.post(t, c, "/devices/ABC123", again); w.Code != http.StatusSeeOther {
 		t.Fatalf("save of the page sent back: status %d: %s", w.Code, w.Body)
 	}
@@ -266,20 +276,56 @@ func TestDeviceSettingsNoState(t *testing.T) {
 }
 
 // TestDeviceSettingsReissuedID checks that a settings page for a deleted
-// device changes nothing of a newer device with its friendly ID.
+// device changes nothing of a newer device with its friendly ID: the save is
+// refused, and the page sent back has the newer device's settings rather
+// than the typed ones, so that saving it again cannot copy the deleted
+// device's settings over. A form refused for a bad value first keeps the
+// deleted device's row, so its corrected save is refused the same way.
 func TestDeviceSettingsReissuedID(t *testing.T) {
 	t.Parallel()
-	tu := newProfileUI(t)
-	form := withState(t, tu, url.Values{"name": {"Hall"}})
-	deleteNow(t, tu)
-	addDevice(t, tu, "D8:3B:DA:00:00:09", "ABC123", "Newer", 0)
-	w := tu.post(t, tu.signIn(t), "/devices/ABC123", form)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status %d, want 409: %s", w.Code, w.Body)
-	}
-	dev, err := device.FindDevice(t.Context(), tu.db.Read, "ABC123")
-	if err != nil || dev.Name != "Newer" {
-		t.Errorf("the newer device: %+v, %v", dev, err)
+	for _, tc := range []struct {
+		name string
+		// bad is posted first, when not nil, and must be refused with 400.
+		bad url.Values
+	}{
+		{"stale save", nil},
+		{"after a refused value", url.Values{"name": {"Hall"}, "fw_pin": {"latest"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newProfileUI(t)
+			c := tu.signIn(t)
+			form := withState(t, tu, url.Values{"name": {"Hall"}, "profile": {"og_bwry"}})
+			deleteNow(t, tu)
+			addDevice(t, tu, "D8:3B:DA:00:00:09", "ABC123", "Newer", 0)
+			newer, err := device.FindDevice(t.Context(), tu.db.Read, "ABC123")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.bad != nil {
+				tc.bad.Set("settings_state", form.Get("settings_state"))
+				tc.bad.Set("seen_device", form.Get("seen_device"))
+				w := tu.post(t, c, "/devices/ABC123", tc.bad)
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `name="seen_device" value="`+form.Get("seen_device")+`"`) {
+					t.Fatalf("status %d, want 400 with the posted device: %s", w.Code, w.Body)
+				}
+			}
+			w := tu.post(t, c, "/devices/ABC123", form)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status %d, want 409: %s", w.Code, w.Body)
+			}
+			body := w.Body.String()
+			wantInOrder(t, body, `id="settings"`, `role="alert">`+template.HTMLEscapeString(deviceReplaced),
+				`name="settings_state" value="`+device.SettingsState(&newer)+`"><input type="hidden" name="seen_device" value="`+strconv.FormatInt(newer.ID, 10)+`"`,
+				`value="Newer"`)
+			if strings.Contains(body, `value="Hall"`) || strings.Contains(body, `<option value="og_bwry" selected>`) {
+				t.Errorf("the page has a value typed for the deleted device:\n%s", body)
+			}
+			dev, err := device.FindDevice(t.Context(), tu.db.Read, "ABC123")
+			if err != nil || dev.Name != "Newer" || dev.ProfileOverride != "" {
+				t.Errorf("the newer device: %+v, %v", dev, err)
+			}
+		})
 	}
 }
 
@@ -308,7 +354,7 @@ func TestDeviceSettingsStaleAfterRefusal(t *testing.T) {
 				t.Fatalf("status %d, want 400 with the posted state: %s", w.Code, w.Body)
 			}
 			// The corrected form, with the state that page carries.
-			w = tu.post(t, c, "/devices/ABC123", url.Values{"name": {"Hall"}, "settings_state": {old}})
+			w = tu.post(t, c, "/devices/ABC123", url.Values{"name": {"Hall"}, "settings_state": {old}, "seen_device": {form.Get("seen_device")}})
 			if w.Code != http.StatusConflict {
 				t.Fatalf("corrected save: status %d, want 409: %s", w.Code, w.Body)
 			}
