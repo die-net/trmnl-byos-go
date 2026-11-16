@@ -307,6 +307,10 @@ func newInstanceForm(action, namePlaceholder, submit string, form *instanceForm,
 // recipeEdit is a recipe as its page shows it.
 type recipeEdit struct {
 	Name string
+	// Revision is the recipe's revision the form was drawn from, which the
+	// form sends back so an instance is not added from fields of files that
+	// were replaced since.
+	Revision int64
 	instanceFormView
 }
 
@@ -317,8 +321,8 @@ func (s *Server) recipeFromPath(w http.ResponseWriter, r *http.Request) (db.Reci
 
 // recipeFields returns the custom fields of the recipe. It reads a file, so
 // it is called once for a request and outside any transaction.
-func (s *Server) recipeFields(w http.ResponseWriter, r *http.Request, recipeID int64) ([]recipe.Field, bool) {
-	settings, err := recipe.ReadSettings(recipe.Dir(s.recipesDir, recipeID))
+func (s *Server) recipeFields(w http.ResponseWriter, r *http.Request, rec *db.Recipe) ([]recipe.Field, bool) {
+	settings, err := recipe.ReadSettings(recipe.FilesDir(s.recipesDir, rec))
 	if err != nil {
 		serverError(w, r, "read recipe settings", err)
 		return nil, false
@@ -331,41 +335,51 @@ func (s *Server) recipePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fields, ok := s.recipeFields(w, r, rec.ID)
+	fields, ok := s.recipeFields(w, r, &rec)
 	if !ok {
 		return
 	}
-	s.renderRecipe(w, r, http.StatusOK, &rec, fields, &instanceForm{}, &fieldSource{}, "")
+	s.renderRecipe(w, r, http.StatusOK, &rec, rec.Revision, fields, &instanceForm{}, &fieldSource{}, "")
 }
 
 // renderRecipe sends the page of a recipe with the form's values, and an
-// error message above the form if msg is not "". src says what the field
-// controls show.
-func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int, rec *db.Recipe, fields []recipe.Field, form *instanceForm, src *fieldSource, msg string) {
+// error message above the form if msg is not "". The form sends revision
+// back. src says what the field controls show.
+func (s *Server) renderRecipe(w http.ResponseWriter, r *http.Request, status int, rec *db.Recipe, revision int64, fields []recipe.Field, form *instanceForm, src *fieldSource, msg string) {
 	v, top := newInstanceForm("/recipes/add-instance/"+strconv.FormatInt(rec.ID, 10), rec.Name, "Add", form, fields, src, msg)
-	s.render(w, r, status, "recipe", &pageData{Nav: "recipes", Heading: rec.Name, Error: top, RecipeEdit: &recipeEdit{Name: rec.Name, instanceFormView: v}})
+	s.render(w, r, status, "recipe", &pageData{Nav: "recipes", Heading: rec.Name, Error: top, RecipeEdit: &recipeEdit{Name: rec.Name, Revision: revision, instanceFormView: v}})
 }
 
+// recipeChanged is what an add from a page drawn from files that were since
+// replaced says.
+const recipeChanged = "This recipe was replaced after the page loaded, so nothing was added. The form now shows its current fields. Check them and add again."
+
 // addInstance creates an instance of a recipe from the form's name, palette
-// and field values.
+// and field values. The form sends the recipe's revision it was drawn from,
+// so an add from a page that is out of date is refused instead of using
+// fields the recipe no longer has. A missing or malformed revision is 0,
+// which checks nothing.
 func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 	rec, ok := s.recipeFromPath(w, r)
 	if !ok {
 		return
 	}
-	fields, ok := s.recipeFields(w, r, rec.ID)
+	fields, ok := s.recipeFields(w, r, &rec)
 	if !ok {
 		return
 	}
 	form := &instanceForm{}
-	if !parseFormLimit(w, r, maxInstanceFormBody, func(status int, msg string) { s.renderRecipe(w, r, status, &rec, fields, form, &fieldSource{}, msg) }) {
+	if !parseFormLimit(w, r, maxInstanceFormBody, func(status int, msg string) {
+		s.renderRecipe(w, r, status, &rec, rec.Revision, fields, form, &fieldSource{}, msg)
+	}) {
 		return
 	}
 	form.Name = strings.TrimSpace(r.PostForm.Get("name"))
 	form.Palette = r.PostForm.Get("palette")
+	revision, _ := strconv.ParseInt(r.PostForm.Get("revision"), 10, 64)
 	_, err := recipe.CreateInstance(r.Context(), s.db, s.secrets, s.recipesDir, recipe.InstanceParams{
 		RecipeID: rec.ID, Name: form.Name, Palette: form.Palette,
-		Values: postedValues(fields, r.PostForm), Secret: markedSecret(fields, r.PostForm),
+		Values: postedValues(fields, r.PostForm), Secret: markedSecret(fields, r.PostForm), Revision: revision,
 	}, s.now())
 	if err == nil {
 		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
@@ -376,12 +390,25 @@ func (s *Server) addInstance(w http.ResponseWriter, r *http.Request) {
 		s.renderNotFound(w, r, noRecipe)
 		return
 	}
+	if errors.Is(err, recipe.ErrRecipeChanged) {
+		// The page is drawn again from the recipe as it is now, with what
+		// was typed, as an instance page that is out of date is, so the
+		// admin checks the fields and adds again.
+		if rec, ok = s.recipeFromPath(w, r); !ok {
+			return
+		}
+		if fields, ok = s.recipeFields(w, r, &rec); !ok {
+			return
+		}
+		s.renderRecipe(w, r, http.StatusConflict, &rec, rec.Revision, fields, form, src, recipeChanged)
+		return
+	}
 	status, msg, ok := refusal(err, src)
 	if !ok {
 		serverError(w, r, "add instance", err)
 		return
 	}
-	s.renderRecipe(w, r, status, &rec, fields, form, src, msg)
+	s.renderRecipe(w, r, status, &rec, cmp.Or(revision, rec.Revision), fields, form, src, msg)
 }
 
 // noKeyText is what a refusal for want of a secrets key says.

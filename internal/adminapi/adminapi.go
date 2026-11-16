@@ -102,6 +102,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET /api/v1/recipes", handle(http.StatusOK, s.listRecipes)},
 		{"GET /api/v1/recipes/{id}", handle(http.StatusOK, s.getRecipe)},
 		{"POST /api/v1/recipes", handle(http.StatusCreated, s.installRecipe)},
+		{"PUT /api/v1/recipes/{id}", handle(http.StatusOK, s.replaceRecipe)},
 		{"GET /api/v1/instances", handle(http.StatusOK, s.listInstances)},
 		{"GET /api/v1/instances/{id}", handle(http.StatusOK, s.getInstance)},
 		{"POST /api/v1/instances", handle(http.StatusCreated, s.createInstance)},
@@ -136,6 +137,9 @@ type errorBody struct {
 	// Fields says what is wrong with each field of a request that has bad
 	// custom field values, by keyname.
 	Fields map[string]string `json:"fields,omitempty"`
+	// Instances says what is wrong with each instance's values when a
+	// recipe replace is refused, by instance ID, and then by keyname.
+	Instances map[string]map[string]string `json:"instances,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -196,6 +200,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	var tooBig *http.MaxBytesError
 	var status *statusError
 	var fieldErrs recipe.FieldErrors
+	var refused *recipe.ReplaceRefused
 	switch {
 	case errors.As(err, &status):
 		maps.Copy(w.Header(), status.header)
@@ -206,6 +211,12 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
 	case errors.As(err, &fieldErrs):
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error(), Fields: fieldErrs})
+	case errors.As(err, &refused):
+		body := errorBody{Error: err.Error(), Instances: make(map[string]map[string]string, len(refused.Instances))}
+		for id, errs := range refused.Instances {
+			body.Instances[strconv.FormatInt(id, 10)] = errs
+		}
+		writeJSON(w, http.StatusBadRequest, body)
 	case errors.Is(err, errkind.ErrInvalid):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, errkind.ErrNotFound):

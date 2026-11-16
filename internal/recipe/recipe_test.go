@@ -105,7 +105,7 @@ func TestInstall(t *testing.T) {
 			t.Errorf("%s: recipe %+v", name, rec)
 		}
 		var got []string
-		err = fs.WalkDir(os.DirFS(Dir(recipes, rec.ID)), ".", func(p string, d fs.DirEntry, err error) error {
+		err = fs.WalkDir(os.DirFS(Dir(recipes, rec.ID, 1)), ".", func(p string, d fs.DirEntry, err error) error {
 			if err == nil && !d.IsDir() {
 				got = append(got, p)
 			}
@@ -402,7 +402,7 @@ func TestInstallZip(t *testing.T) {
 	if err != nil || rec.Source != UploadSource || rec.InstalledAt != 1000 {
 		t.Fatalf("InstallZip = %+v, %v", rec, err)
 	}
-	if _, err := os.Stat(filepath.Join(Dir(recipes, rec.ID), "full.liquid")); err != nil {
+	if _, err := os.Stat(filepath.Join(Dir(recipes, rec.ID, 1), "full.liquid")); err != nil {
 		t.Error(err)
 	}
 	boom := errors.New("connection reset")
@@ -421,26 +421,30 @@ func TestInstallZip(t *testing.T) {
 	}
 }
 
-// TestInstallRenameFails checks that a recipe whose directory cannot be put
-// in place leaves no row behind, since the row and the rename share one
-// transaction.
-func TestInstallRenameFails(t *testing.T) {
+// TestInstallOverOrphan checks that a directory left where the new recipe
+// goes, by an install that crashed before its commit, does not block the
+// install: the new row's ID was free, so the directory is an orphan, which
+// goes, leaving no temporary entry.
+func TestInstallOverOrphan(t *testing.T) {
 	t.Parallel()
 	src := filepath.Join(t.TempDir(), "r")
 	writeDir(t, src, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
 	client := openDB(t)
 	recipes := filepath.Join(t.TempDir(), "recipes")
-	// A non-empty directory where recipe 1 goes makes the rename fail.
-	blocker := Dir(recipes, 1)
-	writeDir(t, blocker, map[string]string{"x": "x"})
-	if _, err := Install(t.Context(), client, recipes, src, time.Now()); err == nil {
-		t.Fatal("installed over an existing directory")
+	orphan := Dir(recipes, 1, 1)
+	writeDir(t, orphan, map[string]string{"x": "x"})
+	rec, err := Install(t.Context(), client, recipes, src, time.Now())
+	if err != nil || rec.ID != 1 {
+		t.Fatalf("install over an orphan: %+v, %v", rec, err)
 	}
-	if rows, err := client.Read.ListRecipes(t.Context()); err != nil || len(rows) != 0 {
-		t.Errorf("recipes recorded: %v, %v", rows, err)
+	if _, err := os.Stat(filepath.Join(orphan, "x")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the orphan's file: %v, want it gone", err)
 	}
-	if _, err := os.Stat(filepath.Join(blocker, "x")); err != nil {
-		t.Errorf("existing directory was disturbed: %v", err)
+	if _, err := os.Stat(filepath.Join(FilesDir(recipes, &rec), "full.liquid")); err != nil {
+		t.Errorf("the installed recipe: %v", err)
+	}
+	if entries, err := os.ReadDir(recipes); err != nil || len(entries) != 1 {
+		t.Errorf("recipes dir %v, %v; want only the recipe's directory", entries, err)
 	}
 }
 
@@ -542,8 +546,8 @@ func TestCopierReadVersusWrite(t *testing.T) {
 }
 
 // TestSweep checks that a recipe directory with no row, left by a crash
-// between the rename and the commit, is removed, so the next install does
-// not collide with it, and that a recipe with a row is kept.
+// between the rename and the commit, is removed, and that a recipe with a
+// row is kept.
 func TestSweep(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -555,18 +559,15 @@ func TestSweep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	orphan := Dir(recipes, kept.ID+1)
+	orphan := Dir(recipes, kept.ID+1, 1)
 	writeDir(t, orphan, map[string]string{"x": "x"})
-	if _, err := Install(ctx, client, recipes, src, time.Now()); err == nil {
-		t.Fatal("installed over an orphan directory")
-	}
 	if err := Sweep(ctx, client, recipes, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("orphan directory: %v, want it removed", err)
 	}
-	if _, err := os.Stat(Dir(recipes, kept.ID)); err != nil {
+	if _, err := os.Stat(Dir(recipes, kept.ID, 1)); err != nil {
 		t.Errorf("installed recipe: %v", err)
 	}
 	if rec, err := Install(ctx, client, recipes, src, time.Now()); err != nil || rec.ID != kept.ID+1 {

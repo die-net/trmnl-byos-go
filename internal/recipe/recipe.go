@@ -81,9 +81,15 @@ func (s Settings) Refresh() time.Duration {
 	return max(time.Duration(s.RefreshInterval)*time.Minute, MinRefresh)
 }
 
-// Dir is where the recipe with the given ID is installed under recipesDir.
-func Dir(recipesDir string, id int64) string {
-	return filepath.Join(recipesDir, strconv.FormatInt(id, 10))
+// Dir is where revision of the files of the recipe with the given ID is
+// under recipesDir. The recipe row's revision is the current one.
+func Dir(recipesDir string, id, revision int64) string {
+	return filepath.Join(recipesDir, strconv.FormatInt(id, 10), strconv.FormatInt(revision, 10))
+}
+
+// FilesDir is where the current files of rec are.
+func FilesDir(recipesDir string, rec *db.Recipe) string {
+	return Dir(recipesDir, rec.ID, rec.Revision)
 }
 
 // Install copies the recipe at src, a directory or a zip file, into
@@ -171,58 +177,102 @@ func InstallZip(ctx context.Context, client *db.Client, recipesDir string, r io.
 // installFrom copies the recipe that from reads and records it as coming
 // from source. A recipe whose settings.yml has no name is called fallback.
 func installFrom(ctx context.Context, client *db.Client, recipesDir string, from func(*copier) error, source, fallback string, now time.Time) (db.Recipe, error) {
-	if err := os.MkdirAll(recipesDir, 0o750); err != nil {
-		return db.Recipe{}, fmt.Errorf("create recipes dir: %w", err)
-	}
-	tmp, err := os.MkdirTemp(recipesDir, ".install-")
-	if err != nil {
-		return db.Recipe{}, fmt.Errorf("create install dir: %w", err)
-	}
-	// Once renamed into place, tmp is gone and this does nothing.
-	defer func() { _ = os.RemoveAll(tmp) }()
-
-	if err := copyRecipe(from, tmp); err != nil {
-		return db.Recipe{}, err
-	}
-	settings, err := ReadSettings(tmp)
+	st, err := stage(recipesDir, from)
 	if err != nil {
 		return db.Recipe{}, err
 	}
-	if settings.Name == "" {
-		settings.Name = fallback
+	// Once renamed into place, the staged directory is gone and this does
+	// nothing.
+	defer st.remove()
+	if st.settings.Name == "" {
+		st.settings.Name = fallback
 	}
 	// The row and the directory go in together: a rename that fails rolls
 	// the row back. A crash between the rename and the commit leaves a
-	// directory with no row, and recipe.id is reused, so a later install
-	// would collide with it. Sweep removes such a directory at startup.
+	// directory with no row, and the rollback hands the ID out again, so a
+	// later install would collide with it. Sweep removes such a directory
+	// at startup.
 	var rec db.Recipe
 	renamed := false
 	err = client.InTx(ctx, func(q *db.Queries) error {
 		var err error
 		rec, err = q.CreateRecipe(ctx, db.CreateRecipeParams{
-			Name:            settings.Name,
+			Name:            st.settings.Name,
 			Source:          source,
-			RefreshInterval: int64(settings.Refresh() / time.Second),
+			RefreshInterval: int64(st.settings.Refresh() / time.Second),
 			InstalledAt:     now.Unix(),
+			SourceHash:      st.hash,
 		})
 		if err != nil {
 			return fmt.Errorf("save recipe: %w", err)
 		}
-		if err := os.Rename(tmp, Dir(recipesDir, rec.ID)); err != nil {
+		top := filepath.Dir(FilesDir(recipesDir, &rec))
+		// The row was just made under the write lock, so no recipe had the
+		// ID, and a directory named by it is an orphan, as Sweep sees one:
+		// left by an install that crashed before its commit. It goes, so it
+		// does not block this install until the server's next start.
+		if _, err := os.Lstat(top); err == nil {
+			slog.Warn("removing a recipe directory with no recipe", "dir", filepath.Base(top))
+			discard(recipesDir, top)
+		}
+		if err := os.Mkdir(top, 0o750); err != nil {
 			return fmt.Errorf("install recipe: %w", err)
 		}
 		renamed = true
+		if err := os.Rename(st.dir, FilesDir(recipesDir, &rec)); err != nil {
+			return fmt.Errorf("install recipe: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
 		if renamed {
 			// A failed commit rolled the row back, and a later recipe may
 			// get its ID, so the directory must not stay.
-			_ = os.RemoveAll(Dir(recipesDir, rec.ID))
+			_ = os.RemoveAll(filepath.Dir(FilesDir(recipesDir, &rec)))
 		}
 		return db.Recipe{}, err
 	}
 	return rec, nil
+}
+
+// staged is a recipe copied into a temporary directory under the recipes
+// directory, read and checked, waiting to be renamed into place.
+type staged struct {
+	dir      string
+	settings Settings
+	// hash is TreeHash of dir.
+	hash string
+}
+
+// remove deletes the staged directory, which is gone already once it was
+// renamed into place.
+func (s *staged) remove() { _ = os.RemoveAll(s.dir) }
+
+// stage copies the recipe that from reads into a new temporary directory
+// in recipesDir, and reads its settings.yml and its hash. On error the
+// directory is removed.
+func stage(recipesDir string, from func(*copier) error) (*staged, error) {
+	if err := os.MkdirAll(recipesDir, 0o750); err != nil {
+		return nil, fmt.Errorf("create recipes dir: %w", err)
+	}
+	tmp, err := os.MkdirTemp(recipesDir, ".install-")
+	if err != nil {
+		return nil, fmt.Errorf("create install dir: %w", err)
+	}
+	st := &staged{dir: tmp}
+	if err := copyRecipe(from, tmp); err != nil {
+		st.remove()
+		return nil, err
+	}
+	if st.settings, err = ReadSettings(tmp); err != nil {
+		st.remove()
+		return nil, err
+	}
+	if st.hash, err = TreeHash(tmp); err != nil {
+		st.remove()
+		return nil, err
+	}
+	return st, nil
 }
 
 // staleTempAge is how old a temporary install or upload entry must be before
@@ -233,13 +283,19 @@ const staleTempAge = time.Hour
 // Sweep removes what a crash left behind. It removes each directory in
 // recipesDir named by an ID that has no recipe row, which would otherwise
 // block the next install that is given the same ID, since an ID is reused
-// after a rollback. It also removes the temporary entries of an install or
-// an upload, in recipesDir and, when firmwareDir is not empty, in it, that are
-// over an hour old.
+// after a rollback. In a recipe's directory it removes each revision below
+// the recipe's current one, including the one before it, which a replace
+// keeps for builds that were reading it. A revision above the current one is
+// kept: it is either left by a replace that did not commit, or, after the
+// database was restored from a backup, the only copy of the files, which the
+// admin can replace the recipe from. A replace never reuses its number. It also removes the temporary entries of an
+// install or an upload, in recipesDir and, when firmwareDir is not empty, in
+// it, that are over an hour old.
 //
 // The directory pass runs in a transaction, which holds SQLite's write lock
 // from its start, so it cannot run between another process's rename of an
-// install (the CLI's) and its commit.
+// install or a replace (the CLI's) and its commit. It runs before the
+// scheduler starts, so no build is reading a revision it removes.
 func Sweep(ctx context.Context, client *db.Client, recipesDir, firmwareDir string, now time.Time) error {
 	entries, err := os.ReadDir(recipesDir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -253,20 +309,25 @@ func Sweep(ctx context.Context, client *db.Client, recipesDir, firmwareDir strin
 		if err != nil {
 			return fmt.Errorf("list recipes: %w", err)
 		}
-		have := make(map[string]bool, len(rows))
+		current := make(map[int64]int64, len(rows))
 		for _, r := range rows {
-			have[filepath.Base(Dir(recipesDir, r.ID))] = true
+			current[r.ID] = r.Revision
 		}
 		for _, e := range entries {
-			if !e.IsDir() || have[e.Name()] {
+			id, ok := numericName(e)
+			if !ok {
 				continue
 			}
-			if id, err := strconv.ParseInt(e.Name(), 10, 64); err != nil || id <= 0 || strconv.FormatInt(id, 10) != e.Name() {
+			rev, have := current[id]
+			if !have {
+				slog.Warn("removing a recipe directory with no recipe", "dir", e.Name())
+				if err := os.RemoveAll(filepath.Join(recipesDir, e.Name())); err != nil {
+					return fmt.Errorf("remove orphan recipe directory: %w", err)
+				}
 				continue
 			}
-			slog.Warn("removing a recipe directory with no recipe", "dir", e.Name())
-			if err := os.RemoveAll(filepath.Join(recipesDir, e.Name())); err != nil {
-				return fmt.Errorf("remove orphan recipe directory: %w", err)
+			if err := removeRevisions(filepath.Join(recipesDir, e.Name()), func(r int64) bool { return r < rev }); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -283,6 +344,31 @@ func Sweep(ctx context.Context, client *db.Client, recipesDir, firmwareDir strin
 		}
 		if err := removeOlder(t.dir, t.pattern, cutoff); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// numericName returns the number a directory entry is named by, and whether
+// it is a directory named by a positive integer in its plain form, as a
+// recipe's ID and a revision are.
+func numericName(e fs.DirEntry) (int64, bool) {
+	n, err := strconv.ParseInt(e.Name(), 10, 64)
+	return n, e.IsDir() && err == nil && n > 0 && strconv.FormatInt(n, 10) == e.Name()
+}
+
+// removeRevisions removes each revision directory in top, a recipe's
+// directory, that drop says to.
+func removeRevisions(top string, drop func(revision int64) bool) error {
+	entries, err := os.ReadDir(top)
+	if err != nil {
+		return fmt.Errorf("list recipe revisions: %w", err)
+	}
+	for _, e := range entries {
+		if rev, ok := numericName(e); ok && drop(rev) {
+			if err := os.RemoveAll(filepath.Join(top, e.Name())); err != nil {
+				return fmt.Errorf("remove recipe revision: %w", err)
+			}
 		}
 	}
 	return nil
@@ -310,11 +396,10 @@ func removeOlder(dir, pattern string, cutoff time.Time) error {
 
 // ReadSettings reads the settings.yml of the recipe in dir, which may be at
 // most MaxSettingsBytes. It is parsed on every call, with no cache: with the
-// cap that costs KB in practice and tens of MB at the worst, on admin routes,
-// and a cache keyed by recipe ID would need invalidating once a recipe can be
-// replaced or deleted, since IDs are reused. A recipe whose
-// custom fields cannot be understood, such as one with two of the same
-// keyname, is an error that wraps errkind.ErrInvalid.
+// cap that costs KB in practice and tens of MB at the worst, on admin routes
+// and once per build. A recipe whose custom fields cannot be understood, such
+// as one with two of the same keyname, is an error that wraps
+// errkind.ErrInvalid.
 func ReadSettings(dir string) (Settings, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {

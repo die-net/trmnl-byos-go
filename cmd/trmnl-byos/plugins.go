@@ -45,8 +45,9 @@ func subcommand(ctx context.Context, name string, args []string, out io.Writer,
 
 func recipes(ctx context.Context, args []string, out io.Writer) error {
 	return subcommand(ctx, "recipe", args, out, map[string]func(context.Context, []string, io.Writer) error{
-		"add":  recipeAdd,
-		"list": recipeList,
+		"add":     recipeAdd,
+		"list":    recipeList,
+		"replace": recipeReplace,
 	})
 }
 
@@ -72,6 +73,95 @@ func recipeAdd(ctx context.Context, args []string, out io.Writer) error {
 	}
 	_, err = fmt.Fprintf(out, "Installed recipe %d, %q, rendered every %v.\n", rec.ID, rec.Name, time.Duration(rec.RefreshInterval)*time.Second)
 	return err
+}
+
+// recipeReplace replaces the files of an installed recipe, from the given
+// path or else from the path it was installed from.
+func recipeReplace(ctx context.Context, args []string, out io.Writer) error {
+	const usage = "usage: trmnl-byos recipe replace [-data dir] <id> [<recipe directory or zip>]"
+	fs := flag.NewFlagSet("recipe replace", flag.ExitOnError)
+	data := dataFlag(fs)
+	_ = fs.Parse(args) // ExitOnError exits on a parse error.
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		return errors.New(usage)
+	}
+	id, err := strconv.ParseInt(fs.Arg(0), 10, 64)
+	if err != nil {
+		return fmt.Errorf("%s: recipe ID %q is not a number", usage, fs.Arg(0))
+	}
+	key, err := secrets.FromEnv()
+	if err != nil {
+		return err
+	}
+	client, err := openDB(ctx, *data)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	src := fs.Arg(1)
+	if src == "" {
+		rec, err := client.Read.GetRecipe(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %d", recipe.ErrNoRecipe, id)
+		}
+		if err != nil {
+			return fmt.Errorf("get recipe: %w", err)
+		}
+		if rec.Source == recipe.UploadSource {
+			return fmt.Errorf("recipe %d was uploaded, so it has no path to replace it from; give one: %s", id, usage)
+		}
+		src = rec.Source
+	}
+	if src, err = filepath.Abs(src); err != nil {
+		return err
+	}
+	res, err := recipe.Replace(ctx, client, key, recipesDir(*data), id, src, time.Now())
+	var refused *recipe.ReplaceRefused
+	if errors.As(err, &refused) {
+		for _, iid := range slices.Sorted(maps.Keys(refused.Instances)) {
+			for _, name := range slices.Sorted(maps.Keys(refused.Instances[iid])) {
+				if _, werr := fmt.Fprintf(out, "  Instance %d, %s: %s\n", iid, name, refused.Instances[iid][name]); werr != nil {
+					return werr
+				}
+			}
+		}
+		// The lines above say what and why, so the error does not repeat
+		// them. It keeps the kind, so a missing key says how to set one.
+		return fmt.Errorf("recipe %d was not replaced, for the instance values above: %w", id, refused.Unwrap())
+	}
+	if err != nil {
+		return err
+	}
+	if res.Unchanged {
+		_, err = fmt.Fprintf(out, "Recipe %d, %q, is unchanged.\n", res.Recipe.ID, res.Recipe.Name)
+	} else {
+		_, err = fmt.Fprintf(out, "Replaced recipe %d, %q, now revision %d.\n", res.Recipe.ID, res.Recipe.Name, res.Recipe.Revision)
+	}
+	if err != nil {
+		return err
+	}
+	for i := range res.Instances {
+		if _, err := fmt.Fprintf(out, "  Instance %d, %q: %s\n", res.Instances[i].ID, res.Instances[i].Name, describeReplaced(&res.Instances[i])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// describeReplaced says what a replace did to an instance and what is left
+// for the admin, in one line.
+func describeReplaced(ri *recipe.ReplacedInstance) string {
+	var parts []string
+	if len(ri.Sealed) > 0 {
+		parts = append(parts, "sealed "+strings.Join(ri.Sealed, ", "))
+	}
+	if len(ri.Marked) > 0 {
+		parts = append(parts, "marked secret "+strings.Join(ri.Marked, ", "))
+	}
+	for _, name := range slices.Sorted(maps.Keys(ri.Problems)) {
+		parts = append(parts, "problem with "+name+": "+ri.Problems[name])
+	}
+	return strings.Join(parts, "; ") + "."
 }
 
 func recipeList(ctx context.Context, args []string, out io.Writer) error {

@@ -1,7 +1,19 @@
 -- name: CreateRecipe :one
-INSERT INTO recipe (name, source, refresh_interval, installed_at)
-VALUES (?, ?, ?, ?)
+INSERT INTO recipe (name, source, refresh_interval, installed_at, source_hash)
+VALUES (?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: ReplaceRecipe :one
+-- Records a recipe's new files: its revision, and what its settings.yml and
+-- source say now.
+UPDATE recipe
+SET name = ?, source = ?, refresh_interval = ?, revision = ?, source_hash = ?, replaced_at = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: ListRecipeInstances :many
+-- Every instance of one recipe, in ID order.
+SELECT * FROM plugin_instance WHERE recipe_id = ? ORDER BY id;
 
 -- name: ListRecipes :many
 SELECT * FROM recipe ORDER BY id;

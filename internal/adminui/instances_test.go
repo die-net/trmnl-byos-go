@@ -106,7 +106,7 @@ func newFormUI(t *testing.T, settings string, withKey bool) (*testUI, db.Recipe)
 	}
 	tu := newTestUI(t, cfg, true)
 	rec := addRecipe(t, tu, "Kitchen")
-	rdir := recipe.Dir(dir, rec.ID)
+	rdir := recipe.Dir(dir, rec.ID, 1)
 	if err := os.MkdirAll(rdir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func instanceStateOf(t *testing.T, tu *testUI, instID int64) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := recipe.InstanceState(&inst)
+	state, err := recipe.InstanceState(&inst, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1050,7 +1050,7 @@ func TestInstancePasswordWithPlainValue(t *testing.T) {
 				t.Fatalf("setup: the value is sealed: %v", names)
 			}
 			// The field becomes a password field.
-			settings := filepath.Join(recipe.Dir(tu.srv.recipesDir, rec.ID), "settings.yml")
+			settings := filepath.Join(recipe.Dir(tu.srv.recipesDir, rec.ID, 1), "settings.yml")
 			text := strings.Replace(strings.Replace(retypedFieldRecipe, "%s", "password", 1), "%s", tc.optional, 1)
 			if err := os.WriteFile(settings, []byte(text), 0o600); err != nil {
 				t.Fatal(err)

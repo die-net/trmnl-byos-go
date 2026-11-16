@@ -791,7 +791,7 @@ func TestRenderMissingRecipeDir(t *testing.T) {
 	if _, err := addItemTo(t.Context(), h.db, "p", "", other.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1)); err != nil {
+	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
 	failure := func() db.GetItemScreenRow {
@@ -1189,7 +1189,7 @@ func TestPruneKeepsRendersOfUnscannedRecipe(t *testing.T) {
 	}
 
 	// A restarted scheduler has not scanned the recipe, and cannot now.
-	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, per.RecipeID)); err != nil {
+	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, per.RecipeID, 1)); err != nil {
 		t.Fatal(err)
 	}
 	h.s = New(h.s.cfg)
@@ -1546,7 +1546,7 @@ func TestBrokenTargetAfterSettingsChange(t *testing.T) {
 	changed := h.now.Unix()
 	// Gone before the first scan, so the target is broken: its recipe
 	// cannot be scanned, and the build fails before it reads the instance.
-	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1)); err != nil {
+	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1563,20 +1563,20 @@ func TestBrokenTargetAfterSettingsChange(t *testing.T) {
 }
 
 // TestRecipeGoneAfterScan checks that a recipe whose files go after the
-// scheduler scanned it, so its build fails writing the project, is recorded
-// as a failed build that counts toward the backoff, with a reason that does
-// not blame the renderer.
+// scheduler scanned it, so its build fails reading them, is recorded as a
+// failed build that counts toward the backoff, with a reason that does not
+// blame the renderer.
 func TestRecipeGoneAfterScan(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.renderDue(t, 1)
 	h.now = h.now.Add(time.Minute)
 	h.setToken(t, "swordfish")
-	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1)); err != nil {
+	if err := os.RemoveAll(recipe.Dir(h.s.cfg.RecipesDir, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
 	h.drain(t)
-	if r := h.render(t); r.Failures != 1 || !strings.Contains(r.Error, "write project") || strings.Contains(r.Error, "unavailable") {
+	if r := h.render(t); r.Failures != 1 || !strings.Contains(r.Error, "open recipe") || strings.Contains(r.Error, "unavailable") {
 		t.Fatalf("after the recipe went: %+v", r)
 	}
 }
@@ -1595,8 +1595,10 @@ func TestRejectedJobCounts(t *testing.T) {
 		{"shim answers 400", func(_ *testing.T, h *harness) { h.reject.Store(true) }, "read job: unexpected EOF"},
 		{"job too big to send", func(t *testing.T, h *harness) {
 			// Written past the checks of an update, as a value from before
-			// a limit, or from the database, could be.
-			huge, err := json.Marshal(map[string]string{"city": strings.Repeat("x", 70000)})
+			// a limit, or from the database, could be. It is the recipe's
+			// one field, since a build gets only declared fields, and it
+			// replaces the sealed value, which would win over it.
+			huge, err := json.Marshal(map[string]string{"token": strings.Repeat("x", 70000)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1605,7 +1607,7 @@ func TestRejectedJobCounts(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = h.db.Write.UpdateInstance(t.Context(), db.UpdateInstanceParams{
-				ID: 1, Name: inst.Name, Palette: inst.Palette, FieldValues: string(huge), SecretValues: inst.SecretValues, SecretKeys: inst.SecretKeys, SettingsAt: 1,
+				ID: 1, Name: inst.Name, Palette: inst.Palette, FieldValues: string(huge), SecretKeys: inst.SecretKeys, SettingsAt: 1,
 			})
 			if err != nil {
 				t.Fatal(err)

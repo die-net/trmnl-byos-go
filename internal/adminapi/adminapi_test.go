@@ -432,7 +432,7 @@ func TestRecipes(t *testing.T) {
 	if rec.Name != "Weather" || rec.RefreshSeconds != 3600 || rec.Source != "upload" || rec.InstalledAt != ta.now.Unix() {
 		t.Errorf("installed %+v", rec)
 	}
-	if _, err := os.Stat(filepath.Join(recipe.Dir(ta.recipes, rec.ID), "full.liquid")); err != nil {
+	if _, err := os.Stat(filepath.Join(recipe.Dir(ta.recipes, rec.ID, 1), "full.liquid")); err != nil {
 		t.Errorf("recipe files: %v", err)
 	}
 	var list []recipeJSON

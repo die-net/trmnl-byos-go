@@ -106,16 +106,23 @@ type Scheduler struct {
 	// buildTimeout is how long one build may take: the buildTimeout constant.
 	buildTimeout time.Duration
 
-	// perDevice remembers by recipe ID whether the recipe reads
-	// trmnl.device. An installed recipe never changes, so it is scanned once.
+	// perDevice remembers by recipe ID whether a revision of the recipe's
+	// files reads trmnl.device. A revision never changes, so it is scanned
+	// once.
 	mu        sync.Mutex
-	perDevice map[int64]bool
+	perDevice map[int64]scanned
+}
+
+// scanned is whether one revision of a recipe's files reads trmnl.device.
+type scanned struct {
+	revision int64
+	reads    bool
 }
 
 // New returns a scheduler.
 func New(cfg Config) *Scheduler {
 	cfg.Zone = cmp.Or(cfg.Zone, time.UTC)
-	return &Scheduler{cfg: cfg, now: time.Now, buildTimeout: buildTimeout, perDevice: map[int64]bool{}}
+	return &Scheduler{cfg: cfg, now: time.Now, buildTimeout: buildTimeout, perDevice: map[int64]scanned{}}
 }
 
 // Run renders what is due until ctx is done. Each pass scans for due
@@ -344,7 +351,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 	for i := range rows {
 		r := &rows[i]
 		zone, locale := device.ZoneOf(r.TimeZone, s.cfg.Zone).String(), device.LocaleOf(r.Locale, serverLocale)
-		t := s.newTarget(r.InstanceID, r.RecipeID, r.DeviceID, r.FwModel, profile.Override{Model: r.ProfileOverride, Palette: r.PaletteOverride}, r.Width, r.Height, r.Palette, zone, locale, r.RefreshInterval)
+		t := s.newTarget(r.InstanceID, r.RecipeID, r.RecipeRevision, r.DeviceID, r.FwModel, profile.Override{Model: r.ProfileOverride, Palette: r.PaletteOverride}, r.Width, r.Height, r.Palette, zone, locale, r.RefreshInterval)
 		c := byTarget[t]
 		if c == nil {
 			c = &candidate{target: t}
@@ -395,7 +402,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 			continue
 		}
 		it := &groups[c][j]
-		t := s.newTarget(it.InstanceID, it.RecipeID, w.DeviceID, w.FwModel, profile.Override{Model: w.ProfileOverride, Palette: w.PaletteOverride}, w.Width, w.Height, it.Palette, zone.String(), device.LocaleOf(w.Locale, serverLocale), it.RefreshInterval)
+		t := s.newTarget(it.InstanceID, it.RecipeID, it.RecipeRevision, w.DeviceID, w.FwModel, profile.Override{Model: w.ProfileOverride, Palette: w.PaletteOverride}, w.Width, w.Height, it.Palette, zone.String(), device.LocaleOf(w.Locale, serverLocale), it.RefreshInterval)
 		if c := byTarget[t]; c != nil {
 			c.wanted = append(c.wanted, next)
 		}
@@ -413,11 +420,11 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 // are the ones in effect for the device. A target that cannot be built, because its recipe
 // cannot be scanned, is returned with broken set, so that it is recorded as
 // a failed render and does not stop the others.
-func (s *Scheduler) newTarget(instance, recipeID, deviceID int64, fwModel string, o profile.Override, width, height *int64, palette, zone, locale string, refreshSeconds int64) target {
+func (s *Scheduler) newTarget(instance, recipeID, recipeRevision, deviceID int64, fwModel string, o profile.Override, width, height *int64, palette, zone, locale string, refreshSeconds int64) target {
 	t := target{instance: instance, device: deviceID, palette: palette, zone: zone, locale: locale, refresh: time.Duration(refreshSeconds) * time.Second}
 	p := profile.Resolve(fwModel, width, height, o)
 	t.width, t.height, t.palette = p.Width, p.Height, p.RenderPalette(palette)
-	per, err := s.readsDevice(recipeID)
+	per, err := s.readsDevice(recipeID, recipeRevision)
 	if err != nil {
 		// Whether the recipe is per device is unknown. Its devices find a
 		// shared failure, which is the fallback for a device's own render.
@@ -431,19 +438,22 @@ func (s *Scheduler) newTarget(instance, recipeID, deviceID int64, fwModel string
 	return t
 }
 
-// readsDevice reports whether the recipe reads trmnl.device, scanning its
-// files the first time it is asked.
-func (s *Scheduler) readsDevice(recipeID int64) (bool, error) {
+// readsDevice reports whether revision of the recipe's files reads
+// trmnl.device, scanning them the first time it is asked. A revision's files
+// never change, and a replace makes a new revision, which any process may
+// do, so the answer for a revision holds. The answer for the recipe's other
+// revisions is forgotten.
+func (s *Scheduler) readsDevice(recipeID, revision int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if per, ok := s.perDevice[recipeID]; ok {
-		return per, nil
+	if per, ok := s.perDevice[recipeID]; ok && per.revision == revision {
+		return per.reads, nil
 	}
-	per, err := recipe.UsesDevice(recipe.Dir(s.cfg.RecipesDir, recipeID))
+	per, err := recipe.UsesDevice(recipe.Dir(s.cfg.RecipesDir, recipeID, revision))
 	if err != nil {
 		return false, fmt.Errorf("recipe %d: %w", recipeID, err)
 	}
-	s.perDevice[recipeID] = per
+	s.perDevice[recipeID] = scanned{revision: revision, reads: per}
 	return per, nil
 }
 
@@ -632,16 +642,44 @@ func (s *Scheduler) build(ctx context.Context, t target, seen version) (images m
 	if t.broken != "" {
 		return nil, "", read, errors.New(t.broken)
 	}
-	inst, err := s.cfg.DB.Read.GetInstance(ctx, t.instance)
+	// The instance and its recipe are read in one snapshot, so the files
+	// are the revision its settings_at goes with. A replace raises both in
+	// one commit, and keeps the revision before for a build like this one
+	// that read it.
+	var inst db.PluginInstance
+	var rec db.Recipe
+	err = s.cfg.DB.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if inst, err = q.GetInstance(ctx, t.instance); err != nil {
+			return fmt.Errorf("get instance: %w", err)
+		}
+		if rec, err = q.GetRecipe(ctx, inst.RecipeID); err != nil {
+			return fmt.Errorf("get recipe: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, "", read, fmt.Errorf("get instance: %w", err)
+		return nil, "", read, err
 	}
 	read.settings = inst.SettingsAt
+	dir := recipe.FilesDir(s.cfg.RecipesDir, &rec)
 	fields, secretValues, err := recipe.InstanceFields(&inst, s.cfg.Secrets)
 	if err != nil {
 		return nil, "", read, err
 	}
-	proj := recipe.NewProject(recipe.Dir(s.cfg.RecipesDir, inst.RecipeID), fields, t.zone, t.locale, s.cfg.AssetHosts)
+	// A value left from a field the recipe no longer declares stays stored,
+	// so it can be cleared or a replace back can use it, but a build gets
+	// only the declared ones.
+	rs, err := recipe.ReadSettings(dir)
+	if err != nil {
+		return nil, "", read, fmt.Errorf("recipe %d: %w", rec.ID, err)
+	}
+	declared := make(map[string]bool, len(rs.CustomFields))
+	for i := range rs.CustomFields {
+		declared[rs.CustomFields[i].Keyname] = true
+	}
+	maps.DeleteFunc(fields, func(k string, _ recipe.Value) bool { return !declared[k] })
+	proj := recipe.NewProject(dir, fields, t.zone, t.locale, s.cfg.AssetHosts)
 	data, err := s.cfg.DB.Read.GetInstanceData(ctx, t.instance)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
