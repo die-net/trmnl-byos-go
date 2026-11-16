@@ -1085,8 +1085,8 @@ var tableNamePrefix = regexp.MustCompile(`^CREATE TABLE (IF NOT EXISTS )?("?)(\w
 // AUTOINCREMENT, as it was before step 7, in a database made from
 // schema.sql that holds no rows yet. It reads each table's SQL, because a
 // test may do that, and uses the same rebuild as step 7. It takes out the
-// tables and columns of the later steps first, with dropZoneLocale,
-// dropProfileOverride and dropBlocklist. A migration test for
+// tables and columns of the later steps first, with dropSleep,
+// dropZoneLocale, dropProfileOverride and dropBlocklist. A migration test for
 // an older version calls it first.
 func dropAutoincrement(t *testing.T, db *sql.DB) {
 	t.Helper()
@@ -1102,7 +1102,7 @@ func dropAutoincrement(t *testing.T, db *sql.DB) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	for _, stmt := range slices.Concat(dropZoneLocale, dropProfileOverride, dropBlocklist) {
+	for _, stmt := range slices.Concat(dropSleep, dropZoneLocale, dropProfileOverride, dropBlocklist) {
 		exec(stmt)
 	}
 	exec(`PRAGMA foreign_keys = OFF`)
@@ -1444,7 +1444,7 @@ func TestMigrateBlocklist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropZoneLocale, dropProfileOverride, dropBlocklist, []string{
+	for _, stmt := range slices.Concat(dropSleep, dropZoneLocale, dropProfileOverride, dropBlocklist, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
 		`PRAGMA user_version = 7`,
 	}) {
@@ -1511,7 +1511,7 @@ func TestMigrateProfileOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropZoneLocale, dropProfileOverride, []string{
+	for _, stmt := range slices.Concat(dropSleep, dropZoneLocale, dropProfileOverride, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
 		`PRAGMA user_version = 8`,
 	}) {
@@ -1650,7 +1650,7 @@ func TestMigrateZoneLocale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropZoneLocale, []string{
+	for _, stmt := range slices.Concat(dropSleep, dropZoneLocale, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
 		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
 		`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
@@ -1755,5 +1755,54 @@ func TestMigrateZoneLocale(t *testing.T) {
 	}
 	if refs, err := client.Read.ListReferencedImages(ctx); err != nil || !slices.Equal(refs, []string{"img4", "img4h"}) {
 		t.Errorf("referenced images after deleting the device: %v, %v", refs, err)
+	}
+}
+
+// dropSleep takes the columns of step 11 out of a database made from
+// schema.sql, so that it has the shape from before that step.
+var dropSleep = []string{
+	`ALTER TABLE device DROP COLUMN sleep_start`,
+	`ALTER TABLE device DROP COLUMN sleep_end`,
+}
+
+// TestMigrateSleepWindow checks step 11: a database at version 10 gets the
+// device's sleep columns, -1 for no window, keeps its devices, and ends with
+// the shape of schema.sql.
+func TestMigrateSleepWindow(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	want := shapeOf(t, openTest(t).Writer)
+
+	path := filepath.Join(t.TempDir(), "v10.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range slices.Concat(dropSleep, []string{
+		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
+		`PRAGMA user_version = 10`,
+	}) {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if v := userVersion(t, client.Writer); v != len(steps) || v < 11 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	dev, err := client.Read.GetDevice(ctx, 3)
+	if err != nil || dev.FwModel != "og" || dev.SleepStart != -1 || dev.SleepEnd != -1 {
+		t.Errorf("device after migration: %+v, %v", dev, err)
 	}
 }

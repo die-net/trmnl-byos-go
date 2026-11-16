@@ -26,8 +26,9 @@ WHERE playlist_item.hidden = 0
 -- name: ListDeviceWakes :many
 -- What the scheduler needs to know about each device that has woken and is
 -- not blocked: its size, when it last woke and how long it was told to
--- sleep, its playlist cursor, and its time zone and locale settings.
-SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device_state.width, device_state.height,
+-- sleep, its playlist cursor, and its time zone, locale and sleep window
+-- settings.
+SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device_state.width, device_state.height,
   device_state.last_seen, device_state.last_refresh_rate_sent, device_cursor.item_id, device_cursor.item_started_at
 FROM device_state
 JOIN device ON device.id = device_state.device_id
@@ -55,7 +56,7 @@ ORDER BY device.id, playlist_device.priority, playlist_item.position;
 -- name: GetRenderDevice :one
 -- A device's values as of its last wake, which a per-device render shows
 -- the recipe as trmnl.device.
-SELECT device.friendly_id, device.fw_version, device_state.battery_v, device_state.rssi,
+SELECT device.friendly_id, device.fw_version, device.sleep_start, device.sleep_end, device_state.battery_v, device_state.rssi,
   device_state.last_refresh_rate_sent
 FROM device
 LEFT JOIN device_state ON device_state.device_id = device.id

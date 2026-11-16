@@ -42,6 +42,8 @@ type Device struct {
 	PaletteOverride     string `json:"palette_override"`
 	TimeZone            string `json:"time_zone"`
 	Locale              string `json:"locale"`
+	SleepStart          int64  `json:"sleep_start"`
+	SleepEnd            int64  `json:"sleep_end"`
 }
 
 type DeviceCursor struct {

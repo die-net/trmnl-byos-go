@@ -49,6 +49,10 @@ type Change struct {
 	// Locale is the locale the device's renders are made for, one of
 	// locale.Codes, or empty for the server's locale setting.
 	Locale *string
+	// Sleep is the window in which the device is shown no playlist item,
+	// written HH:MM-HH:MM in the device's time zone, as ParseSleep takes it,
+	// or empty for none, which is always awake.
+	Sleep *string
 	// Seen is the SettingsState the caller read, from a page or an API client.
 	// Nil means none was sent, as from the command line, and is not checked.
 	Seen *string
@@ -69,6 +73,7 @@ func SettingsState(dev *db.Device) string {
 	for _, s := range []string{
 		strconv.FormatInt(dev.ID, 10), strconv.FormatInt(dev.UpdatesEnabled, 10),
 		dev.Name, dev.FwPin, dev.ProfileOverride, dev.PaletteOverride, dev.TimeZone, dev.Locale,
+		FormatSleep(dev.SleepStart, dev.SleepEnd),
 	} {
 		put(s)
 	}
@@ -83,8 +88,9 @@ func SettingsState(dev *db.Device) string {
 // stored one, else the one its Model header gives. A profile change that
 // leaves the stored palette outside the new model's palettes is refused
 // unless the change sets the palette too. A time zone must load, and a
-// locale must be one of locale.Codes. Each of the profile, palette, zone
-// and locale is checked only when the change changes it from what is
+// locale must be one of locale.Codes. A sleep window must parse, as
+// ParseSleep says. Each of the profile, palette, zone, locale and sleep
+// window is checked only when the change changes it from what is
 // stored, so a stored one that stopped applying does not block a change of
 // the others, nor a form that posts it back as it is.
 func Update(ctx context.Context, client *db.Client, device string, c Change) (db.Device, error) {
@@ -149,10 +155,17 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 			}
 			dev.Locale = *c.Locale
 		}
+		if c.Sleep != nil && *c.Sleep != FormatSleep(dev.SleepStart, dev.SleepEnd) {
+			start, end, err := ParseSleep(*c.Sleep)
+			if err != nil {
+				return err
+			}
+			dev.SleepStart, dev.SleepEnd = start, end
+		}
 		err = q.UpdateDeviceSettings(ctx, db.UpdateDeviceSettingsParams{
 			Name: dev.Name, UpdatesEnabled: dev.UpdatesEnabled, FwPin: dev.FwPin,
 			ProfileOverride: dev.ProfileOverride, PaletteOverride: dev.PaletteOverride,
-			TimeZone: dev.TimeZone, Locale: dev.Locale, ID: dev.ID,
+			TimeZone: dev.TimeZone, Locale: dev.Locale, SleepStart: dev.SleepStart, SleepEnd: dev.SleepEnd, ID: dev.ID,
 		})
 		if err != nil {
 			return fmt.Errorf("update device: %w", err)
@@ -160,6 +173,50 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 		return nil
 	})
 	return dev, err
+}
+
+// ParseSleep parses a sleep window written HH:MM-HH:MM, such as 23:00-06:30,
+// into its start and end in minutes after midnight, 0 to 1439. An end before
+// the start wraps past midnight. The empty string is no window, and gives -1
+// for both. A bad format, an hour or minute out of range, and a start equal
+// to the end, which would be a window of no time or of all of it, return an
+// error wrapping errkind.ErrInvalid.
+func ParseSleep(s string) (start, end int64, err error) {
+	if s == "" {
+		return -1, -1, nil
+	}
+	from, to, ok := strings.Cut(s, "-")
+	if !ok {
+		return 0, 0, fmt.Errorf("%w: sleep %q is not a window as HH:MM-HH:MM", errkind.ErrInvalid, s)
+	}
+	if start, err = parseClock(from); err != nil {
+		return 0, 0, err
+	}
+	if end, err = parseClock(to); err != nil {
+		return 0, 0, err
+	}
+	if start == end {
+		return 0, 0, fmt.Errorf("%w: sleep %q starts and ends at the same time", errkind.ErrInvalid, s)
+	}
+	return start, end, nil
+}
+
+// parseClock parses HH:MM, 00:00 to 23:59, into minutes after midnight.
+func parseClock(s string) (int64, error) {
+	t, err := time.Parse("15:04", s)
+	if err != nil || len(s) != 5 {
+		return 0, fmt.Errorf("%w: %q is not a time as HH:MM, 00:00 to 23:59", errkind.ErrInvalid, s)
+	}
+	return int64(t.Hour()*60 + t.Minute()), nil
+}
+
+// FormatSleep is the inverse of ParseSleep: it writes a stored sleep window
+// as HH:MM-HH:MM, or empty for none, which is a negative start.
+func FormatSleep(start, end int64) string {
+	if start < 0 || end < 0 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d-%02d:%02d", start/60, start%60, end/60, end%60)
 }
 
 // ProfileOverride is the profile override stored for a device.

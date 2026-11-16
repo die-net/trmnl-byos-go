@@ -627,11 +627,12 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	if d.View.Width > 0 {
 		d.PanelSize = fmt.Sprintf("%d × %d", d.View.Width, d.View.Height)
 	}
-	// The playlist the device would show at its next wake, and its items
-	// that are shown then.
-	at := now.Add(playlist.WakeSlack)
+	// The playlist the device would show at its next wake, none if it is
+	// asleep then, and its items that are shown then. Its schedules and sleep
+	// window are read in its own time zone.
+	at := now.Add(playlist.WakeSlack).In(device.ZoneOf(dev.TimeZone, s.zone))
 	lists, groups := playlist.DeviceLists(items)
-	if c := playlist.Choose(lists, at); c >= 0 {
+	if c := playlist.Choose(lists, playlist.Awake(dev.SleepStart, dev.SleepEnd), at); c >= 0 {
 		for i := range groups[c] {
 			if lists[c].Entries[i].Shown(at) {
 				d.Playlist = append(d.Playlist, playlistRow{Name: groups[c][i].InstanceName, Duration: itemDuration(groups[c][i].Duration)})

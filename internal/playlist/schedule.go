@@ -259,12 +259,29 @@ func (l *List) shows(t time.Time) bool {
 	return false
 }
 
+// Awake returns the schedule on which a device with the sleep window
+// [sleepStart, sleepEnd) is awake, in minutes after local midnight, or Always
+// for a sleepStart below 0, which is no window. A window that wraps past
+// midnight is the awake schedule that the other two ends make, so sleeping
+// 23:00 to 06:30 is awake from 06:30 to 23:00. The caller has checked that
+// the two ends differ.
+func Awake(sleepStart, sleepEnd int64) Schedule {
+	if sleepStart < 0 {
+		return Always
+	}
+	return Schedule{Days: AllDays, WindowStart: sleepEnd, WindowEnd: sleepStart}
+}
+
 // Choose returns the index of the list a device shows at t, or -1 if none.
-// lists are in the order they are tried. The first that is scheduled and has
-// an item to show wins, so a list with no schedule at the end is the default,
-// and a scheduled list whose items are all hidden or off schedule does not
-// blank the device.
-func Choose(lists []List, t time.Time) int {
+// awake is the device's awake schedule, as Awake returns it, and a device
+// that is not awake at t is shown no list. lists are in the order they are
+// tried. The first that is scheduled and has an item to show wins, so a list
+// with no schedule at the end is the default, and a scheduled list whose
+// items are all hidden or off schedule does not blank the device.
+func Choose(lists []List, awake Schedule, t time.Time) int {
+	if !awake.Active(t) {
+		return -1
+	}
 	for i := range lists {
 		if lists[i].shows(t) {
 			return i
@@ -273,15 +290,18 @@ func Choose(lists []List, t time.Time) int {
 	return -1
 }
 
-// choice is what a device shows at a moment: the chosen list and which of its
-// items are shown.
+// choice is what a device shows at a moment: whether it is awake, the chosen
+// list and which of its items are shown. A sleeping device and a waking one
+// with nothing scheduled both choose no list, but are shown different
+// screens, so awake is part of the choice.
 type choice struct {
+	awake bool
 	list  int
 	shown []bool
 }
 
-func choiceAt(lists []List, t time.Time) choice {
-	c := choice{list: Choose(lists, t)}
+func choiceAt(lists []List, awake Schedule, t time.Time) choice {
+	c := choice{awake: awake.Active(t), list: Choose(lists, awake, t)}
 	if c.list >= 0 {
 		for i := range lists[c.list].Entries {
 			c.shown = append(c.shown, lists[c.list].Entries[i].Shown(t))
@@ -291,16 +311,18 @@ func choiceAt(lists []List, t time.Time) choice {
 }
 
 func (c choice) equal(o choice) bool {
-	return c.list == o.list && slices.Equal(c.shown, o.shown)
+	return c.awake == o.awake && c.list == o.list && slices.Equal(c.shown, o.shown)
 }
 
 // NextChange returns the first time in (t, limit] at which what a device
-// shows changes: the list chosen, or which of its items are shown. It reports
-// false if there is none. A schedule changes only at the start or end of a
+// shows changes: whether it is awake, the list chosen, or which of its items
+// are shown. awake is its awake schedule, as for Choose, whose boundaries are
+// tried as well, so a device is woken when its sleep starts and when it ends.
+// It reports false if there is none. A schedule changes only at the start or end of a
 // window on a local day, a local midnight, a starts_at or ends_at, or a
 // change of UTC offset, so those are the times tried, in t's location, with
 // both instants of a wall clock time that a change back repeats.
-func NextChange(lists []List, t, limit time.Time) (time.Time, bool) {
+func NextChange(lists []List, awake Schedule, t, limit time.Time) (time.Time, bool) {
 	if !limit.After(t) {
 		return time.Time{}, false
 	}
@@ -311,7 +333,7 @@ func NextChange(lists []List, t, limit time.Time) (time.Time, bool) {
 			cands = append(cands, c)
 		}
 	}
-	var scheds []Schedule
+	scheds := []Schedule{awake}
 	for _, l := range lists {
 		scheds = append(scheds, l.Schedule)
 		for j := range l.Entries {
@@ -372,9 +394,9 @@ func NextChange(lists []List, t, limit time.Time) (time.Time, bool) {
 		}
 	}
 	slices.SortFunc(cands, time.Time.Compare)
-	now := choiceAt(lists, t)
+	now := choiceAt(lists, awake, t)
 	for _, c := range cands {
-		if !choiceAt(lists, c).equal(now) {
+		if !choiceAt(lists, awake, c).equal(now) {
 			return c, true
 		}
 	}

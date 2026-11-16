@@ -669,6 +669,12 @@ type Device struct {
 	WifiStrength           *int   `yaml:"wifi_strength,omitempty"`
 	FirmwareVersion        string `yaml:"firmware_version,omitempty"`
 	RefreshIntervalSeconds int    `yaml:"refresh_interval_seconds,omitempty"`
+	// SleepModeEnabled is whether the device has a sleep window. The two
+	// times are minutes after local midnight, as trmnlp names them, and are
+	// left out when there is no window. 0 is midnight, so they are pointers.
+	SleepModeEnabled bool `yaml:"sleep_mode_enabled"`
+	SleepStartTime   *int `yaml:"sleep_start_time,omitempty"`
+	SleepEndTime     *int `yaml:"sleep_end_time,omitempty"`
 }
 
 // Battery voltages that count as empty and full, and RSSIs that count as no
@@ -692,6 +698,10 @@ func NewDevice(row *db.GetRenderDeviceRow) Device {
 	}
 	if row.LastRefreshRateSent != nil {
 		d.RefreshIntervalSeconds = int(*row.LastRefreshRateSent)
+	}
+	if row.SleepStart >= 0 && row.SleepEnd >= 0 {
+		start, end := int(row.SleepStart), int(row.SleepEnd)
+		d.SleepModeEnabled, d.SleepStartTime, d.SleepEndTime = true, &start, &end
 	}
 	return d
 }

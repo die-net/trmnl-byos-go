@@ -267,21 +267,52 @@ func TestUsesDevice(t *testing.T) {
 func TestNewDevice(t *testing.T) {
 	t.Parallel()
 	volts, rssi, rate := 3.6, int64(-75), int64(900)
-	got := NewDevice(&db.GetRenderDeviceRow{FriendlyID: "ABC123", FwVersion: "1.8.10", BatteryV: &volts, Rssi: &rssi, LastRefreshRateSent: &rate})
+	got := NewDevice(&db.GetRenderDeviceRow{FriendlyID: "ABC123", FwVersion: "1.8.10", SleepStart: -1, SleepEnd: -1, BatteryV: &volts, Rssi: &rssi, LastRefreshRateSent: &rate})
 	if got.FriendlyID != "ABC123" || got.FirmwareVersion != "1.8.10" || got.RefreshIntervalSeconds != 900 ||
 		got.PercentCharged == nil || *got.PercentCharged < 49.9 || *got.PercentCharged > 50.1 ||
 		got.WifiStrength == nil || *got.WifiStrength != 50 {
 		t.Errorf("NewDevice = %+v", got)
 	}
 	// A device that has not woken has no readings, and one past the ends is clamped.
-	got = NewDevice(&db.GetRenderDeviceRow{FriendlyID: "ABC123"})
+	got = NewDevice(&db.GetRenderDeviceRow{FriendlyID: "ABC123", SleepStart: -1, SleepEnd: -1})
 	if got.PercentCharged != nil || got.WifiStrength != nil {
 		t.Errorf("readings invented: %+v", got)
 	}
 	volts, rssi = 5, -30
-	got = NewDevice(&db.GetRenderDeviceRow{BatteryV: &volts, Rssi: &rssi})
+	got = NewDevice(&db.GetRenderDeviceRow{BatteryV: &volts, Rssi: &rssi, SleepStart: -1, SleepEnd: -1})
 	if *got.PercentCharged != 100 || *got.WifiStrength != 100 {
 		t.Errorf("not clamped: %v %v", *got.PercentCharged, *got.WifiStrength)
+	}
+}
+
+// TestNewDeviceSleep checks that a sleep window reaches trmnl.device as
+// trmnlp's sleep_mode_enabled, sleep_start_time and sleep_end_time, in
+// minutes, and that no window is false with no times. A window that starts
+// at midnight still has its start.
+func TestNewDeviceSleep(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
+	shared := NewProject(dir, nil, "UTC", "", nil)
+	for _, tc := range []struct {
+		name       string
+		start, end int64
+		want       string
+		absent     []string
+	}{
+		{"window", 23 * 60, 6*60 + 30, "sleep_mode_enabled: true\n            sleep_start_time: 1380\n            sleep_end_time: 390\n", nil},
+		{"window from midnight", 0, 300, "sleep_mode_enabled: true\n            sleep_start_time: 0\n            sleep_end_time: 300\n", nil},
+		{"none", -1, -1, "sleep_mode_enabled: false\n", []string{"sleep_start_time", "sleep_end_time"}},
+	} {
+		got := projectConfig(t, shared.WithDevice(NewDevice(&db.GetRenderDeviceRow{FriendlyID: "ABC123", SleepStart: tc.start, SleepEnd: tc.end})))
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: .trmnlp.yml:\n%s\nwant it to hold:\n%s", tc.name, got, tc.want)
+		}
+		for _, a := range tc.absent {
+			if strings.Contains(got, a) {
+				t.Errorf("%s: .trmnlp.yml has %s:\n%s", tc.name, a, got)
+			}
+		}
 	}
 }
 

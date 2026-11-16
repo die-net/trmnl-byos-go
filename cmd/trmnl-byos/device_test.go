@@ -128,8 +128,8 @@ func TestDeviceUsage(t *testing.T) {
 // TestDeviceSet checks that device set changes only the settings it is
 // given, clears a setting with none, and refuses a model that is not in the
 // registry, a palette the model lacks, a time zone that does not load, Local,
-// and a locale trmnlp lacks, each leaving the device as it was. The devices
-// report no model.
+// a locale trmnlp lacks, and a sleep window that is badly formed or empty,
+// each leaving the device as it was. The devices report no model.
 func TestDeviceSet(t *testing.T) {
 	t.Parallel()
 	dir := deviceDir(t)
@@ -138,20 +138,27 @@ func TestDeviceSet(t *testing.T) {
 		want    string
 		invalid bool
 	}{
-		{[]string{"-name", "Kitchen", "-profile", "og_bwry", "abc001"}, "ABC001: name Kitchen, profile og_bwry, palette -, zone -, locale -.\n", false},
-		{[]string{"-palette", "color-4bwry", "ABC001"}, "ABC001: name Kitchen, profile og_bwry, palette color-4bwry, zone -, locale -.\n", false},
+		{[]string{"-name", "Kitchen", "-profile", "og_bwry", "abc001"}, "ABC001: name Kitchen, profile og_bwry, palette -, zone -, locale -, sleep -.\n", false},
+		{[]string{"-palette", "color-4bwry", "ABC001"}, "ABC001: name Kitchen, profile og_bwry, palette color-4bwry, zone -, locale -, sleep -.\n", false},
 		{[]string{"-name", "Hall", "-palette", "gray-4", "ABC001"}, "", true},
 		{[]string{"-profile", "og_nope", "ABC001"}, "", true},
-		{[]string{"-profile", "none", "-palette", "none", "ABC001"}, "ABC001: name Kitchen, profile -, palette -, zone -, locale -.\n", false},
-		{[]string{"-name", "", "ABC001"}, "ABC001: name -, profile -, palette -, zone -, locale -.\n", false},
-		{[]string{"-zone", "America/Los_Angeles", "-locale", "pt-BR", "ABC001"}, "ABC001: name -, profile -, palette -, zone America/Los_Angeles, locale pt-BR.\n", false},
+		{[]string{"-profile", "none", "-palette", "none", "ABC001"}, "ABC001: name Kitchen, profile -, palette -, zone -, locale -, sleep -.\n", false},
+		{[]string{"-name", "", "ABC001"}, "ABC001: name -, profile -, palette -, zone -, locale -, sleep -.\n", false},
+		{[]string{"-zone", "America/Los_Angeles", "-locale", "pt-BR", "ABC001"}, "ABC001: name -, profile -, palette -, zone America/Los_Angeles, locale pt-BR, sleep -.\n", false},
 		// A flag left out keeps its setting.
-		{[]string{"-name", "Hall", "ABC001"}, "ABC001: name Hall, profile -, palette -, zone America/Los_Angeles, locale pt-BR.\n", false},
+		{[]string{"-name", "Hall", "ABC001"}, "ABC001: name Hall, profile -, palette -, zone America/Los_Angeles, locale pt-BR, sleep -.\n", false},
 		{[]string{"-zone", "Local", "ABC001"}, "", true},
 		{[]string{"-zone", "Nowhere/Land", "ABC001"}, "", true},
 		{[]string{"-name", "Den", "-locale", "xx", "ABC001"}, "", true},
-		{[]string{"-zone", "none", "ABC001"}, "ABC001: name Hall, profile -, palette -, zone -, locale pt-BR.\n", false},
-		{[]string{"-locale", "none", "ABC001"}, "ABC001: name Hall, profile -, palette -, zone -, locale -.\n", false},
+		{[]string{"-zone", "none", "ABC001"}, "ABC001: name Hall, profile -, palette -, zone -, locale pt-BR, sleep -.\n", false},
+		{[]string{"-locale", "none", "ABC001"}, "ABC001: name Hall, profile -, palette -, zone -, locale -, sleep -.\n", false},
+		{[]string{"-sleep", "23:00-06:30", "ABC001"}, "ABC001: name Hall, profile -, palette -, zone -, locale -, sleep 23:00-06:30.\n", false},
+		// A flag left out keeps the window, and a refused one keeps it too.
+		{[]string{"-name", "Den", "ABC001"}, "ABC001: name Den, profile -, palette -, zone -, locale -, sleep 23:00-06:30.\n", false},
+		{[]string{"-name", "Attic", "-sleep", "06:00-06:00", "ABC001"}, "", true},
+		{[]string{"-sleep", "late", "ABC001"}, "", true},
+		{[]string{"-sleep", "24:00-06:00", "ABC001"}, "", true},
+		{[]string{"-sleep", "none", "ABC001"}, "ABC001: name Den, profile -, palette -, zone -, locale -, sleep -.\n", false},
 	} {
 		out, err := runDevice(t, dir, append([]string{"set"}, tc.args...)...)
 		if tc.invalid {
