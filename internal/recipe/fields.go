@@ -223,6 +223,15 @@ func (v Value) Empty() bool {
 	return strings.TrimSpace(v.One) == ""
 }
 
+// same reports whether v and o are the same value. Two empty values are
+// the same, since an empty value is not stored.
+func (v Value) same(o Value) bool {
+	if v.Empty() && o.Empty() {
+		return true
+	}
+	return v.IsList() == o.IsList() && v.One == o.One && slices.Equal(v.Many, o.Many)
+}
+
 // equal reports whether the two values are the same string or the same
 // list.
 func (v Value) equal(o Value) bool {

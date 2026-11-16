@@ -318,9 +318,33 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		// An empty value means keep for a field that was secret before the
 		// update, since a form showed it blank, even when the update
 		// unmarks it.
-		values := checkValues(fields, changes(sealedBy(byName, curMarks), u, bad), false, isSealed, bad)
+		wasSealed := sealedBy(byName, curMarks)
+		values := checkValues(fields, changes(wasSealed, u, bad), false, isSealed, bad)
 		if len(bad) > 0 {
 			return bad
+		}
+		plain, _, err := decodeFields(&cur, nil, false)
+		if err != nil {
+			return err
+		}
+		// A plain value that is, in its stored form, what is stored already
+		// is no change. So a form or a client that sends every value back
+		// changes nothing, and opens no secrets, when nothing differs. Only
+		// a declared field that is plain before and after can be compared
+		// without the key, and only when the plain store has the key, since
+		// a value is in one store and the secrets then cannot have it, or
+		// when it is a clear and no secrets are stored. A field can have a
+		// value in the secrets that its definition no longer seals, as a
+		// password field the recipe made a string. An undeclared keyname
+		// stays, for the check of a clear below.
+		for k, v := range values {
+			if byName[k] == nil || wasSealed(k) || isSealed(k) {
+				continue
+			}
+			stored, inPlain := plain[k]
+			if (inPlain && v.same(stored)) || (!inPlain && v.Empty() && len(cur.SecretValues) == 0) {
+				delete(values, k)
+			}
 		}
 		marksChanged := !maps.Equal(curMarks, marked)
 		change := len(values) > 0 || marksChanged
@@ -329,13 +353,16 @@ func UpdateInstance(ctx context.Context, client *db.Client, key *secrets.Key, re
 		if open && key == nil {
 			return secrets.ErrNoKey
 		}
-		plain, secret, err := decodeFields(&cur, key, open)
-		if errors.Is(err, errUnreadable) {
-			// The error is not shown: it comes from the sealed value.
-			return fmt.Errorf("%w: the instance's stored secret fields cannot be opened with the secrets key, so its fields cannot be changed", errkind.ErrInvalid)
-		}
-		if err != nil {
-			return err
+		secret := map[string]string{}
+		if open {
+			secret, err = openSecrets(&cur, key)
+			if errors.Is(err, errUnreadable) {
+				// The error is not shown: it comes from the sealed value.
+				return fmt.Errorf("%w: the instance's stored secret fields cannot be opened with the secrets key, so its fields cannot be changed", errkind.ErrInvalid)
+			}
+			if err != nil {
+				return err
+			}
 		}
 		// A clear of a keyname the recipe does not declare is for a value
 		// left from a field it dropped, so one that is not stored either is a
@@ -671,18 +698,31 @@ func decodeFields(inst *db.PluginInstance, key *secrets.Key, open bool) (plain m
 	if err := json.Unmarshal([]byte(inst.FieldValues), &plain); err != nil {
 		return nil, nil, fmt.Errorf("decode fields: %w", err)
 	}
-	if !open || len(inst.SecretValues) == 0 {
+	if !open {
 		return plain, map[string]string{}, nil
+	}
+	if secret, err = openSecrets(inst, key); err != nil {
+		return plain, nil, err
+	}
+	return plain, secret, nil
+}
+
+// openSecrets returns an instance's secret field values, which need key, or
+// an empty map when none are stored. An error that wraps errUnreadable
+// means the sealed secrets did not open.
+func openSecrets(inst *db.PluginInstance, key *secrets.Key) (map[string]string, error) {
+	secret := map[string]string{}
+	if len(inst.SecretValues) == 0 {
+		return secret, nil
 	}
 	opened, err := key.Open(inst.SecretValues, secretAD(inst))
 	if err != nil {
-		return plain, nil, fmt.Errorf("%w: %w", errUnreadable, err)
+		return nil, fmt.Errorf("%w: %w", errUnreadable, err)
 	}
-	secret = map[string]string{}
 	if err := json.Unmarshal(opened, &secret); err != nil {
-		return nil, nil, fmt.Errorf("decode secret fields: %w", err)
+		return nil, fmt.Errorf("decode secret fields: %w", err)
 	}
-	return plain, secret, nil
+	return secret, nil
 }
 
 // inUseError is the error of an instance that playlist items show.
