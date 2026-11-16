@@ -73,7 +73,11 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case c.blocked():
 		slog.Warn("display: blocked MAC", "mac", c.mac)
-		name, err := systemScreen(r, func(sp screen.Profile) (string, error) { return s.blockedScreen(sp, c.mac, true) })
+		var o profile.Override
+		if c.ok {
+			o = overrideOf(&c.dev)
+		}
+		name, err := systemScreen(r, o, func(sp screen.Profile) (string, error) { return s.blockedScreen(sp, c.mac, true) })
 		if err != nil {
 			displayFailed(w, c.mac, "render screen", err)
 			return
@@ -92,7 +96,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	dev := c.dev
 
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
-	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), profile.Override{Model: dev.ProfileOverride, Palette: dev.PaletteOverride})
+	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), overrideOf(&dev))
 	sp := screenProfile(p)
 	choice := screenChoice{refresh: s.refreshRate(ctx)}
 	dot, calibrating := device.CalibrationDot(dev.ScreenOverride)

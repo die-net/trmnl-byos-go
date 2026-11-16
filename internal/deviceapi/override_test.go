@@ -1,6 +1,7 @@
 package deviceapi
 
 import (
+	"image/color"
 	"testing"
 
 	"github.com/die-net/trmnl-byos-go/internal/device"
@@ -46,5 +47,40 @@ func TestDisplayProfileOverride(t *testing.T) {
 	set(device.Change{Profile: s(""), Palette: s("")})
 	if got := shown(); got != image {
 		t.Errorf("override cleared: shown %q, want %q", got, image)
+	}
+}
+
+// TestBlockedScreenProfileOverride checks that the Blocked screens a
+// registered device gets from /api/display and /api/setup are drawn for its
+// profile override. The DIY kit is an og_plus, whose screens use 4 grays,
+// and og_bwry has none, so its screens are black and white.
+func TestBlockedScreenProfileOverride(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t)
+	key := ts.register(t)
+	depth := func(m map[string]any) uint8 {
+		t.Helper()
+		cfg, _ := ts.imageOf(t, m)
+		p, ok := cfg.ColorModel.(color.Palette)
+		if !ok {
+			t.Fatalf("image has no palette: %v", cfg.ColorModel)
+		}
+		return bitsFor(len(p))
+	}
+	if _, err := device.Block(t.Context(), ts.db, testMAC, nil, ts.now); err != nil {
+		t.Fatal(err)
+	}
+	if got := depth(ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))); got != 2 {
+		t.Fatalf("blocked screen with no override: %d bits, want 2", got)
+	}
+	profile := "og_bwry"
+	if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{Profile: &profile}); err != nil {
+		t.Fatal(err)
+	}
+	if got := depth(ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))); got != 1 {
+		t.Errorf("blocked display screen with og_bwry: %d bits, want 1", got)
+	}
+	if got := depth(ts.getJSON(t, "/api/setup", setupHeaders(testMAC))); got != 1 {
+		t.Errorf("blocked setup screen with og_bwry: %d bits, want 1", got)
 	}
 }

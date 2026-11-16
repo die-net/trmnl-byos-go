@@ -222,6 +222,42 @@ func TestUpdate(t *testing.T) {
 	}
 }
 
+// TestUpdateStalePalette checks that a stored palette that stopped fitting
+// the device's model, because its firmware now reports another one, does
+// not block a change of its name or policy, and is refused once a change
+// names the palette or the profile.
+func TestUpdateStalePalette(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: testMAC, ApiKeyHash: []byte{1}, FriendlyID: "ABC123", FwModel: "og", CreatedAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gray, name, on := "gray-4", "Kitchen", true
+	if _, err := Update(ctx, client, "ABC123", Change{Palette: &gray}); err != nil {
+		t.Fatal(err)
+	}
+	// Firmware that reports og_4clr, an og_bwry, which takes no gray.
+	if err := client.Write.UpdateDeviceFirmware(ctx, db.UpdateDeviceFirmwareParams{FwModel: "og_4clr", ID: dev.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Update(ctx, client, "ABC123", Change{Name: &name, UpdatesEnabled: &on}); err != nil || got.Name != "Kitchen" || got.PaletteOverride != "gray-4" {
+		t.Errorf("a rename with a stale palette: %+v, %v", got, err)
+	}
+	if _, err := Update(ctx, client, "ABC123", Change{Palette: &gray}); !errors.Is(err, errkind.ErrInvalid) {
+		t.Errorf("setting the stale palette again: %v, want invalid", err)
+	}
+	none := ""
+	if got, err := Update(ctx, client, "ABC123", Change{Palette: &none}); err != nil || got.PaletteOverride != "" {
+		t.Errorf("clearing it: %+v, %v", got, err)
+	}
+}
+
 // TestUpdateSeen checks that an update given the settings state a page
 // showed goes through, and one given a state from before another change is
 // ErrSettingsChanged and changes nothing.

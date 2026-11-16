@@ -69,7 +69,9 @@ func SettingsState(dev *db.Device) string {
 // one of the palettes of the device's model: its new profile, else its
 // stored one, else the one its Model header gives. A profile change that
 // leaves the stored palette outside the new model's palettes is refused
-// unless the change sets the palette too.
+// unless the change sets the palette too. A change of neither does not
+// check the palette, so a stored one that stopped fitting does not block
+// it.
 func Update(ctx context.Context, client *db.Client, device string, c Change) (db.Device, error) {
 	var name string
 	if c.Name != nil {
@@ -110,8 +112,14 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 		if c.Palette != nil {
 			dev.PaletteOverride = *c.Palette
 		}
-		if err := checkPalette(&dev); err != nil {
-			return err
+		// Only a change of the profile or the palette checks the palette. A
+		// stored one can stop fitting without either, when the device
+		// reports another model or the registry changes, and Resolve then
+		// ignores it, so it must not block a change of the other settings.
+		if c.Profile != nil || c.Palette != nil {
+			if err := checkPalette(&dev); err != nil {
+				return err
+			}
 		}
 		err = q.UpdateDeviceSettings(ctx, db.UpdateDeviceSettingsParams{
 			Name: dev.Name, UpdatesEnabled: dev.UpdatesEnabled, FwPin: dev.FwPin,
