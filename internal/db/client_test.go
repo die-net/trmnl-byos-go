@@ -1577,11 +1577,6 @@ END`,
 	`ALTER TABLE device DROP COLUMN locale`,
 }
 
-// TestMigrateZoneLocale checks step 10: a database at version 9 keeps every
-// render row's other columns and its images, gives the rows an empty time
-// zone and locale, takes two rows that differ only by zone or locale, still
-// removes a deleted device's renders, gives devices an empty zone and
-// locale, and ends with the shape of schema.sql.
 // TestMigrateZoneLocaleKeepsSequence checks that step 10 keeps render's
 // AUTOINCREMENT counter, so a render made after it gets an ID above every
 // one before it, deleted ones included: with rows left below a deleted
@@ -1640,6 +1635,11 @@ func TestMigrateZoneLocaleKeepsSequence(t *testing.T) {
 	}
 }
 
+// TestMigrateZoneLocale checks step 10: a database at version 9 keeps every
+// render row's other columns and its images, gives the rows an empty time
+// zone and locale, takes two rows that differ only by zone or locale, still
+// removes a deleted device's renders, gives devices an empty zone and
+// locale, and ends with the shape of schema.sql.
 func TestMigrateZoneLocale(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
