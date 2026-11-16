@@ -122,11 +122,23 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	sp := screenProfile(p)
 	special := device.SpecialFunctionOf(dev.SpecialFunction)
 	fn := requestedFunction(r, special)
+	// A double-click sends true and runs the function the device saved from
+	// an earlier answer. With none configured since, the device still runs
+	// that function, which draws nothing for an answer without its action,
+	// so the wake is answered as a timer wake and the cursor does not skip
+	// an item the device never shows.
+	saved := fn == "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("special_function")), "true")
+	// The firmware applies a refresh_rate to a normal answer and to sleep.
+	// For any other special function it keeps the interval it stored from
+	// an earlier answer, counted from this wake, so that interval is what
+	// the device sleeps, and what is recorded for the scheduler to predict
+	// its next wake.
+	keepRate := saved || (fn != "" && fn != device.FuncSleep)
 	// A press moves the cursor as the device's button command says. A
 	// restart_playlist moves it to the first item shown. Any other function
 	// leaves the cursor alone, since it does not show a new item.
 	command := ""
-	if playlist.Pressed(r.Header.Get("Update-Source")) {
+	if playlist.Pressed(r.Header.Get("Update-Source")) && !saved {
 		command = device.ButtonCommandOf(dev.ButtonCommand)
 	}
 	if fn == device.FuncRestartPlaylist {
@@ -173,6 +185,17 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 			// model and version stay as sent, for the firmware offer.
 			if err := q.UpdateDeviceFirmware(ctx, db.UpdateDeviceFirmwareParams{FwModel: model, FwVersion: version, ID: dev.ID}); err != nil {
 				return fmt.Errorf("update firmware: %w", err)
+			}
+		}
+		if keepRate {
+			st, err := q.GetDeviceStatus(ctx, dev.ID)
+			if err != nil {
+				return fmt.Errorf("get device state: %w", err)
+			}
+			// A device with no state yet has had no answer to store a
+			// rate from, so the one chosen here is the best guess.
+			if st.LastRefreshRateSent != nil {
+				choice.refresh = *st.LastRefreshRateSent
 			}
 		}
 		err := q.UpsertDeviceState(ctx, db.UpsertDeviceStateParams{
@@ -357,7 +380,11 @@ func untilChange(lists []playlist.List, awake playlist.Schedule, now time.Time, 
 // device in its sleep window is shown a screen that says so, with the cursor
 // where it was, and sleeps until the window ends. A button press or a
 // restart_playlist in the window is the exception: it is shown what it would
-// be shown awake, and its next timer wake puts it back to sleep.
+// be shown awake. A press applies the refresh it is sent, so its next timer
+// wake comes in the window and puts it back to sleep. The firmware applies
+// no refresh to a restart_playlist, so the device keeps the screen until
+// its stored interval runs out, counted from the double-click, which can be
+// past the window's end.
 // The refresh rate it returns is refresh, shortened to wake the device when
 // the item ends, a schedule or its sleep changes or a render is ready.
 func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, command string, refresh int64) (screenChoice, error) {
@@ -379,8 +406,7 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	if command != "" && !awake.Active(now.Add(playlist.WakeSlack)) {
 		// A press in the sleep window, or a restart_playlist, wakes the
 		// device for this screen: it is shown what it would show awake, as
-		// the command says. Its next timer wake is still in the window, so
-		// that wake puts it back to sleep.
+		// the command says.
 		awake = playlist.Always
 	}
 	pick, err := s.advance(ctx, dev.ID, now, awake, command)
