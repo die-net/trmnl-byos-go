@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -286,7 +287,7 @@ func writes(r *report) {
 	home, _ := os.UserHomeDir()
 	cache, _ := os.UserCacheDir()
 	wd, _ := os.Getwd()
-	for _, d := range []string{"/", "/tmp", home, "/home/runner", wd, "/home/runner/work/_temp", "/home/runner/work/_temp/review", "/home/runner/work/_temp/review/scratch", "/home/runner/work/_temp/_runner_file_commands", filepath.Join(cache, "go-build"), "/home/runner/.claude"} {
+	for _, d := range []string{"/", "/tmp", home, "/home/runner", wd, "/home/runner/work/_temp", "/home/runner/work/_temp/review", "/home/runner/work/_temp/review/scratch", "/home/runner/work/_temp/_runner_file_commands", filepath.Join(cache, "go-build"), "/home/runner/.claude", "/home/runner/work/_actions", "/home/runner/work/_actions/anthropics/claude-code-action/f3b070c88125d33dbae5653df5f143101d4ea9dc/src/entrypoints", "/home/runner/work/_actions/actions/upload-artifact", "/home/runner/.local/bin", "/home/runner/.local/share/claude", "/home/runner/.bun", "/home/runner/.bun/bin", "/home/runner/work/trmnl-byos-go/trmnl-byos-go/.claude", "/home/runner/work/trmnl-byos-go/trmnl-byos-go/.git", "/home/runner/work/trmnl-byos-go/trmnl-byos-go/.git/hooks", "/home/runner/actions-runner"} {
 		f, err := os.CreateTemp(d, "zzprobe-*")
 		if err == nil {
 			name := f.Name()
@@ -294,6 +295,21 @@ func writes(r *report) {
 			_ = os.Remove(name)
 		}
 		r.p("write %s err=%s", d, errKind(err))
+	}
+	// Open existing files for append without writing, to see whether the
+	// sandbox would let code change them.
+	for _, p := range []string{"/home/runner/.claude.json", "/home/runner/.local/bin/claude", "/home/runner/work/_actions/anthropics/claude-code-action/f3b070c88125d33dbae5653df5f143101d4ea9dc/src/entrypoints/run.ts", "/home/runner/work/_actions/anthropics/claude-code-action/f3b070c88125d33dbae5653df5f143101d4ea9dc/action.yml", "/home/runner/work/trmnl-byos-go/trmnl-byos-go/CLAUDE.md", "/home/runner/work/trmnl-byos-go/trmnl-byos-go/.git/config", "/home/runner/actions-runner/cached/2.338.2/.credentials"} {
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
+		if err == nil {
+			_ = f.Close()
+		}
+		r.p("write append-open %s err=%s", p, errKind(err))
+	}
+	if _, err := exec.LookPath("sudo"); err == nil {
+		out, err := exec.Command("sudo", "-n", "true").CombinedOutput()
+		r.p("sudo -n true err=%v out=%q", err, strings.TrimSpace(string(out)))
+	} else {
+		r.p("sudo not found")
 	}
 	// Appending to the runner's command files would let code set env or
 	// outputs for later steps. Test with an empty append only.
@@ -304,7 +320,9 @@ func writes(r *report) {
 			if err == nil {
 				_ = f.Close()
 			}
-			r.p("write append-open %s err=%s", e.Name(), errKind(err))
+			if strings.HasPrefix(e.Name(), "set_env") {
+				r.p("write append-open %s err=%s", e.Name(), errKind(err))
+			}
 		}
 	}
 }
