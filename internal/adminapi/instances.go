@@ -177,7 +177,16 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instance
 	if err != nil {
 		return instanceJSON{}, err
 	}
+	s.rebuild()
 	return s.instanceWithRecipe(ctx, s.db.Read, &inst)
+}
+
+// rebuild asks the scheduler to look for due renders now, through
+// Config.Rebuild, after a change that builds read.
+func (s *Server) rebuild() {
+	if s.cfg.Rebuild != nil {
+		s.cfg.Rebuild()
+	}
 }
 
 func (s *Server) deleteInstance(r *http.Request) error {

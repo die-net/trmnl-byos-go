@@ -311,6 +311,10 @@ CREATE TABLE IF NOT EXISTS render (
   -- build read. The instance's settings are newer than the render when its
   -- settings_at is greater.
   settings_at INTEGER NOT NULL DEFAULT 0,
+  -- rendered_settings_at is the settings_at the latest successful build
+  -- read, which the stored images were made from. A failed build since that
+  -- read newer settings is a failure of the instance's current settings.
+  rendered_settings_at INTEGER NOT NULL DEFAULT 0,
   UNIQUE (instance_id, device_id, width, height, palette, time_zone, locale)
 );
 

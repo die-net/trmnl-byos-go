@@ -42,6 +42,7 @@ func (q *Queries) DeleteRenderWithImage(ctx context.Context, arg DeleteRenderWit
 const getItemScreen = `-- name: GetItemScreen :one
 SELECT plugin_instance.name, recipe.refresh_interval,
   render.id AS render_id, render.rendered_at, render.attempted_at, render.error,
+  render.failures, render.settings_at, render.rendered_settings_at,
   render_image.image, render_image.bytes
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
@@ -67,14 +68,17 @@ type GetItemScreenParams struct {
 }
 
 type GetItemScreenRow struct {
-	Name            string  `json:"name"`
-	RefreshInterval int64   `json:"refresh_interval"`
-	RenderID        *int64  `json:"render_id"`
-	RenderedAt      *int64  `json:"rendered_at"`
-	AttemptedAt     *int64  `json:"attempted_at"`
-	Error           *string `json:"error"`
-	Image           *string `json:"image"`
-	Bytes           *int64  `json:"bytes"`
+	Name               string  `json:"name"`
+	RefreshInterval    int64   `json:"refresh_interval"`
+	RenderID           *int64  `json:"render_id"`
+	RenderedAt         *int64  `json:"rendered_at"`
+	AttemptedAt        *int64  `json:"attempted_at"`
+	Error              *string `json:"error"`
+	Failures           *int64  `json:"failures"`
+	SettingsAt         *int64  `json:"settings_at"`
+	RenderedSettingsAt *int64  `json:"rendered_settings_at"`
+	Image              *string `json:"image"`
+	Bytes              *int64  `json:"bytes"`
 }
 
 // What a device showing an instance gets: the instance's name and refresh
@@ -101,6 +105,9 @@ func (q *Queries) GetItemScreen(ctx context.Context, arg GetItemScreenParams) (G
 		&i.RenderedAt,
 		&i.AttemptedAt,
 		&i.Error,
+		&i.Failures,
+		&i.SettingsAt,
+		&i.RenderedSettingsAt,
 		&i.Image,
 		&i.Bytes,
 	)
@@ -675,8 +682,8 @@ func (q *Queries) SaveRenderImage(ctx context.Context, arg SaveRenderImageParams
 }
 
 const saveRenderSuccess = `-- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, rendered_settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?13, ?13)
 ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
@@ -685,6 +692,7 @@ ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) 
   log = excluded.log,
   data_at = excluded.data_at,
   settings_at = excluded.settings_at,
+  rendered_settings_at = excluded.settings_at,
   failures = 0
 RETURNING id
 `

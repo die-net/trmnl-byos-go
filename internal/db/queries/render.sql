@@ -69,8 +69,8 @@ SELECT id, instance_id, device_id, width, height, palette, time_zone, locale, re
 FROM render;
 
 -- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, rendered_settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, sqlc.arg(settings_at), sqlc.arg(settings_at))
 ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
@@ -79,6 +79,7 @@ ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) 
   log = excluded.log,
   data_at = excluded.data_at,
   settings_at = excluded.settings_at,
+  rendered_settings_at = excluded.settings_at,
   failures = 0
 RETURNING id;
 
@@ -111,6 +112,7 @@ ON CONFLICT (render_id, layout) DO UPDATE SET image = excluded.image, bytes = ex
 -- one is the fallback.
 SELECT plugin_instance.name, recipe.refresh_interval,
   render.id AS render_id, render.rendered_at, render.attempted_at, render.error,
+  render.failures, render.settings_at, render.rendered_settings_at,
   render_image.image, render_image.bytes
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id

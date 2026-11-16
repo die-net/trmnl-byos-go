@@ -37,6 +37,7 @@ var steps = []step{
 	{"add per-device time zone and locale, and key renders by them", addZoneLocale},
 	{"add per-device sleep windows", addSleepWindow},
 	{"add per-device button command and double-click function, and the function last sent", addButtons},
+	{"record the settings a render's images were made from", addRenderedSettingsAt},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -682,6 +683,21 @@ ALTER TABLE device_state ADD COLUMN last_special_function_sent TEXT NOT NULL DEF
 func addButtons(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addButtonColumnsSQL); err != nil {
 		return fmt.Errorf("add button settings: %w", err)
+	}
+	return nil
+}
+
+// addRenderedSettingsAtSQL is step 13: render.rendered_settings_at, as in
+// schema.sql. A row with images gets its settings_at, which is what its
+// images were made from unless a build failed since, and then the guess
+// keeps showing the images, as before the step.
+const addRenderedSettingsAtSQL = `ALTER TABLE render ADD COLUMN rendered_settings_at INTEGER NOT NULL DEFAULT 0;
+UPDATE render SET rendered_settings_at = settings_at WHERE rendered_at != 0`
+
+// addRenderedSettingsAt is step 13: see addRenderedSettingsAtSQL.
+func addRenderedSettingsAt(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addRenderedSettingsAtSQL); err != nil {
+		return fmt.Errorf("add rendered_settings_at: %w", err)
 	}
 	return nil
 }

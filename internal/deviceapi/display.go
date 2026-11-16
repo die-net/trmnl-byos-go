@@ -502,7 +502,13 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	if row.Error != nil {
 		failure = clip(*row.Error)
 	}
-	if row.Image != nil && row.RenderedAt != nil && *row.RenderedAt != 0 && now.Sub(time.Unix(*row.RenderedAt, 0)) <= staleAfter(time.Duration(row.RefreshInterval)*time.Second) {
+	// A build of settings newer than the images' failed, so the images show
+	// what the instance no longer is set to, and the device is told why
+	// instead. A failure of only newer data keeps the images, as does an
+	// unreachable renderer, which is not counted in failures and says
+	// nothing about the settings.
+	failed := failure != "" && deref(row.Failures) > 0 && deref(row.SettingsAt) > deref(row.RenderedSettingsAt)
+	if !failed && row.Image != nil && row.RenderedAt != nil && *row.RenderedAt != 0 && now.Sub(time.Unix(*row.RenderedAt, 0)) <= staleAfter(time.Duration(row.RefreshInterval)*time.Second) {
 		// Mark the image used, as the system screens do. A render can
 		// replace the row before the device fetches, and then no row names
 		// the image, which may have been stored long ago.
@@ -525,7 +531,7 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	}
 	var lines []screen.Line
 	switch {
-	case row.Image == nil || row.RenderedAt == nil || *row.RenderedAt == 0:
+	case failed || row.Image == nil || row.RenderedAt == nil || *row.RenderedAt == 0:
 		if failure == "" {
 			lines = []screen.Line{
 				{Text: "Rendering", Size: 44, Bold: true},
@@ -561,6 +567,16 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	}
 	name, size, err := s.screenSized(sp, lines)
 	return screenChoice{name: name, size: size, refresh: refresh, shown: true}, err
+}
+
+// deref returns what p points to, or the zero value for nil, as a column of
+// a LEFT JOIN that matched no row is.
+func deref[T any](p *T) T {
+	var zero T
+	if p == nil {
+		return zero
+	}
+	return *p
 }
 
 // pick is what advance chose for a device.

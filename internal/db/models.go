@@ -172,22 +172,23 @@ type Recipe struct {
 }
 
 type Render struct {
-	ID          int64  `json:"id"`
-	InstanceID  int64  `json:"instance_id"`
-	DeviceID    int64  `json:"device_id"`
-	Width       int64  `json:"width"`
-	Height      int64  `json:"height"`
-	Palette     string `json:"palette"`
-	TimeZone    string `json:"time_zone"`
-	Locale      string `json:"locale"`
-	RenderedAt  int64  `json:"rendered_at"`
-	AttemptedAt int64  `json:"attempted_at"`
-	DurationMs  int64  `json:"duration_ms"`
-	Error       string `json:"error"`
-	Log         string `json:"log"`
-	DataAt      int64  `json:"data_at"`
-	Failures    int64  `json:"failures"`
-	SettingsAt  int64  `json:"settings_at"`
+	ID                 int64  `json:"id"`
+	InstanceID         int64  `json:"instance_id"`
+	DeviceID           int64  `json:"device_id"`
+	Width              int64  `json:"width"`
+	Height             int64  `json:"height"`
+	Palette            string `json:"palette"`
+	TimeZone           string `json:"time_zone"`
+	Locale             string `json:"locale"`
+	RenderedAt         int64  `json:"rendered_at"`
+	AttemptedAt        int64  `json:"attempted_at"`
+	DurationMs         int64  `json:"duration_ms"`
+	Error              string `json:"error"`
+	Log                string `json:"log"`
+	DataAt             int64  `json:"data_at"`
+	Failures           int64  `json:"failures"`
+	SettingsAt         int64  `json:"settings_at"`
+	RenderedSettingsAt int64  `json:"rendered_settings_at"`
 }
 
 type RenderImage struct {

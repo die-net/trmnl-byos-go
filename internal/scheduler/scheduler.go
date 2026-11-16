@@ -77,6 +77,26 @@ type Config struct {
 	Zone *time.Location
 	// AssetHosts are the hosts whose assets the renderer's proxy caches.
 	AssetHosts []string
+	// Wake makes Run scan at once rather than at its next check. A change
+	// that builds read, such as an instance's settings, is sent on it by
+	// Waker.Wake. Nil never wakes it.
+	Wake Waker
+}
+
+// Waker carries wake-ups to a scheduler. It holds at most one, since a
+// scan after any number of changes finds them all.
+type Waker chan struct{}
+
+// NewWaker returns a Waker for Config.Wake.
+func NewWaker() Waker { return make(Waker, 1) }
+
+// Wake asks the scheduler to scan now. It never blocks: a wake-up already
+// waiting covers this one. A nil Waker does nothing.
+func (w Waker) Wake() {
+	select {
+	case w <- struct{}{}:
+	default:
+	}
 }
 
 // Scheduler renders what is due.
@@ -101,7 +121,8 @@ func New(cfg Config) *Scheduler {
 // Run renders what is due until ctx is done. Each pass scans for due
 // targets and builds the most urgent one. If it built one, it scans again
 // at once, since more may be due and one may have become more urgent while
-// it built. Only a pass that built nothing waits checkEvery.
+// it built. Only a pass that built nothing waits, for checkEvery or until
+// Config.Wake.
 func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		more, err := s.RenderNext(ctx)
@@ -114,6 +135,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.cfg.Wake:
 		case <-time.After(checkEvery):
 		}
 	}

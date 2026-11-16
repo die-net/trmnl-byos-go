@@ -824,6 +824,24 @@ func TestInstanceSeenOnPage(t *testing.T) {
 	}
 }
 
+// TestInstanceSaveRebuilds checks that a saved form asks the scheduler to
+// look for due renders at once, and that a refused one does not.
+func TestInstanceSaveRebuilds(t *testing.T) {
+	t.Parallel()
+	tu, rec := newFormUI(t, formRecipe, true)
+	woken := 0
+	tu.srv.rebuildFn = func() { woken++ }
+	inst := savedInstance(t, tu, rec)
+	w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"seen": {""}, "name": {"Work"}}))
+	if w.Code != http.StatusBadRequest || woken != 0 {
+		t.Fatalf("refused save: status %d, %d wake-ups; want 400 and none", w.Code, woken)
+	}
+	w = postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"name": {"Work"}}))
+	if w.Code != http.StatusSeeOther || woken != 1 {
+		t.Errorf("saved form: status %d, %d wake-ups; want 303 and 1", w.Code, woken)
+	}
+}
+
 func TestInstanceSaveNoSeen(t *testing.T) {
 	t.Parallel()
 	tu, rec := newFormUI(t, formRecipe, true)

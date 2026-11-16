@@ -162,6 +162,7 @@ func (s *Server) saveInstance(w http.ResponseWriter, r *http.Request) {
 	_, err := recipe.UpdateInstance(r.Context(), s.db, s.secrets, s.recipesDir, inst.ID, u, s.now())
 	switch {
 	case err == nil:
+		s.rebuild()
 		http.Redirect(w, r, "/recipes#recipe-"+strconv.FormatInt(inst.RecipeID, 10), http.StatusSeeOther)
 		return
 	case errors.Is(err, recipe.ErrNoInstance):
