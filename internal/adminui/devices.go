@@ -662,7 +662,10 @@ const deviceReplaced = "The device this page showed was deleted, and a new devic
 // set: a setting the post does not carry is left as it is.
 func (s *Server) saveDevice(r *http.Request, id string, form *deviceForm) error {
 	// posted returns v for a setting the post carries, and nil, which
-	// device.Update leaves as it is, for one it does not.
+	// device.Update leaves as it is, for one it does not. updateDevice put
+	// the stored value in the form for such a setting, but only for the
+	// page a refusal sends: that value was read before Update's
+	// transaction, so it is never written back.
 	posted := func(name string, v *string) *string {
 		if !r.PostForm.Has(name) {
 			return nil
@@ -1099,11 +1102,12 @@ func settingsChangedText(form, stored *deviceForm) string {
 			now = append(now, "the sleep window is "+stored.SleepStart+" to "+stored.SleepEnd)
 		}
 	}
+	// The button and the double-click are named as their lists name them.
 	if form.Button != stored.Button {
-		now = append(now, "the button is "+orWord(stored.Button, "the default"))
+		now = append(now, "the button press is "+strconv.Quote(commandLabel(buttonLabels, device.ButtonNext, stored.Button)))
 	}
 	if form.Function != stored.Function {
-		now = append(now, "the double-click is "+orWord(stored.Function, "the default"))
+		now = append(now, "the double-click is "+strconv.Quote(commandLabel(functionLabels, device.FuncRewind, stored.Function)))
 	}
 	if len(now) == 0 {
 		return settingsChanged + " The values below are what is stored now."
@@ -1153,23 +1157,36 @@ var functionLabels = map[string]string{
 // always listed, so a stored value a release dropped shows as what it is.
 // The device does the default for such a value.
 func commandOptions(values []string, labels map[string]string, def, selected string) []choiceOption {
-	label := func(v string) string {
-		if l := labels[v]; l != "" {
-			return l
-		}
-		return v
-	}
 	opts := make([]choiceOption, 1, len(values)+2)
-	opts[0] = choiceOption{Label: "Default: " + strings.ToLower(label(def)), Selected: selected == ""}
+	opts[0] = choiceOption{Label: commandLabel(labels, def, ""), Selected: selected == ""}
 	found := selected == ""
 	for _, v := range values {
 		found = found || v == selected
-		opts = append(opts, choiceOption{Value: v, Label: label(v), Selected: v == selected})
+		opts = append(opts, choiceOption{Value: v, Label: commandLabel(labels, def, v), Selected: v == selected})
 	}
 	if !found {
 		opts = append(opts, choiceOption{Value: selected, Label: selected + " (not a choice)", Selected: true})
 	}
 	return opts
+}
+
+// commandLabel is the text a command list shows for value, which the page
+// also uses to say what is stored: "Default: " and what def does for the
+// empty setting, and otherwise the value's label, or its name when it has
+// none.
+func commandLabel(labels map[string]string, def, value string) string {
+	name := value
+	if value == "" {
+		name = def
+	}
+	label := labels[name]
+	if label == "" {
+		label = name
+	}
+	if value == "" {
+		return "Default: " + strings.ToLower(label)
+	}
+	return label
 }
 
 // sleepEnds returns the two ends of a device's stored sleep window as HH:MM,

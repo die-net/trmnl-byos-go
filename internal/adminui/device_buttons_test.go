@@ -41,6 +41,7 @@ func TestDeviceButtonFields(t *testing.T) {
 				`<option value="identify">Show which device this is</option>`, `<option value="restart_playlist">Go back to the first item</option>`,
 				`<option value="rewind">Show the last screen</option>`, `<option value="sleep">Go to sleep</option>`,
 				`<option value="add_wifi">Open Wi-Fi setup</option>`,
+				`Go to sleep lasts until the sleep window next ends, or 8 hours when there is no window.`,
 			},
 		},
 		{
@@ -205,12 +206,12 @@ func TestDeviceButtonStale(t *testing.T) {
 		{
 			deviceForm{Name: "Kitchen", SleepStart: "22:00", SleepEnd: "06:30", Button: "first"},
 			stored,
-			` Stored now: the sleep window is 23:00 to 06:30, the button is the default, the double-click is "none". Save again to use the values below.`,
+			` Stored now: the sleep window is 23:00 to 06:30, the button press is "Default: show the next item", the double-click is "Do nothing". Save again to use the values below.`,
 		},
 		{
 			deviceForm{Name: "Kitchen", SleepStart: "22:00", SleepEnd: "06:30"},
 			deviceForm{Name: "Kitchen", Button: "refresh"},
-			` Stored now: there is no sleep window, the button is "refresh". Save again to use the values below.`,
+			` Stored now: there is no sleep window, the button press is "Refresh the current item". Save again to use the values below.`,
 		},
 	} {
 		if got := settingsChangedText(&tc.form, &tc.stored); got != settingsChanged+tc.want {
@@ -264,7 +265,7 @@ func TestDeviceButtonStalePage(t *testing.T) {
 		t.Fatalf("a stale save changed the device: %+v", dev)
 	}
 	wantInOrder(t, w.Body.String(), `id="settings"`,
-		`Stored now: the sleep window is 23:00 to 06:30, the button is &#34;refresh&#34;, the double-click is the default. Save again to use the values below.`,
+		`Stored now: the sleep window is 23:00 to 06:30, the button press is &#34;Refresh the current item&#34;, the double-click is &#34;Default: show the last screen&#34;. Save again to use the values below.`,
 		`name="settings_state" value="`+device.SettingsState(&dev)+`"`,
 		`name="sleep_start" type="time" value="22:00"`, `name="sleep_end" type="time" value="07:00"`,
 		`<option value="first" selected>`, `<option value="identify" selected>`)
