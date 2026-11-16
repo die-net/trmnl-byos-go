@@ -590,6 +590,13 @@ func addProfileOverride(ctx context.Context, tx DBTX) error {
 // one, as step 7 did, with explicit column lists. render_image refers to
 // render by name, so it keeps working, and its rows are kept.
 //
+// Copying the rows with their IDs sets render_new's sqlite_sequence to the
+// highest ID left, and dropping render deletes its own, which may be higher:
+// the ID of a render deleted since. So render's counter is carried over to
+// render_new before the drop, the higher of the two, and the rename keeps
+// it. Otherwise a deleted render's ID would be handed out again, which
+// AUTOINCREMENT is there to stop.
+//
 // An existing render gets time_zone and locale of the empty string. A target
 // always has the zone and locale in effect, never an empty one, so no target
 // matches such a row. The scheduler's pruning deletes it, with its image
@@ -627,6 +634,11 @@ CREATE TABLE render_new (
 );
 INSERT INTO render_new (id, instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at)
   SELECT id, instance_id, device_id, width, height, palette, '', '', rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at FROM render;
+UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'render'), 0))
+  WHERE name = 'render_new';
+INSERT INTO sqlite_sequence (name, seq)
+  SELECT 'render_new', seq FROM sqlite_sequence
+  WHERE name = 'render' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'render_new');
 DROP TABLE render;
 ALTER TABLE render_new RENAME TO render;
 
