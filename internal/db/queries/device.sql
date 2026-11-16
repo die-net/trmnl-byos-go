@@ -12,7 +12,7 @@ UPDATE device SET screen_override = ?, screen_override_until = ? WHERE id = ?;
 -- name: UpdateDeviceSettings :exec
 -- Writes every setting an admin changes on a device at once, so a change of
 -- several is one statement in the caller's transaction.
-UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ? WHERE id = ?;
+UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ?, sleep_start = ?, sleep_end = ? WHERE id = ?;
 
 -- name: GetDevice :one
 SELECT * FROM device WHERE id = ?;

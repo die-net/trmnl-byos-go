@@ -53,6 +53,9 @@ type deviceJSON struct {
 	// LocaleInUse is the one its renders are made for.
 	Locale      string `json:"locale"`
 	LocaleInUse string `json:"locale_in_use"`
+	// Sleep is the window in which the device is shown no playlist item,
+	// written HH:MM-HH:MM in its time zone, or "" for none.
+	Sleep string `json:"sleep"`
 	// SettingsState is a digest of the device's settings, which a PATCH
 	// can send back to be refused if they changed since.
 	SettingsState string `json:"settings_state"`
@@ -81,7 +84,7 @@ func newDevice(d *db.Device, def serverDefaults, lastSeen *int64, battery *float
 		UpdatesEnabled: d.UpdatesEnabled != 0, FWPin: d.FwPin, Blocked: blocked != 0,
 		Profile: d.ProfileOverride, Palette: d.PaletteOverride, ProfileProblem: device.OverrideProblem(d, d.FwModel), SettingsState: device.SettingsState(d),
 		TimeZone: d.TimeZone, TimeZoneInUse: device.ZoneOf(d.TimeZone, def.zone).String(),
-		Locale: d.Locale, LocaleInUse: device.LocaleOf(d.Locale, def.locale),
+		Locale: d.Locale, LocaleInUse: device.LocaleOf(d.Locale, def.locale), Sleep: device.FormatSleep(d.SleepStart, d.SleepEnd),
 	}
 }
 

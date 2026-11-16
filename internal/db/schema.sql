@@ -46,7 +46,13 @@ CREATE TABLE IF NOT EXISTS device (
   time_zone TEXT NOT NULL DEFAULT '',
   -- locale is the language the device's renders are made for, one of
   -- trmnlp's locales. Empty means the server's locale setting.
-  locale TEXT NOT NULL DEFAULT ''
+  locale TEXT NOT NULL DEFAULT '',
+  -- sleep_start and sleep_end bound the window in which the device is shown
+  -- no playlist item, in minutes after local midnight in the device's time
+  -- zone, 0 to 1439. The window wraps past midnight when the end is before
+  -- the start. Both are -1 for no window, which is always awake.
+  sleep_start INTEGER NOT NULL DEFAULT -1,
+  sleep_end INTEGER NOT NULL DEFAULT -1
 );
 
 -- device_state is what a device reported on its last /api/display call, and

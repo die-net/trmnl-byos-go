@@ -35,6 +35,7 @@ var steps = []step{
 	{"add device tombstones and the MAC blocklist", addBlocklist},
 	{"add per-device profile and palette overrides", addProfileOverride},
 	{"add per-device time zone and locale, and key renders by them", addZoneLocale},
+	{"add per-device sleep windows", addSleepWindow},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -651,6 +652,19 @@ END`
 func addZoneLocale(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addZoneLocaleSQL); err != nil {
 		return fmt.Errorf("add time zone and locale: %w", err)
+	}
+	return nil
+}
+
+// addSleepColumnsSQL is step 11: the device's sleep window, as in schema.sql,
+// -1 in both columns of every existing row, for no window.
+const addSleepColumnsSQL = `ALTER TABLE device ADD COLUMN sleep_start INTEGER NOT NULL DEFAULT -1;
+ALTER TABLE device ADD COLUMN sleep_end INTEGER NOT NULL DEFAULT -1`
+
+// addSleepWindow is step 11: see addSleepColumnsSQL.
+func addSleepWindow(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addSleepColumnsSQL); err != nil {
+		return fmt.Errorf("add sleep windows: %w", err)
 	}
 	return nil
 }

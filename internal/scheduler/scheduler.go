@@ -306,7 +306,8 @@ func (s *Scheduler) pruneRenders(ctx context.Context, cands []*candidate) error 
 // show at its next wake, which is playlist.Advance's answer, without a
 // press, for last_seen plus the refresh_rate it was sent, from the playlist
 // playlist.Choose picks at that wake plus playlist.WakeSlack, read in the
-// device's time zone. A target that is per device is wanted by that device
+// device's time zone. A device whose wake is inside its sleep window is shown
+// no item, so it wants nothing. A target that is per device is wanted by that device
 // alone, and a shared one by every device that will show it.
 func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 	serverLocale, err := settings.Locale(ctx, s.cfg.DB.Read)
@@ -358,7 +359,8 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 		zone := device.ZoneOf(w.TimeZone, s.cfg.Zone)
 		next := time.Unix(w.LastSeen+w.LastRefreshRateSent, 0).In(zone)
 		at := next.Add(playlist.WakeSlack)
-		c := playlist.Choose(lists, at)
+		// A device asleep at its wake is shown nothing, so it wants nothing.
+		c := playlist.Choose(lists, playlist.Awake(w.SleepStart, w.SleepEnd), at)
 		if c < 0 {
 			continue
 		}

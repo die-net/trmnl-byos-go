@@ -211,14 +211,20 @@ type screenChoice struct {
 	shown bool
 }
 
-// untilChange shortens refresh, in seconds, to wake a device when what its
-// playlists show changes: a schedule opens or closes. This wake chose at now
-// plus the slack a wake may come early, so the search starts there. The
-// device is woken at the change itself, as at the end of an item, so a wake
-// up to the slack early still chooses after it.
-func untilChange(lists []playlist.List, now time.Time, refresh int64) int64 {
+// maxSleep is the longest a device is told to sleep to wake at the end of
+// its sleep window, in seconds: a day and an hour, for a window just under a
+// day long and the hour a DST change adds.
+const maxSleep = 25 * 60 * 60
+
+// untilChange shortens refresh, in seconds, to wake a device when what it is
+// shown changes: its sleep starts or ends, or a schedule of its playlists
+// opens or closes. awake is its awake schedule. This wake chose at now plus
+// the slack a wake may come early, so the search starts there. The device is
+// woken at the change itself, as at the end of an item, so a wake up to the
+// slack early still chooses after it.
+func untilChange(lists []playlist.List, awake playlist.Schedule, now time.Time, refresh int64) int64 {
 	at := now.Add(playlist.WakeSlack)
-	next, ok := playlist.NextChange(lists, at, now.Add(time.Duration(refresh)*time.Second))
+	next, ok := playlist.NextChange(lists, awake, at, now.Add(time.Duration(refresh)*time.Second))
 	if !ok {
 		return refresh
 	}
@@ -228,10 +234,12 @@ func untilChange(lists []playlist.List, now time.Time, refresh int64) int64 {
 }
 
 // playlistScreen picks what a device shows from its playlists, moving its
-// cursor first. Its schedules are read in the device's time zone, and it is
-// shown the render made for that zone and its locale. The refresh rate it
-// returns is refresh, shortened to wake the device when the item ends, a
-// schedule changes or a render is ready.
+// cursor first. Its schedules and sleep window are read in the device's time
+// zone, and it is shown the render made for that zone and its locale. A
+// device in its sleep window is shown a screen that says so, with the cursor
+// where it was, and sleeps until the window ends, a button press included.
+// The refresh rate it returns is refresh, shortened to wake the device when
+// the item ends, a schedule or its sleep changes or a render is ready.
 func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, pressed bool, refresh int64) (screenChoice, error) {
 	zone := device.ZoneOf(dev.TimeZone, s.cfg.Zone)
 	// The locale is part of the render's key, so a default in place of a
@@ -243,12 +251,27 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	if err != nil {
 		return screenChoice{refresh: refresh}, fmt.Errorf("read the locale setting: %w", err)
 	}
-	pick, err := s.advance(ctx, dev.ID, zone, pressed)
-	if err != nil || len(pick.lists) == 0 {
+	awake := playlist.Awake(dev.SleepStart, dev.SleepEnd)
+	pick, err := s.advance(ctx, dev.ID, zone, awake, pressed)
+	if err != nil {
 		return screenChoice{refresh: refresh}, err
 	}
 	now := s.now().In(zone)
-	refresh = untilChange(pick.lists, now, refresh)
+	if pick.asleep {
+		// The text is constant for a window, so the image name is too. The
+		// device sleeps to the window's end and not for the usual refresh,
+		// since waking it earlier would only show this screen again.
+		name, size, err := s.screenSized(sp, []screen.Line{
+			{Text: "Sleeping", Size: 44, Bold: true},
+			{Text: dev.FriendlyID, Size: 28},
+			{Text: "Wakes at " + playlist.FormatClock(dev.SleepEnd) + ".", Size: 20},
+		})
+		return screenChoice{name: name, size: size, refresh: untilChange(pick.lists, awake, now, maxSleep), shown: true}, err
+	}
+	refresh = untilChange(pick.lists, awake, now, refresh)
+	if len(pick.lists) == 0 {
+		return screenChoice{refresh: refresh}, nil
+	}
 	if !pick.ok {
 		// Nothing is scheduled, so there is no cursor to move. The text is
 		// constant, so the image name is too.
@@ -347,6 +370,9 @@ type pick struct {
 	// lists are the device's playlists in the order they are tried. It is
 	// empty when the device has no playlist items.
 	lists []playlist.List
+	// asleep is true when the device is in its sleep window at this wake, so
+	// nothing is chosen and the cursor is not moved.
+	asleep bool
 	// ok is true when one of lists is scheduled now and has an item to
 	// show. item is then the item to show, and started is when it started.
 	ok      bool
@@ -357,8 +383,9 @@ type pick struct {
 // advance moves a device's playlist cursor for this wake and returns the
 // item it now shows. The playlist is the first that is scheduled at the
 // wake plus the slack a timer wake may come early, read in zone, and has an
-// item that is shown then.
-func (s *Server) advance(ctx context.Context, deviceID int64, zone *time.Location, pressed bool) (pick, error) {
+// item that is shown then. A device that is not awake then, by its awake
+// schedule, is shown nothing, and its cursor stays where it is.
+func (s *Server) advance(ctx context.Context, deviceID int64, zone *time.Location, awake playlist.Schedule, pressed bool) (pick, error) {
 	var out pick
 	err := s.db.InTx(ctx, func(q *db.Queries) error {
 		out = pick{}
@@ -369,7 +396,8 @@ func (s *Server) advance(ctx context.Context, deviceID int64, zone *time.Locatio
 		lists, groups := playlist.DeviceLists(rows)
 		out.lists = lists
 		now := s.now().In(zone)
-		c := playlist.Choose(lists, now.Add(playlist.WakeSlack))
+		out.asleep = !awake.Active(now.Add(playlist.WakeSlack))
+		c := playlist.Choose(lists, awake, now.Add(playlist.WakeSlack))
 		if c < 0 {
 			return nil
 		}

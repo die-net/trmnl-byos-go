@@ -12,7 +12,7 @@ import (
 const createDevice = `-- name: CreateDevice :one
 INSERT INTO device (mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale
+RETURNING id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end
 `
 
 type CreateDeviceParams struct {
@@ -53,6 +53,8 @@ func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) (Dev
 		&i.PaletteOverride,
 		&i.TimeZone,
 		&i.Locale,
+		&i.SleepStart,
+		&i.SleepEnd,
 	)
 	return i, err
 }
@@ -69,7 +71,7 @@ func (q *Queries) FriendlyIDExists(ctx context.Context, friendlyID string) (int6
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale FROM device WHERE id = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE id = ?
 `
 
 func (q *Queries) GetDevice(ctx context.Context, id int64) (Device, error) {
@@ -92,12 +94,14 @@ func (q *Queries) GetDevice(ctx context.Context, id int64) (Device, error) {
 		&i.PaletteOverride,
 		&i.TimeZone,
 		&i.Locale,
+		&i.SleepStart,
+		&i.SleepEnd,
 	)
 	return i, err
 }
 
 const getDeviceByAPIKeyHash = `-- name: GetDeviceByAPIKeyHash :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale FROM device WHERE api_key_hash = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE api_key_hash = ?
 `
 
 func (q *Queries) GetDeviceByAPIKeyHash(ctx context.Context, apiKeyHash []byte) (Device, error) {
@@ -120,12 +124,14 @@ func (q *Queries) GetDeviceByAPIKeyHash(ctx context.Context, apiKeyHash []byte) 
 		&i.PaletteOverride,
 		&i.TimeZone,
 		&i.Locale,
+		&i.SleepStart,
+		&i.SleepEnd,
 	)
 	return i, err
 }
 
 const getDeviceByFriendlyID = `-- name: GetDeviceByFriendlyID :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale FROM device WHERE friendly_id = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE friendly_id = ?
 `
 
 func (q *Queries) GetDeviceByFriendlyID(ctx context.Context, friendlyID string) (Device, error) {
@@ -148,12 +154,14 @@ func (q *Queries) GetDeviceByFriendlyID(ctx context.Context, friendlyID string) 
 		&i.PaletteOverride,
 		&i.TimeZone,
 		&i.Locale,
+		&i.SleepStart,
+		&i.SleepEnd,
 	)
 	return i, err
 }
 
 const getDeviceByMAC = `-- name: GetDeviceByMAC :one
-SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale FROM device WHERE mac = ?
+SELECT id, mac, api_key_hash, friendly_id, name, fw_model, fw_version, created_at, screen_override, screen_override_until, updates_enabled, fw_pin, profile_override, palette_override, time_zone, locale, sleep_start, sleep_end FROM device WHERE mac = ?
 `
 
 func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error) {
@@ -176,6 +184,8 @@ func (q *Queries) GetDeviceByMAC(ctx context.Context, mac string) (Device, error
 		&i.PaletteOverride,
 		&i.TimeZone,
 		&i.Locale,
+		&i.SleepStart,
+		&i.SleepEnd,
 	)
 	return i, err
 }
@@ -199,7 +209,7 @@ func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDevic
 }
 
 const getDeviceStatus = `-- name: GetDeviceStatus :one
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
@@ -240,6 +250,8 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 		&i.Device.PaletteOverride,
 		&i.Device.TimeZone,
 		&i.Device.Locale,
+		&i.Device.SleepStart,
+		&i.Device.SleepEnd,
 		&i.LastSeen,
 		&i.BatteryV,
 		&i.Rssi,
@@ -289,7 +301,7 @@ func (q *Queries) ListDeviceNames(ctx context.Context) ([]ListDeviceNamesRow, er
 }
 
 const listDeviceStatus = `-- name: ListDeviceStatus :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
@@ -336,6 +348,8 @@ func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, 
 			&i.Device.PaletteOverride,
 			&i.Device.TimeZone,
 			&i.Device.Locale,
+			&i.Device.SleepStart,
+			&i.Device.SleepEnd,
 			&i.LastSeen,
 			&i.BatteryV,
 			&i.Rssi,
@@ -427,7 +441,7 @@ func (q *Queries) UpdateDeviceFirmware(ctx context.Context, arg UpdateDeviceFirm
 }
 
 const updateDeviceSettings = `-- name: UpdateDeviceSettings :exec
-UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ? WHERE id = ?
+UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ?, sleep_start = ?, sleep_end = ? WHERE id = ?
 `
 
 type UpdateDeviceSettingsParams struct {
@@ -438,6 +452,8 @@ type UpdateDeviceSettingsParams struct {
 	PaletteOverride string `json:"palette_override"`
 	TimeZone        string `json:"time_zone"`
 	Locale          string `json:"locale"`
+	SleepStart      int64  `json:"sleep_start"`
+	SleepEnd        int64  `json:"sleep_end"`
 	ID              int64  `json:"id"`
 }
 
@@ -452,6 +468,8 @@ func (q *Queries) UpdateDeviceSettings(ctx context.Context, arg UpdateDeviceSett
 		arg.PaletteOverride,
 		arg.TimeZone,
 		arg.Locale,
+		arg.SleepStart,
+		arg.SleepEnd,
 		arg.ID,
 	)
 	return err

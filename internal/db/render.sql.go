@@ -108,7 +108,7 @@ func (q *Queries) GetItemScreen(ctx context.Context, arg GetItemScreenParams) (G
 }
 
 const getRenderDevice = `-- name: GetRenderDevice :one
-SELECT device.friendly_id, device.fw_version, device_state.battery_v, device_state.rssi,
+SELECT device.friendly_id, device.fw_version, device.sleep_start, device.sleep_end, device_state.battery_v, device_state.rssi,
   device_state.last_refresh_rate_sent
 FROM device
 LEFT JOIN device_state ON device_state.device_id = device.id
@@ -118,6 +118,8 @@ WHERE device.id = ?
 type GetRenderDeviceRow struct {
 	FriendlyID          string   `json:"friendly_id"`
 	FwVersion           string   `json:"fw_version"`
+	SleepStart          int64    `json:"sleep_start"`
+	SleepEnd            int64    `json:"sleep_end"`
 	BatteryV            *float64 `json:"battery_v"`
 	Rssi                *int64   `json:"rssi"`
 	LastRefreshRateSent *int64   `json:"last_refresh_rate_sent"`
@@ -131,6 +133,8 @@ func (q *Queries) GetRenderDevice(ctx context.Context, id int64) (GetRenderDevic
 	err := row.Scan(
 		&i.FriendlyID,
 		&i.FwVersion,
+		&i.SleepStart,
+		&i.SleepEnd,
 		&i.BatteryV,
 		&i.Rssi,
 		&i.LastRefreshRateSent,
@@ -185,7 +189,7 @@ func (q *Queries) GetRenderStatus(ctx context.Context, id int64) (GetRenderStatu
 }
 
 const listDeviceWakes = `-- name: ListDeviceWakes :many
-SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device_state.width, device_state.height,
+SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device_state.width, device_state.height,
   device_state.last_seen, device_state.last_refresh_rate_sent, device_cursor.item_id, device_cursor.item_started_at
 FROM device_state
 JOIN device ON device.id = device_state.device_id
@@ -200,6 +204,8 @@ type ListDeviceWakesRow struct {
 	PaletteOverride     string `json:"palette_override"`
 	TimeZone            string `json:"time_zone"`
 	Locale              string `json:"locale"`
+	SleepStart          int64  `json:"sleep_start"`
+	SleepEnd            int64  `json:"sleep_end"`
 	Width               *int64 `json:"width"`
 	Height              *int64 `json:"height"`
 	LastSeen            int64  `json:"last_seen"`
@@ -210,7 +216,8 @@ type ListDeviceWakesRow struct {
 
 // What the scheduler needs to know about each device that has woken and is
 // not blocked: its size, when it last woke and how long it was told to
-// sleep, its playlist cursor, and its time zone and locale settings.
+// sleep, its playlist cursor, and its time zone, locale and sleep window
+// settings.
 func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDeviceWakes)
 	if err != nil {
@@ -227,6 +234,8 @@ func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, er
 			&i.PaletteOverride,
 			&i.TimeZone,
 			&i.Locale,
+			&i.SleepStart,
+			&i.SleepEnd,
 			&i.Width,
 			&i.Height,
 			&i.LastSeen,

@@ -243,7 +243,7 @@ func TestChoose(t *testing.T) {
 		}, -1},
 		{"list with no items", []List{{ID: 1, Schedule: Always}}, -1},
 	} {
-		if got := Choose(tc.lists, now); got != tc.want {
+		if got := Choose(tc.lists, Always, now); got != tc.want {
 			t.Errorf("%s: Choose = %d, want %d", tc.name, got, tc.want)
 		}
 	}
@@ -367,7 +367,7 @@ func TestNextChange(t *testing.T) {
 			time.Date(2026, 11, 1, 8, 20, 0, 0, utc).In(la), at(t, la, "2026-11-01 06:00"), time.Date(2026, 11, 1, 8, 30, 0, 0, utc),
 		},
 	} {
-		got, ok := NextChange(tc.lists, tc.from, tc.limit)
+		got, ok := NextChange(tc.lists, Always, tc.from, tc.limit)
 		if ok != !tc.want.IsZero() || !got.Equal(tc.want) {
 			t.Errorf("%s: NextChange = %v, %v; want %v", tc.name, got, ok, tc.want)
 		}
@@ -375,7 +375,7 @@ func TestNextChange(t *testing.T) {
 	// Equal, not after, so a limit at or before the time gives nothing.
 	lists := []List{{ID: 1, Schedule: workHours, Entries: []Entry{entry(1)}}}
 	now := at(t, utc, "2026-11-13 10:00")
-	if got, ok := NextChange(lists, now, now); ok {
+	if got, ok := NextChange(lists, Always, now, now); ok {
 		t.Errorf("limit at the time: %v", got)
 	}
 }
