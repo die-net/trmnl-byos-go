@@ -37,6 +37,12 @@ const (
 	FuncAddWiFi = "add_wifi"
 )
 
+// FuncSleepSeconds is how long, in seconds, a device that is told to sleep
+// by FuncSleep sleeps when it has no sleep window: 8 hours, a night's sleep.
+// The design did not name a number, so this is a choice, not a firmware
+// limit. /api/display sends it, and the device page says it.
+const FuncSleepSeconds int64 = 8 * 60 * 60
+
 // SpecialFunctions are the values a device's special function may be set
 // to. The firmware also has send_to_me, guest_mode and toggle_hold, which
 // are TRMNL cloud features, so they cannot be set.

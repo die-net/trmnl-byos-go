@@ -316,11 +316,6 @@ func functionAction(fn string) string {
 	return fn
 }
 
-// sleepFunctionRefresh is how long, in seconds, a device that is told to
-// sleep sleeps when it has no sleep window: 8 hours, a night's sleep. The
-// design did not name a number, so this is a choice, not a firmware limit.
-const sleepFunctionRefresh = 8 * 60 * 60
-
 // functionScreen answers a special function that does not show a playlist
 // screen: fn is anything but restart_playlist, guest_mode and toggle_hold,
 // which pick a screen as a wake does. identify draws a screen that says
@@ -353,10 +348,10 @@ func (s *Server) functionScreen(dev db.Device, sp screen.Profile, fn string, ref
 // sleepRefresh returns the seconds from now, which is in the device's time
 // zone, to the next end of a sleep window that ends at end, in minutes after
 // midnight, whether or not now is inside the window. It is
-// sleepFunctionRefresh for end below 0, which is no window.
+// device.FuncSleepSeconds for end below 0, which is no window.
 func sleepRefresh(end int64, now time.Time) int64 {
 	if end < 0 {
-		return sleepFunctionRefresh
+		return device.FuncSleepSeconds
 	}
 	at := time.Date(now.Year(), now.Month(), now.Day(), int(end/60), int(end%60), 0, 0, now.Location())
 	if !at.After(now) {

@@ -180,6 +180,8 @@ type deviceForm struct {
 	// or "" for the default, and Functions the choices.
 	Function  string
 	Functions []choiceOption
+	// SleepFor says how long the sleep function lasts with no sleep window.
+	SleepFor string
 	// Seen is the device.SettingsState of the settings stored when the page
 	// was made, which the form posts back.
 	Seen string
@@ -851,6 +853,7 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	form.Locales = localeOptions(serverLocale, form.Locale)
 	form.Buttons = commandOptions(device.ButtonCommands, buttonLabels, device.ButtonNext, form.Button)
 	form.Functions = commandOptions(device.SpecialFunctions, functionLabels, device.FuncRewind, form.Function)
+	form.SleepFor = spanText(device.FuncSleepSeconds)
 	form.Profiles = profileOptions(dev.FwModel, form.Profile)
 	// A stored palette the model no longer takes is listed while the form
 	// has the stored profile and palette, so saving the form leaves it as
