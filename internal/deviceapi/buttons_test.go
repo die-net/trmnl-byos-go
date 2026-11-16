@@ -248,9 +248,7 @@ func TestDisplaySpecialFunction(t *testing.T) {
 		{"true", "rewind"}, // The default, rewind.
 		{"rewind", "rewind"},
 		{"add_wifi", "add_wifi"},
-		{"send_to_me", "none"},
-		{"guest_mode", "none"},
-		{"toggle_hold", "none"},
+		{"send_to_me", "send_to_me"}, // The device redraws its last image.
 	} {
 		got := ask(tc.ask)
 		if got["status"] != float64(0) || got["action"] != tc.action || got["image_url"] != nil || got["filename"] != nil ||
@@ -263,6 +261,25 @@ func TestDisplaySpecialFunction(t *testing.T) {
 		}
 		if got := ts.lastImage(t, b); got != b.images[1] {
 			t.Errorf("%s: last image %q, want item 1's render, kept", tc.ask, got)
+		}
+	}
+
+	// guest_mode and toggle_hold, from the TRMNL X's menu, are answered as a
+	// timer wake with the action guest_mode, which the firmware needs to draw
+	// the image: the screen the device shows, with the 540 s left of item 1,
+	// which the firmware applies. The cursor stays, though a double-click
+	// comes as a button wake.
+	for _, v := range []string{"guest_mode", "toggle_hold"} {
+		got := ask(v)
+		if got["action"] != "guest_mode" || got["filename"] != b.images[1] || got["image_url"] == nil ||
+			got["refresh_rate"] != float64(540) || got["special_function"] != "rewind" {
+			t.Errorf("%s: %v; want action guest_mode, item 1's render and 540 s", v, got)
+		}
+		if i, started := ts.cursor(t, b); i != 1 || started != ts.now.Add(-time.Minute).Unix() {
+			t.Errorf("%s moved the cursor to item %d started %d", v, i, started)
+		}
+		if r := ts.lastRate(t, b); r != 540 {
+			t.Errorf("%s: recorded refresh %v, want the 540 s sent", v, r)
 		}
 	}
 
