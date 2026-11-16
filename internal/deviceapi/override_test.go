@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"testing"
 
+	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
 )
 
@@ -47,6 +48,21 @@ func TestDisplayProfileOverride(t *testing.T) {
 	set(device.Change{Profile: s(""), Palette: s("")})
 	if got := shown(); got != image {
 		t.Errorf("override cleared: shown %q, want %q", got, image)
+	}
+
+	// A stored override that no longer applies, a model the registry lacks
+	// and a palette the reported model does not take, falls back to what
+	// the firmware reports, so the device still gets its render.
+	dev, err := ts.db.Read.GetDeviceByMAC(t.Context(), testMAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ts.db.Write.UpdateDeviceSettings(t.Context(), db.UpdateDeviceSettingsParams{ProfileOverride: "og_gone", PaletteOverride: "gray-16", ID: dev.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := shown(); got != image {
+		t.Errorf("a stale override: shown %q, want the reported model's render %q", got, image)
 	}
 }
 

@@ -197,6 +197,32 @@ func Resolve(fwModel string, width, height *int64, o Override) Profile {
 	return p
 }
 
+// Check reports why each part of o is ignored by Resolve for a device whose
+// firmware reports fwModel, as a sentence, or "" when it applies or is
+// empty. model is set for a model the registry lacks, which can happen to a
+// stored override when the registry drops one. palette is set for a
+// palette the model in effect does not take: the override model when it
+// applies, and the firmware's otherwise, which changes when the device
+// reports another model.
+func (o Override) Check(fwModel string) (model, palette string) {
+	if o.Model != "" {
+		if _, ok := loadRegistry().models[o.Model]; !ok {
+			model = fmt.Sprintf("profile %q is not a model in the registry", o.Model)
+		}
+	}
+	if o.Palette != "" {
+		p := Resolve(fwModel, nil, nil, Override{Model: o.Model})
+		if !slices.Contains(p.Palettes, o.Palette) {
+			name := p.Model
+			if name == "" {
+				name = "an unknown model"
+			}
+			palette = fmt.Sprintf("palette %q is not one of %s's palettes", o.Palette, name)
+		}
+	}
+	return model, palette
+}
+
 // smallerLimit returns the smaller of two image size limits, where 0 means
 // no limit.
 func smallerLimit(a, b int64) int64 {

@@ -100,7 +100,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		}
 		var o profile.Override
 		if known {
-			o = overrideOf(&dev)
+			o = device.ProfileOverride(&dev)
 		}
 		name, err := systemScreen(r, o, func(sp screen.Profile) (string, error) {
 			if blocked {

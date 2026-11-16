@@ -80,6 +80,36 @@ func TestResolveOverride(t *testing.T) {
 	}
 }
 
+// TestOverrideCheck checks what Check says Resolve ignores: a model the
+// registry lacks, and a palette the model in effect does not take, judged
+// by the firmware's model when the override model does not apply.
+func TestOverrideCheck(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		fwModel        string
+		o              Override
+		model, palette string
+	}{
+		{"none", "og", Override{}, "", ""},
+		{"good", "og", Override{Model: "og_bwry", Palette: "color-4bwry"}, "", ""},
+		{"unknown model", "og", Override{Model: "og_gone"}, `profile "og_gone" is not a model in the registry`, ""},
+		{"palette of the override model", "og", Override{Model: "v2", Palette: "gray-16"}, "", ""},
+		{"palette the reported model lacks", "og_4clr", Override{Palette: "gray-4"}, "", `palette "gray-4" is not one of og_bwry's palettes`},
+		{
+			"palette judged by the reported model when the profile is unknown", "og",
+			Override{Model: "og_gone", Palette: "gray-16"},
+			`profile "og_gone" is not a model in the registry`, `palette "gray-16" is not one of og_plus's palettes`,
+		},
+		{"palette of an unknown device", "mystery", Override{Palette: "gray-4"}, "", `palette "gray-4" is not one of an unknown model's palettes`},
+	} {
+		model, palette := tc.o.Check(tc.fwModel)
+		if model != tc.model || palette != tc.palette {
+			t.Errorf("%s: %q, %q; want %q, %q", tc.name, model, palette, tc.model, tc.palette)
+		}
+	}
+}
+
 func TestModels(t *testing.T) {
 	t.Parallel()
 	models := Models()

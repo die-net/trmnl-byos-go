@@ -75,7 +75,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("display: blocked MAC", "mac", c.mac)
 		var o profile.Override
 		if c.ok {
-			o = overrideOf(&c.dev)
+			o = device.ProfileOverride(&c.dev)
 		}
 		name, err := systemScreen(r, o, func(sp screen.Profile) (string, error) { return s.blockedScreen(sp, c.mac, true) })
 		if err != nil {
@@ -94,9 +94,14 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dev := c.dev
+	if problem := device.OverrideProblem(&dev); problem != "" {
+		// Resolve falls back to what the firmware reports, so the device
+		// is not stuck. The device's JSON shows the problem too.
+		slog.Warn("display: ignoring the device's profile override", "mac", dev.Mac, "problem", problem)
+	}
 
 	model, version := r.Header.Get("Model"), r.Header.Get("FW-Version")
-	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), overrideOf(&dev))
+	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), device.ProfileOverride(&dev))
 	sp := screenProfile(p)
 	choice := screenChoice{refresh: s.refreshRate(ctx)}
 	dot, calibrating := device.CalibrationDot(dev.ScreenOverride)

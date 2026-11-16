@@ -222,39 +222,67 @@ func TestUpdate(t *testing.T) {
 	}
 }
 
-// TestUpdateStalePalette checks that a stored palette that stopped fitting
-// the device's model, because its firmware now reports another one, does
-// not block a change of its name or policy, and is refused once a change
-// names the palette or the profile.
-func TestUpdateStalePalette(t *testing.T) {
+// TestUpdateStaleOverride checks a stored override that no longer applies:
+// a palette the device's model stopped taking, because its firmware now
+// reports another one, and a profile the registry lacks, as after a
+// registry update dropped it. Neither blocks a change of the name or
+// policy, nor a change that posts it back as it is, as a form does. A
+// change to another bad value is refused, and clearing works.
+// OverrideProblem says what is ignored.
+func TestUpdateStaleOverride(t *testing.T) {
 	t.Parallel()
-	ctx := t.Context()
-	client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: testMAC, ApiKeyHash: []byte{1}, FriendlyID: "ABC123", FwModel: "og", CreatedAt: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	gray, name, on := "gray-4", "Kitchen", true
-	if _, err := Update(ctx, client, "ABC123", Change{Palette: &gray}); err != nil {
-		t.Fatal(err)
-	}
-	// Firmware that reports og_4clr, an og_bwry, which takes no gray.
-	if err := client.Write.UpdateDeviceFirmware(ctx, db.UpdateDeviceFirmwareParams{FwModel: "og_4clr", ID: dev.ID}); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := Update(ctx, client, "ABC123", Change{Name: &name, UpdatesEnabled: &on}); err != nil || got.Name != "Kitchen" || got.PaletteOverride != "gray-4" {
-		t.Errorf("a rename with a stale palette: %+v, %v", got, err)
-	}
-	if _, err := Update(ctx, client, "ABC123", Change{Palette: &gray}); !errors.Is(err, errkind.ErrInvalid) {
-		t.Errorf("setting the stale palette again: %v, want invalid", err)
-	}
-	none := ""
-	if got, err := Update(ctx, client, "ABC123", Change{Palette: &none}); err != nil || got.PaletteOverride != "" {
-		t.Errorf("clearing it: %+v, %v", got, err)
+	s := func(v string) *string { return &v }
+	for _, tc := range []struct {
+		name string
+		// profile and palette are stored as they are, and fwModel is what
+		// the firmware reports now.
+		profile, palette, fwModel string
+		// problem is what OverrideProblem says.
+		problem string
+		// bad is a change to another value that does not apply.
+		bad Change
+	}{
+		{"palette the reported model no longer takes", "", "gray-4", "og_4clr", `palette "gray-4" is not one of og_bwry's palettes`, Change{Palette: s("gray-16")}},
+		{"profile the registry dropped", "og_gone", "", "og", `profile "og_gone" is not a model in the registry`, Change{Profile: s("og_nope")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			client, err := db.Open(ctx, filepath.Join(t.TempDir(), "trmnl.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close() })
+			dev, err := client.Write.CreateDevice(ctx, db.CreateDeviceParams{Mac: testMAC, ApiKeyHash: []byte{1}, FriendlyID: "ABC123", FwModel: tc.fwModel, CreatedAt: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Stored as a database could hold it, past the checks.
+			err = client.Write.UpdateDeviceSettings(ctx, db.UpdateDeviceSettingsParams{ProfileOverride: tc.profile, PaletteOverride: tc.palette, ID: dev.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dev, err = client.Read.GetDevice(ctx, dev.ID); err != nil || OverrideProblem(&dev) != tc.problem {
+				t.Fatalf("problem = %q, %v; want %q", OverrideProblem(&dev), err, tc.problem)
+			}
+			on := true
+			for _, c := range []Change{
+				{Name: s("Kitchen"), UpdatesEnabled: &on},
+				{Name: s("Hall"), Profile: s(tc.profile), Palette: s(tc.palette)},
+			} {
+				got, err := Update(ctx, client, "ABC123", c)
+				if err != nil || got.ProfileOverride != tc.profile || got.PaletteOverride != tc.palette {
+					t.Errorf("%+v: %+v, %v", c, got, err)
+				}
+			}
+			if _, err := Update(ctx, client, "ABC123", tc.bad); !errors.Is(err, errkind.ErrInvalid) {
+				t.Errorf("another bad value: %v, want invalid", err)
+			}
+			got, err := Update(ctx, client, "ABC123", Change{Profile: s(""), Palette: s("")})
+			if err != nil || got.ProfileOverride != "" || got.PaletteOverride != "" || OverrideProblem(&got) != "" {
+				t.Errorf("clearing it: %+v, %v", got, err)
+			}
+		})
 	}
 }
 

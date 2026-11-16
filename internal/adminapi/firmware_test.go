@@ -368,8 +368,22 @@ func TestPatchDeviceProfile(t *testing.T) {
 		t.Errorf("a refused patch changed the device: %+v", got)
 	}
 	ta.call(t, "PATCH", path, `{"profile": "", "palette": ""}`, 200, &d)
-	if d.Profile != "" || d.Palette != "" {
+	if d.Profile != "" || d.Palette != "" || d.ProfileProblem != "" {
 		t.Errorf("after clearing: %+v", d)
+	}
+
+	// A stored profile the registry lacks is shown as a problem, and a
+	// patch that posts it back with a new name saves.
+	dev, err := ta.db.Read.GetDeviceByFriendlyID(t.Context(), testFriend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ta.db.Write.UpdateDeviceSettings(t.Context(), db.UpdateDeviceSettingsParams{ProfileOverride: "og_gone", ID: dev.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ta.call(t, "PATCH", path, `{"name": "Hall", "profile": "og_gone"}`, 200, &d)
+	if d.Name != "Hall" || d.Profile != "og_gone" || d.ProfileProblem != `profile "og_gone" is not a model in the registry` {
+		t.Errorf("a stale profile: %+v", d)
 	}
 }
 
