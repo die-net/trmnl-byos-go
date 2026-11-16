@@ -172,7 +172,9 @@ func TestDisplaySleepAtWindowEnd(t *testing.T) {
 }
 
 // TestDisplaySleepNoPlaylist checks that a device with no playlist items
-// still gets the Sleeping screen in its window, and is woken at its start.
+// still gets the Sleeping screen in its window on a timer wake, and is woken
+// at its start. A press in the window gets the Connected screen it gets
+// awake, with the usual refresh.
 func TestDisplaySleepNoPlaylist(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t)
@@ -185,12 +187,19 @@ func TestDisplaySleepNoPlaylist(t *testing.T) {
 
 	// Awake at 12:00, the refresh is cut from the usual 900 s to the 10
 	// minutes until it sleeps.
-	if m := ts.getJSON(t, "/api/display", timer); m["refresh_rate"] != float64(10*60) {
+	m := ts.getJSON(t, "/api/display", timer)
+	if m["refresh_rate"] != float64(10*60) {
 		t.Errorf("before the window: %v; want a refresh of 600 s", m)
 	}
+	connected := m["filename"]
 	ts.now = ts.now.Add(55 * time.Minute)
-	m := ts.getJSON(t, "/api/display", timer)
+	m = ts.getJSON(t, "/api/display", timer)
 	if m["filename"] != ts.sleepingScreen(t, "14:00") || m["refresh_rate"] != float64(65*60) {
 		t.Errorf("in the window: %v; want the Sleeping screen and 3900 s", m)
+	}
+	press := displayHeaders(testMAC, key)
+	press["Update-Source"] = "button"
+	if m := ts.getJSON(t, "/api/display", press); m["filename"] != connected || m["refresh_rate"] != float64(900) {
+		t.Errorf("a press in the window: %v; want the Connected screen %v and 900 s", m, connected)
 	}
 }
