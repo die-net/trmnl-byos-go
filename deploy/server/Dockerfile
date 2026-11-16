@@ -4,7 +4,8 @@
 #   docker build -f deploy/server/Dockerfile -t trmnl-byos .
 #
 # State lives in /srv/data (the database, images and recipes; back this
-# up) and /srv/cache (the renderer's asset cache, safe to delete).
+# up) and /srv/cache (the renderer's asset cache, which the proxy keeps;
+# safe to delete). The same image runs the proxy command in Compose.
 
 FROM golang:1.27 AS build
 WORKDIR /src

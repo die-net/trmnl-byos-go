@@ -53,13 +53,23 @@ A device with nothing scheduled shows a "Connected" screen with its friendly ID 
 
 ## Recipes and playlists
 
-Recipes are rendered by trmnlp in a separate, isolated renderer, which reaches the internet only through the server's proxy. Compose is the way that ships today:
+Recipes are rendered by trmnlp in a separate, isolated renderer, which reaches the internet only through a proxy that refuses private addresses. Compose is the way that ships today, with the server, the proxy and the renderer in three containers:
 
 ```
 docker compose -f deploy/compose.yaml up -d --build
 ```
 
-`deploy/compose.yaml` lists its settings: `PUBLIC_URL`, `TZ`, and `TRMNL_SECRET_KEY` for secret recipe fields. Put them in `deploy/.env`, which git ignores. Never publish the proxy's port, 3128.
+`deploy/compose.yaml` lists its settings: `PUBLIC_URL`, `TZ`, and `TRMNL_SECRET_KEY` for secret recipe fields. Put them in `deploy/.env`, which git ignores. Never publish the proxy's ports, 3128 and 8081.
+
+The renderer's network holds only the renderer and the proxy. To check that from inside the renderer, whose image has Python and whose requests go through the proxy:
+
+```
+docker compose -f deploy/compose.yaml exec renderer python3 -c 'import socket; socket.getaddrinfo("server", 8080)'
+docker compose -f deploy/compose.yaml exec renderer python3 -c 'import urllib.request as u; u.urlopen("http://server:8080/")'
+docker compose -f deploy/compose.yaml exec renderer python3 -c 'import urllib.request as u; print(u.urlopen("https://example.com/").status)'
+```
+
+The first fails to resolve `server`, since the renderer isn't on the server's network. The second fails with a 502 from the proxy, which refuses `server` because it isn't a public address. The third prints 200.
 
 Install a recipe from a directory or a zip, such as one from TRMNL's recipe pages or GitHub, then give it settings and put it on a device's playlist:
 
@@ -78,7 +88,7 @@ docker build -f deploy/renderer/Dockerfile -t trmnl-byos-render .
 docker run --rm --init -p 8081:8081 trmnl-byos-render
 ```
 
-With one running, `TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker ./internal/render/` builds a small recipe in it. `serve -render-url` points the server at a renderer, and the renderer needs `HTTP_PROXY` and `HTTPS_PROXY` set to the server's `-proxy-listen` address.
+With one running, `TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker ./internal/render/` builds a small recipe in it. `serve -render-url` points the server at a renderer. The renderer needs `HTTP_PROXY` and `HTTPS_PROXY` set to a proxy: `trmnl-byos proxy` on its own, or `serve -proxy-listen :3128` in the server's process.
 
 ## Firmware updates
 

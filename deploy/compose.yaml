@@ -10,9 +10,19 @@
 #                     recipes render in and schedules are read in
 #   TRMNL_SECRET_KEY  key for secret recipe fields: openssl rand -base64 32
 #
-# The renderer is on an internal network with no route out. Its builds reach
-# the internet only through the server's proxy on port 3128, which refuses
-# private addresses. Never publish that port.
+# Recipes are untrusted code, so the renderer is on an internal network,
+# render, with no route out. The only other container on it is the proxy,
+# which is on both networks:
+#
+#   server    default         sends builds to proxy:8081
+#   proxy     default, render forwards :8081 to renderer:8081, and serves
+#                             the renderer's proxy on :3128, which refuses
+#                             private addresses
+#   renderer  render          reaches only the proxy
+#
+# The server is not on render, so nothing the renderer runs can reach the
+# server's API. The forward goes to the renderer only. Never publish the
+# proxy's ports.
 name: trmnl-byos
 
 services:
@@ -21,7 +31,7 @@ services:
       context: ..
       dockerfile: deploy/server/Dockerfile
     restart: unless-stopped
-    command: ["serve", "-render-url", "http://renderer:8081", "-public-url", "${PUBLIC_URL:-}"]
+    command: ["serve", "-render-url", "http://proxy:8081", "-public-url", "${PUBLIC_URL:-}"]
     environment:
       TZ: ${TZ:-UTC}
       TRMNL_SECRET_KEY: ${TRMNL_SECRET_KEY:-}
@@ -29,6 +39,21 @@ services:
       - "8080:8080"
     volumes:
       - data:/srv/data
+    networks: [default]
+
+  proxy:
+    # The server's image, run as its proxy command.
+    build:
+      context: ..
+      dockerfile: deploy/server/Dockerfile
+    restart: unless-stopped
+    command: ["proxy", "-listen", ":3128", "-cache", "/srv/cache", "-forward-listen", ":8081", "-forward-to", "renderer:8081"]
+    # The proxy is on both networks, so it must not route packets between
+    # them: the renderer reaches the other network only through the proxy's
+    # listeners.
+    sysctls:
+      net.ipv4.ip_forward: 0
+    volumes:
       - cache:/srv/cache
     networks: [default, render]
 
@@ -40,8 +65,13 @@ services:
     # Reaps the helper processes Firefox leaves behind.
     init: true
     environment:
-      HTTP_PROXY: http://server:3128
-      HTTPS_PROXY: http://server:3128
+      HTTP_PROXY: http://proxy:3128
+      HTTPS_PROXY: http://proxy:3128
+    # It runs as its image's unprivileged user and needs no capabilities,
+    # and nothing in it may gain privileges, through a setuid binary or
+    # otherwise.
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     # A build peaks at about 1 GB, Firefox included.
     mem_limit: 2g
     networks: [render]
