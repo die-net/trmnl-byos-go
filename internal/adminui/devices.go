@@ -467,7 +467,11 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		Seen:    r.PostForm.Get("settings_state"),
 	}
 	if form.Seen == "" {
-		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, &form, reloadText, "", "")
+		// The post says nothing of what its page showed, so its values
+		// cannot be checked against what is stored. The page sent back has
+		// the stored settings, not the posted ones, so its Save cannot
+		// write over settings the sender never saw.
+		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, nil, reloadText, "", "")
 		return
 	}
 	err := s.saveDevice(r, dev.FriendlyID, &form)

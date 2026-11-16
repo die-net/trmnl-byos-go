@@ -231,15 +231,37 @@ func TestDeviceSettingsStaleSameValues(t *testing.T) {
 	}
 }
 
+// TestDeviceSettingsNoState checks that a post with no settings state, as
+// from a page made before the form had one, is refused, and that the page
+// sent back has the stored settings and not the posted ones, so that saving
+// it does not write values over settings their sender never saw.
 func TestDeviceSettingsNoState(t *testing.T) {
 	t.Parallel()
 	tu := newProfileUI(t)
-	w := tu.post(t, tu.signIn(t), "/devices/ABC123", url.Values{"name": {"Hall"}})
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `role="alert">`+reloadText) || !strings.Contains(w.Body.String(), `value="Hall"`) {
-		t.Errorf("status %d, want 400 with the typed name: %s", w.Code, w.Body)
+	c := tu.signIn(t)
+	// Another page sets a profile the old page knows nothing of.
+	setProfile(t, tu, "og_bwry", "")
+	w := tu.post(t, c, "/devices/ABC123", url.Values{"name": {"Hall"}, "fw_pin": {"1.8.19"}})
+	body := w.Body.String()
+	if w.Code != http.StatusBadRequest || !strings.Contains(body, `role="alert">`+reloadText) {
+		t.Fatalf("status %d, want 400 saying to reload: %s", w.Code, body)
 	}
-	if dev := testDevice(t, tu); dev.Name != "Kitchen" {
-		t.Errorf("a post with no state renamed the device to %q", dev.Name)
+	for _, want := range []string{`name="name" type="text" value="Kitchen"`, `<option value="og_bwry" selected>`, `<option value="">No pin</option>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks the stored %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `value="Hall"`) || strings.Contains(body, `<option value="1.8.19" selected>`) {
+		t.Errorf("the page has a posted value:\n%s", body)
+	}
+	// Saving the page that came back keeps the profile.
+	dev := testDevice(t, tu)
+	again := url.Values{"name": {"Kitchen"}, "profile": {"og_bwry"}, "settings_state": {device.SettingsState(&dev)}}
+	if w := tu.post(t, c, "/devices/ABC123", again); w.Code != http.StatusSeeOther {
+		t.Fatalf("save of the page sent back: status %d: %s", w.Code, w.Body)
+	}
+	if dev := testDevice(t, tu); dev.Name != "Kitchen" || dev.ProfileOverride != "og_bwry" || dev.FwPin != "" {
+		t.Errorf("after the save: %+v", dev)
 	}
 }
 
