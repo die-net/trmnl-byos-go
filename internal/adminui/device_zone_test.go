@@ -15,7 +15,7 @@ import (
 // check, as a value that stopped applying is.
 func storeZone(t *testing.T, tu *testUI, zone, locale string) {
 	t.Helper()
-	err := tu.db.Write.UpdateDeviceSettings(t.Context(), db.UpdateDeviceSettingsParams{Name: "Kitchen", TimeZone: zone, Locale: locale, ID: 1})
+	err := tu.db.Write.UpdateDeviceSettings(t.Context(), db.UpdateDeviceSettingsParams{Name: "Kitchen", TimeZone: zone, Locale: locale, SleepStart: -1, SleepEnd: -1, ID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
