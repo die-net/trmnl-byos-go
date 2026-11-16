@@ -18,7 +18,9 @@ import (
 
 // fakeTrmnlp stands in for trmnlp: it checks the project, writes each
 // layout's "PNG" as a line naming the layout, size, palette and secret, and
-// fails or hangs when the project asks it to.
+// fails or hangs when the project asks it to. Asked for a failed data
+// fetch, it does as trmnlp does: warns, marks the failure in its cache, and
+// still draws the screens and exits 0.
 const fakeTrmnlp = `#!/bin/sh
 while [ $# -gt 0 ]; do
   case $1 in
@@ -33,6 +35,11 @@ test -f "$dir/src/settings.yml" || { echo "no settings.yml" >&2; exit 2; }
 test -f "$dir/fail" && { echo "boom" >&2; exit 3; }
 test -f "$dir/slow" && { sleep 30 & echo $! > "$CHILD_PID_FILE"; wait; }
 test -n "$XDG_CACHE_HOME" && test -d "$TMPDIR" || { echo "no build dirs" >&2; exit 4; }
+if test -f "$dir/fetchfail"; then
+  mkdir -p "$XDG_CACHE_HOME/trmnl/state"
+  : > "$XDG_CACHE_HOME/trmnl/state/project.fetch_failed"
+  echo "warning: HTTP 401 from https://api.example/forecast"
+fi
 mkdir -p "$dir/_build"
 for v in full half_horizontal half_vertical quadrant; do
   printf '%s %sx%s %s %s' "$v" "$w" "$h" "$p" "$FIELD_TOKEN" > "$dir/_build/$v.png"
@@ -136,6 +143,20 @@ func TestBuildFails(t *testing.T) {
 			t.Errorf("child %d of a timed-out build is still running", n)
 			break
 		}
+	}
+}
+
+// TestBuildFetchFails checks that a build whose data fetch failed, which
+// trmnlp finishes with screens drawn from no data and exit status 0,
+// returns ErrFetchFailed with the build log and no PNGs, so the last good
+// images stay.
+func TestBuildFetchFails(t *testing.T) {
+	t.Parallel()
+	c := newShimServer(t, ampleTimeout)
+	got := map[string]string{}
+	log, err := c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project("fetchfail"), collect(got))
+	if !errors.Is(err, ErrFetchFailed) || errors.Is(err, ErrBuildFailed) || !strings.Contains(log, "warning: HTTP 401") || len(got) != 0 {
+		t.Errorf("err %v, log %q, %d PNGs; want ErrFetchFailed, the warning and none", err, log, len(got))
 	}
 }
 

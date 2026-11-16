@@ -830,7 +830,7 @@ func TestInstanceSaveRebuilds(t *testing.T) {
 	t.Parallel()
 	tu, rec := newFormUI(t, formRecipe, true)
 	woken := 0
-	tu.srv.rebuildFn = func() { woken++ }
+	tu.db.OnChange = func() { woken++ }
 	inst := savedInstance(t, tu, rec)
 	w := postEdit(t, tu, tu.signIn(t), inst.ID, editForm(url.Values{"seen": {""}, "name": {"Work"}}))
 	if w.Code != http.StatusBadRequest || woken != 0 {

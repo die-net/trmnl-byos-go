@@ -16,14 +16,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"index/suffixarray"
 	"io"
 	"log/slog"
 	"maps"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
@@ -589,8 +593,8 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 			Locale:      t.locale,
 			AttemptedAt: start.Unix(),
 			DurationMs:  took.Milliseconds(),
-			Error:       describe(err, log),
-			Log:         log,
+			Error:       log.line(err),
+			Log:         log.stored(),
 			DataAt:      read.data,
 			SettingsAt:  read.settings,
 			Failures:    counted,
@@ -612,7 +616,7 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 			RenderedAt:  s.now().Unix(),
 			AttemptedAt: start.Unix(),
 			DurationMs:  took.Milliseconds(),
-			Log:         log,
+			Log:         log.stored(),
 			DataAt:      read.data,
 			SettingsAt:  read.settings,
 		})
@@ -637,10 +641,12 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 // version it was due for, so a change makes a failing target due once, and
 // it otherwise waits for its backoff, wherever the build failed. Recording 0
 // instead would make a target whose settings ever changed due on every scan.
-func (s *Scheduler) build(ctx context.Context, t target, seen version) (images map[string]stored, log string, read version, err error) {
+// log is what the renderer printed, with the field values the build read,
+// which the stored log and the line of a failure hide.
+func (s *Scheduler) build(ctx context.Context, t target, seen version) (images map[string]stored, log buildLog, read version, err error) {
 	read = seen
 	if t.broken != "" {
-		return nil, "", read, errors.New(t.broken)
+		return nil, log, read, errors.New(t.broken)
 	}
 	// The instance and its recipe are read in one snapshot, so the files
 	// are the revision its settings_at goes with. A replace raises both in
@@ -659,48 +665,57 @@ func (s *Scheduler) build(ctx context.Context, t target, seen version) (images m
 		return nil
 	})
 	if err != nil {
-		return nil, "", read, err
+		return nil, log, read, err
 	}
 	read.settings = inst.SettingsAt
 	dir := recipe.FilesDir(s.cfg.RecipesDir, &rec)
 	fields, secretValues, err := recipe.InstanceFields(&inst, s.cfg.Secrets)
 	if err != nil {
-		return nil, "", read, err
+		return nil, log, read, err
 	}
+	// The values this build read are the ones its log and line hide, not the
+	// ones stored by the time it fails, which a save meanwhile may have
+	// changed.
+	log.secrets, log.hidden = secretValues, hiddenValues(fields)
 	// A value left from a field the recipe no longer declares stays stored,
 	// so it can be cleared or a replace back can use it, but a build gets
 	// only the declared ones.
 	rs, err := recipe.ReadSettings(dir)
 	if err != nil {
-		return nil, "", read, fmt.Errorf("recipe %d: %w", rec.ID, err)
+		return nil, log, read, fmt.Errorf("recipe %d: %w", rec.ID, err)
 	}
 	declared := make(map[string]bool, len(rs.CustomFields))
 	for i := range rs.CustomFields {
 		declared[rs.CustomFields[i].Keyname] = true
 	}
 	maps.DeleteFunc(fields, func(k string, _ recipe.Value) bool { return !declared[k] })
+	// What trmnlp would only warn about, and then draw no data for, fails
+	// the build here, so it shows.
+	if why := rs.BuildProblem(fields); why != "" {
+		return nil, log, read, errors.New(why)
+	}
 	proj := recipe.NewProject(dir, fields, t.zone, t.locale, s.cfg.AssetHosts)
 	data, err := s.cfg.DB.Read.GetInstanceData(ctx, t.instance)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		read.data = 0
 	case err != nil:
-		return nil, "", read, fmt.Errorf("get instance data: %w", err)
+		return nil, log, read, fmt.Errorf("get instance data: %w", err)
 	default:
 		read.data = data.UpdatedAt
 		if proj, err = proj.WithData(data.Data); err != nil {
-			return nil, "", read, fmt.Errorf("instance %d data: %w", t.instance, err)
+			return nil, log, read, fmt.Errorf("instance %d data: %w", t.instance, err)
 		}
 	}
 	if t.device != 0 {
 		row, err := s.cfg.DB.Read.GetRenderDevice(ctx, t.device)
 		if err != nil {
-			return nil, "", read, fmt.Errorf("get device: %w", err)
+			return nil, log, read, fmt.Errorf("get device: %w", err)
 		}
 		proj = proj.WithDevice(recipe.NewDevice(&row))
 	}
 	images = make(map[string]stored, len(render.Layouts))
-	log, err = s.cfg.Renderer.Build(ctx,
+	log.raw, err = s.cfg.Renderer.Build(ctx,
 		render.Job{Width: t.width, Height: t.height, Palette: t.palette, Env: proj.Env},
 		proj.Write,
 		func(layout string, r io.Reader) error {
@@ -711,14 +726,39 @@ func (s *Scheduler) build(ctx context.Context, t target, seen version) (images m
 			images[layout] = stored{name: name, size: size}
 			return nil
 		})
-	// What trmnlp prints is whatever a transform printed or a failed fetch
-	// quoted, which can be a secret field's value. The log and the error
-	// line made from it are stored and shown, so the values come out here.
-	log = redact(log, secretValues)
 	if err != nil {
 		return nil, log, read, err
 	}
 	return images, log, read, nil
+}
+
+// buildLog is what a build's renderer printed, as it printed it, and the
+// field values the build read. What trmnlp prints is whatever a transform
+// printed or a failed fetch quoted, which can be a field's value, secret or
+// not. The raw log is never stored, logged or shown: it is read only through
+// stored and line, which hide the values. A failure's line is made from the
+// raw log, so a URL in it is cut before anything is hidden and a secret that
+// holds a URL's scheme cannot stop the cut.
+type buildLog struct {
+	raw string
+	// secrets are the build's secret field values, of any length.
+	secrets []string
+	// hidden are the build's field values a failure's line hides, from
+	// hiddenValues.
+	hidden []string
+}
+
+// stored returns the log as it is stored and shown to an admin: with every
+// secret value hidden.
+func (l buildLog) stored() string {
+	return redact(l.raw, l.secrets)
+}
+
+// line returns the line a device shows for err, the build's failure, with
+// every field value the build read hidden, and every secret one of any
+// length, as the stored log hides it.
+func (l buildLog) line(err error) string {
+	return describe(err, l.raw, slices.Concat(l.hidden, l.secrets))
 }
 
 // redacted replaces a secret value in a build log.
@@ -733,30 +773,219 @@ const redacted = "[redacted]"
 // first, so a form that holds another is hidden whole. An empty value is
 // skipped, since it matches everywhere.
 func redact(log string, values []string) string {
+	forms := redactForms(values)
+	if len(forms) == 0 {
+		return log
+	}
+	pairs := make([]string, 0, 2*len(forms))
+	for _, f := range forms {
+		pairs = append(pairs, f, redacted)
+	}
+	return strings.NewReplacer(pairs...).Replace(log)
+}
+
+// redactForms returns each value and its URL-encoded forms, as redact
+// hides them, longest first.
+func redactForms(values []string) []string {
 	forms := map[string]bool{}
 	for _, v := range values {
 		if v != "" {
 			forms[v], forms[url.QueryEscape(v)], forms[url.PathEscape(v)] = true, true, true
 		}
 	}
-	pairs := make([]string, 0, 2*len(forms))
-	for _, f := range slices.SortedFunc(maps.Keys(forms), func(a, b string) int { return cmp.Or(cmp.Compare(len(b), len(a)), strings.Compare(a, b)) }) {
-		pairs = append(pairs, f, redacted)
+	return slices.SortedFunc(maps.Keys(forms), func(a, b string) int { return cmp.Or(cmp.Compare(len(b), len(a)), strings.Compare(a, b)) })
+}
+
+// urlScheme matches the start of a URL in any case: its scheme and ://.
+var urlScheme = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://`)
+
+// hostPrefix matches a host, an IP literal or a name, and an optional port,
+// at the start of a string.
+var hostPrefix = regexp.MustCompile(`^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::\d+)?`)
+
+// urlEnds are what end a URL in trmnlp's lines, which print it as it was
+// interpolated, spaces and all: its separator before why, and the phrase
+// after a refused one. The end of the line ends one too.
+var urlEnds = []string{" — ", ": the url resolves"}
+
+// span is a part of a line that describe shows, line[start:end], in lower
+// case when lower is set.
+type span struct {
+	start, end int
+	lower      bool
+}
+
+// urlCut returns the parts of line that are kept when each URL in it is cut
+// to its scheme and host. trmnlp prints the whole URL of a fetch that
+// failed, as interpolated, and a key can be in its path, its user info or
+// its query, from a field that may not be secret, after a value with a space
+// in it. So a URL runs from its scheme to the end of the line or to where
+// trmnlp ends one, and its host is what follows the last @ in that: the name
+// or IP literal there and its port, and nothing else. The scheme is kept in
+// lower case. The rest goes. Showing too little is safe. The line goes on a
+// device's screen and into the render's error, and the build log, which
+// only an admin reads, keeps the whole line.
+func urlCut(line string) []span {
+	var kept []span
+	at := 0
+	for {
+		loc := urlScheme.FindStringIndex(line[at:])
+		if loc == nil {
+			return append(kept, span{start: at, end: len(line)})
+		}
+		scheme, rest := at+loc[0], at+loc[1]
+		kept = append(kept, span{start: at, end: scheme}, span{start: scheme, end: rest, lower: true})
+		end := len(line)
+		for _, e := range urlEnds {
+			if i := strings.Index(line[rest:], e); i >= 0 && rest+i < end {
+				end = rest + i
+			}
+		}
+		host := rest
+		if i := strings.LastIndexByte(line[rest:end], '@'); i >= 0 {
+			host = rest + i + 1
+		}
+		// Only what can be a host and port stays, so an @ in the query
+		// shows a wrong host at worst, never the query after it.
+		kept = append(kept, span{start: host, end: host + len(hostPrefix.FindString(line[host:end]))})
+		at = end
 	}
-	if len(pairs) == 0 {
-		return log
+}
+
+// hiddenBytes reports, for each byte of line, whether it is in an
+// occurrence of one of values in a form redact hides. Occurrences may
+// overlap, and each one counts: "aba" in "ababa" hides all five bytes. One
+// suffix array of the line finds every start of each form, and each byte is
+// marked once per form, so the cost stays near linear in the line however
+// often a form repeats in it.
+func hiddenBytes(line string, values []string) []bool {
+	hidden := make([]bool, len(line))
+	forms := redactForms(values)
+	if len(forms) == 0 {
+		return hidden
 	}
-	return strings.NewReplacer(pairs...).Replace(log)
+	index := suffixarray.New([]byte(line))
+	for _, f := range forms {
+		starts := index.Lookup([]byte(f), -1)
+		slices.Sort(starts)
+		marked := 0
+		for _, at := range starts {
+			for j := max(at, marked); j < at+len(f); j++ {
+				hidden[j] = true
+			}
+			marked = max(marked, at+len(f))
+		}
+	}
+	return hidden
+}
+
+// minHiddenLen is the fewest characters a field value has to have to be
+// hidden on a device line. A shorter one, such as a unit, would hide every
+// place its letters appear, and is not much of a secret.
+const minHiddenLen = 4
+
+// hiddenValues returns the field values a device line hides, of at least
+// minHiddenLen characters, plain ones too, each item of a list on its own.
+func hiddenValues(fields map[string]recipe.Value) []string {
+	var out []string
+	for _, v := range fields {
+		for _, item := range append([]string{v.One}, v.Many...) {
+			if utf8.RuneCountInString(item) >= minHiddenLen {
+				out = append(out, item)
+			}
+		}
+	}
+	return out
 }
 
 // describe is the one line a device shows for a failed build: trmnlp's last
-// line of output when trmnlp failed, since that is where it says why.
-func describe(err error, log string) string {
-	if errors.Is(err, render.ErrBuildFailed) {
-		lines := strings.Split(strings.TrimSpace(log), "\n")
-		if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
-			return "trmnlp: " + last
+// line of output when trmnlp failed, since that is where it says why, and
+// its last warning when a data fetch failed, since trmnlp then finishes and
+// says why only in a warning. No character of hidden, the field values the
+// build read, reaches the screen, whatever else is cut. Which bytes came
+// from a value is found once, on the whole raw log, as redact finds them,
+// before anything is picked, trimmed or cut. Everything describe shows is
+// then a byte range of that log, read against that one mask, or fixed text:
+// the "trmnlp: " or "data fetch failed: " prefix, or a scheme in lower case.
+// No step builds a new string that is searched again. So a value with space
+// at either end, one that runs across lines, and one that runs past where a
+// URL is cut are all hidden in the part that shows. why picks the line as a
+// range of the log, without the space at either end. Then, in a line from
+// trmnlp, every URL is cut to its scheme and host, as ranges in that line.
+// Of what is left, each run of bytes that came from a value shows as one
+// [redacted]. So a host or base URL from a field is hidden whether the cut
+// keeps all of it or only its host, and a URL the cut cannot see, with no
+// scheme or a typo in it, keeps no value either.
+// The server's own errors keep their URLs: the only URL in one is the
+// renderer's, and the reason after it is what the admin needs.
+func describe(err error, log string, hidden []string) string {
+	prefix, src, start, end, fromTrmnlp := why(err, log)
+	line, isHidden := src[start:end], hiddenBytes(src, hidden)[start:end]
+	kept := []span{{start: 0, end: len(line)}}
+	if fromTrmnlp {
+		kept = urlCut(line)
+	}
+	var b strings.Builder
+	b.WriteString(prefix)
+	inHidden := false
+	for _, k := range kept {
+		for i := k.start; i < k.end; {
+			if isHidden[i] {
+				if !inHidden {
+					b.WriteString(redacted)
+				}
+				inHidden = true
+				i++
+				continue
+			}
+			inHidden = false
+			j := i
+			for j < k.end && !isHidden[j] {
+				j++
+			}
+			if k.lower {
+				b.WriteString(strings.ToLower(line[i:j]))
+			} else {
+				b.WriteString(line[i:j])
+			}
+			i = j
 		}
 	}
-	return err.Error()
+	return b.String()
+}
+
+// why is describe's line before anything in it is hidden: prefix, then
+// src[start:end], and whether it is trmnlp's output. src is the whole log
+// when the line is from it, so describe finds the values in all of it, and
+// the error's text otherwise.
+func why(err error, log string) (prefix, src string, start, end int, fromTrmnlp bool) {
+	fetch, build := errors.Is(err, render.ErrFetchFailed), errors.Is(err, render.ErrBuildFailed)
+	if fetch || build {
+		// Each line, from the last, without the space at either end.
+		for lineEnd := len(log); lineEnd >= 0; {
+			lineStart := strings.LastIndexByte(log[:lineEnd], '\n') + 1
+			s, e := trimmed(log, lineStart, lineEnd)
+			if build && s < e {
+				return "trmnlp: ", log, s, e, true
+			}
+			if fetch {
+				if i := strings.Index(log[s:e], "warning: "); i >= 0 {
+					if ws, we := trimmed(log, s+i+len("warning: "), e); ws < we {
+						return "data fetch failed: ", log, ws, we, true
+					}
+				}
+			}
+			lineEnd = lineStart - 1
+		}
+	}
+	msg := err.Error()
+	return "", msg, 0, len(msg), false
+}
+
+// trimmed returns the range of log[start:end] without the space at either
+// end, as strings.TrimSpace would leave it.
+func trimmed(log string, start, end int) (s, e int) {
+	t := strings.TrimLeftFunc(log[start:end], unicode.IsSpace)
+	s = end - len(t)
+	return s, s + len(strings.TrimRightFunc(t, unicode.IsSpace))
 }

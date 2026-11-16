@@ -98,7 +98,7 @@ func checkSeen(seen, now *Standing) error {
 // now names a newer device, Delete is ErrDeviceChanged and changes nothing.
 func Delete(ctx context.Context, client *db.Client, device string, seen *Standing, now time.Time) (db.Device, error) {
 	var dev db.Device
-	err := client.InTx(ctx, func(q *db.Queries) error {
+	err := client.ChangeTx(ctx, func(q *db.Queries) error {
 		st, err := ReadStanding(ctx, q, device)
 		if err != nil {
 			return err
@@ -130,7 +130,7 @@ func Delete(ctx context.Context, client *db.Client, device string, seen *Standin
 // Delete.
 func Block(ctx context.Context, client *db.Client, device string, seen *Standing, now time.Time) (db.BlockedMac, error) {
 	var out db.BlockedMac
-	err := client.InTx(ctx, func(q *db.Queries) error {
+	err := client.ChangeTx(ctx, func(q *db.Queries) error {
 		st, err := ReadStanding(ctx, q, device)
 		if err != nil {
 			return err
@@ -153,7 +153,7 @@ func Block(ctx context.Context, client *db.Client, device string, seen *Standing
 // back as it was. seen is as for Delete.
 func Unblock(ctx context.Context, client *db.Client, device string, seen *Standing) (string, error) {
 	var mac string
-	err := client.InTx(ctx, func(q *db.Queries) error {
+	err := client.ChangeTx(ctx, func(q *db.Queries) error {
 		st, err := ReadStanding(ctx, q, device)
 		if err != nil {
 			return err

@@ -345,6 +345,8 @@ func replaceFrom(ctx context.Context, client *db.Client, key *secrets.Key, recip
 		return Replaced{}, err
 	}
 	if !out.Unchanged {
+		// Every instance's settings_at rose, so its renders are due.
+		client.Changed()
 		// A revision below the one that was current stopped being current
 		// when that one became current. Once that is longer ago than any
 		// build takes, nothing is reading it. The one that was current is

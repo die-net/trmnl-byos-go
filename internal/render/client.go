@@ -24,7 +24,8 @@ type Client struct {
 // Build sends job to the shim with the project writeProject writes, and
 // calls png for each layout's PNG as it streams back. It returns the build
 // log, cut to a bound. A build trmnlp failed returns its log and an error
-// matching ErrBuildFailed. A job that is too big to send, or that the shim
+// matching ErrBuildFailed, and one whose data fetch failed an error matching
+// ErrFetchFailed. A job that is too big to send, or that the shim
 // refuses with a 400, returns an error matching ErrRejected. A renderer that
 // cannot be reached or does not answer with a result returns an error
 // matching ErrUnavailable. A project that writeProject cannot write, such as
@@ -78,6 +79,7 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 	var log strings.Builder
 	tr := tar.NewReader(resp.Body)
 	got := 0
+	fetchFailed := false
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -92,6 +94,10 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 			}
 			continue
 		}
+		if h.Name == fetchFailedMember {
+			fetchFailed = true
+			continue
+		}
 		layout, ok := isLayout(h.Name)
 		if !ok {
 			return log.String(), fmt.Errorf("read render result: unexpected %q", h.Name)
@@ -102,6 +108,9 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		got++
 	}
 	if resp.StatusCode == http.StatusUnprocessableEntity {
+		if fetchFailed {
+			return log.String(), ErrFetchFailed
+		}
 		return log.String(), ErrBuildFailed
 	}
 	if got != len(Layouts) {

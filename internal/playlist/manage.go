@@ -142,7 +142,7 @@ func UpdatePlaylist(ctx context.Context, client *db.Client, ref Ref, u Update) e
 			return err
 		}
 	}
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		pl, err := ref.resolve(ctx, q)
 		if err != nil {
 			return err
@@ -194,7 +194,7 @@ type Contents struct {
 // devices is not deleted. It returns an error wrapping ErrNoPlaylist if there
 // is no such playlist, and one wrapping ErrPlaylistChanged if seen differs.
 func DeletePlaylist(ctx context.Context, client *db.Client, ref Ref, seen *Contents) error {
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		pl, err := ref.resolve(ctx, q)
 		if err != nil {
 			return err
@@ -269,7 +269,7 @@ func renumberLinks(ctx context.Context, q *db.Queries, deviceID, moved, from, to
 // It returns an error wrapping ErrNoPlaylist or device.ErrNoDevice for a name
 // that matches nothing. MoveLink changes a link's place.
 func LinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName string) error {
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		pl, err := ref.resolve(ctx, q)
 		if err != nil {
 			return err
@@ -299,7 +299,7 @@ func LinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName stri
 // order that changed is ErrOrderChanged even when to is out of range for the
 // order as it is now, since the caller's view is what is wrong.
 func MoveLink(ctx context.Context, client *db.Client, ref Ref, deviceName string, shown []int64, to int64) error {
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		pl, err := ref.resolve(ctx, q)
 		if err != nil {
 			return err
@@ -335,7 +335,7 @@ func MoveLink(ctx context.Context, client *db.Client, ref Ref, deviceName string
 // device.ErrNoDevice for a name that matches nothing, and one wrapping
 // ErrNotLinked if there is no such link.
 func UnlinkDevice(ctx context.Context, client *db.Client, ref Ref, deviceName string) error {
-	return client.InTx(ctx, func(q *db.Queries) error {
+	return client.ChangeTx(ctx, func(q *db.Queries) error {
 		pl, err := ref.resolve(ctx, q)
 		if err != nil {
 			return err

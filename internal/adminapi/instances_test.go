@@ -51,10 +51,14 @@ func TestPatchInstanceRebuilds(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)
 	var woken atomic.Int32
-	ta.srv.cfg.Rebuild = func() { woken.Add(1) }
+	ta.db.OnChange = func() { woken.Add(1) }
 	rec := ta.addRecipe(t)
 	var inst instanceJSON
 	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "Home", "fields": {"city": "Oslo"}}`, 201, &inst)
+	// A new instance is in no playlist, so it makes nothing due.
+	if n := woken.Swap(0); n != 0 {
+		t.Fatalf("%d wake-ups after a create, want none", n)
+	}
 	path := "/api/v1/instances/" + strconv.FormatInt(inst.ID, 10)
 	ta.call(t, "PATCH", path, `{"fields": {"city": "Bergen"}}`, 200, nil)
 	if n := woken.Load(); n != 1 {

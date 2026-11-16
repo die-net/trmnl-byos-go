@@ -218,8 +218,5 @@ func (s *Server) replaceRecipe(w http.ResponseWriter, r *http.Request) (replaced
 		ri := &res.Instances[i]
 		out.Instances[i] = replacedInstanceJSON{ID: ri.ID, Name: ri.Name, Sealed: ri.Sealed, Marked: ri.Marked, Problems: ri.Problems}
 	}
-	if !res.Unchanged {
-		s.rebuild()
-	}
 	return out, nil
 }

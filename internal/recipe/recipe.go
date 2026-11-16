@@ -21,6 +21,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -71,6 +72,94 @@ type Settings struct {
 	// CustomFields are the settings an instance of the recipe has values
 	// for.
 	CustomFields []Field `yaml:"custom_fields"`
+	// Strategy is how the recipe gets its data: polling, webhook, static,
+	// async_polling or plugin_merge, as trmnlp reads it. It is a node, as
+	// PollingURL is, so a recipe that writes it in another shape is not
+	// refused. Only a scalar names a strategy.
+	Strategy yaml.Node `yaml:"strategy"`
+	// PollingURL is the URL text a polling recipe fetches, kept as a node so
+	// a recipe that writes it in an odd shape is not refused. Only its text
+	// is read, as trmnlp reads it to check required fields.
+	PollingURL yaml.Node `yaml:"polling_url"`
+}
+
+// BuildProblem returns why an instance with the given field values cannot
+// be built as trmnlp would build it, or "" if it can. trmnlp itself only
+// warns about these, draws its screens from no data, and succeeds, so
+// without this check the failure would not show:
+//   - a recipe that gets its data by async polling, whose callback this
+//     server does not take, or by merging another plugin's data, which it
+//     does not do;
+//   - a polling recipe whose URL uses a required field that has no value,
+//     as after a replace that made a field required. As in trmnlp's
+//     missing_required_fields, a field counts only when the URL
+//     interpolates it without a default filter.
+func (s *Settings) BuildProblem(values map[string]Value) string {
+	switch scalarText(&s.Strategy) {
+	case "async_polling":
+		return "the recipe gets its data by async polling, which this server does not do"
+	case "plugin_merge":
+		return "the recipe merges another plugin's data, which this server does not do"
+	case "polling":
+		url := nodeText(&s.PollingURL)
+		if strings.TrimSpace(url) == "" {
+			return ""
+		}
+		var missing []string
+		for i := range s.CustomFields {
+			f := &s.CustomFields[i]
+			if v, ok := values[f.Keyname]; f.Required() && (!ok || v.Empty()) && interpolatedWithoutDefault(url, f.Keyname) {
+				missing = append(missing, f.Keyname)
+			}
+		}
+		if len(missing) > 0 {
+			return "required fields have no value: " + strings.Join(missing, ", ")
+		}
+	}
+	return ""
+}
+
+// defaultFilter matches a Liquid default filter.
+var defaultFilter = regexp.MustCompile(`\|\s*default\s*:`)
+
+// interpolatedWithoutDefault reports whether url interpolates the field
+// keyname, alone or under trmnl.plugin_settings.custom_fields_values, in
+// some place without a default filter, as trmnlp's own check does.
+func interpolatedWithoutDefault(url, keyname string) bool {
+	// trmnlp's \b is Ruby's, which knows Unicode letters, and RE2 has no
+	// lookahead, so the character after the keyname that is not part of a
+	// name starts the filters it captures, or a } or the end follows.
+	re := regexp.MustCompile(`\{\{-?\s*(?:trmnl\.plugin_settings\.custom_fields_values\.)?` + regexp.QuoteMeta(keyname) +
+		`(?:([^\p{L}\p{M}\p{N}_}][^}]*)|\}|$)`)
+	for _, m := range re.FindAllStringSubmatch(url, -1) {
+		if !defaultFilter.MatchString(m[1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// scalarText returns the text of a scalar node, or "" for a node that is
+// not one, or is null.
+func scalarText(n *yaml.Node) string {
+	if n.Kind != yaml.ScalarNode || n.Tag == "!!null" {
+		return ""
+	}
+	return n.Value
+}
+
+// nodeText returns every scalar's text in n, one to a line, so a URL
+// written as a list or in another shape is read as text, as trmnlp turns
+// it into a string.
+func nodeText(n *yaml.Node) string {
+	if n.Kind == yaml.ScalarNode {
+		return scalarText(n)
+	}
+	parts := make([]string, 0, len(n.Content))
+	for _, c := range n.Content {
+		parts = append(parts, nodeText(c))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // Refresh is how often an instance of the recipe is rendered.

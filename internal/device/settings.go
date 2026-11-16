@@ -111,7 +111,7 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 		}
 	}
 	var dev db.Device
-	err := client.InTx(ctx, func(q *db.Queries) error {
+	err := client.ChangeTx(ctx, func(q *db.Queries) error {
 		var err error
 		if dev, err = FindDevice(ctx, q, device); err != nil {
 			return err

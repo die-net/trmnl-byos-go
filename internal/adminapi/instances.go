@@ -30,9 +30,22 @@ type instanceJSON struct {
 	// is always an array. It is readable without the secrets key.
 	SecretKeys []string `json:"secret_keys"`
 	CreatedAt  int64    `json:"created_at"`
+	// LastRenderedAt is when the latest good build of any of the instance's
+	// render targets finished, in Unix seconds, or 0 if none has.
+	LastRenderedAt int64 `json:"last_rendered_at"`
+	// LastError is why the latest build failed, of the most recently built
+	// render target whose latest build failed, a failed data fetch included,
+	// or "" when no target's latest build failed.
+	LastError string `json:"last_error"`
 }
 
-func (s *Server) newInstance(inst *db.PluginInstance, recipeName string) (instanceJSON, error) {
+// renderStatus is what an instance's render rows say about its builds.
+type renderStatus struct {
+	lastRenderedAt int64
+	lastError      string
+}
+
+func (s *Server) newInstance(inst *db.PluginInstance, recipeName string, st renderStatus) (instanceJSON, error) {
 	fields, names, err := recipe.PublicFields(inst, s.cfg.Key)
 	if err != nil {
 		return instanceJSON{}, fmt.Errorf("instance %d: %w", inst.ID, err)
@@ -44,17 +57,35 @@ func (s *Server) newInstance(inst *db.PluginInstance, recipeName string) (instan
 	return instanceJSON{
 		ID: inst.ID, RecipeID: inst.RecipeID, RecipeName: recipeName, Name: inst.Name, Palette: inst.Palette,
 		Fields: fields, SecretFields: names, SecretKeys: marks, CreatedAt: inst.CreatedAt,
+		LastRenderedAt: st.lastRenderedAt, LastError: st.lastError,
 	}, nil
 }
 
 func (s *Server) listInstances(_ http.ResponseWriter, r *http.Request) ([]instanceJSON, error) {
-	rows, err := s.db.Read.ListInstances(r.Context())
+	ctx := r.Context()
+	var rows []db.ListInstancesRow
+	statuses := map[int64]renderStatus{}
+	// The instances and their render rows are read in one snapshot.
+	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
+		var err error
+		if rows, err = q.ListInstances(ctx); err != nil {
+			return fmt.Errorf("list instances: %w", err)
+		}
+		st, err := q.ListInstanceRenderStatus(ctx)
+		if err != nil {
+			return fmt.Errorf("list render status: %w", err)
+		}
+		for _, r := range st {
+			statuses[r.InstanceID] = renderStatus{lastRenderedAt: r.LastRenderedAt, lastError: r.LastError}
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list instances: %w", err)
+		return nil, err
 	}
 	out := make([]instanceJSON, 0, len(rows))
 	for i := range rows {
-		inst, err := s.newInstance(&rows[i].PluginInstance, rows[i].RecipeName)
+		inst, err := s.newInstance(&rows[i].PluginInstance, rows[i].RecipeName, statuses[rows[i].PluginInstance.ID])
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +128,11 @@ func (s *Server) instanceWithRecipe(ctx context.Context, q *db.Queries, inst *db
 	if err != nil {
 		return instanceJSON{}, fmt.Errorf("get recipe: %w", err)
 	}
-	return s.newInstance(inst, rec.Name)
+	st, err := q.GetInstanceRenderStatus(ctx, inst.ID)
+	if err != nil {
+		return instanceJSON{}, fmt.Errorf("get render status: %w", err)
+	}
+	return s.newInstance(inst, rec.Name, renderStatus{lastRenderedAt: st.LastRenderedAt, lastError: st.LastError})
 }
 
 // createInstanceRequest is the body of an instance create request.
@@ -177,16 +212,7 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request) (instance
 	if err != nil {
 		return instanceJSON{}, err
 	}
-	s.rebuild()
 	return s.instanceWithRecipe(ctx, s.db.Read, &inst)
-}
-
-// rebuild asks the scheduler to look for due renders now, through
-// Config.Rebuild, after a change that builds read.
-func (s *Server) rebuild() {
-	if s.cfg.Rebuild != nil {
-		s.cfg.Rebuild()
-	}
 }
 
 func (s *Server) deleteInstance(r *http.Request) error {
