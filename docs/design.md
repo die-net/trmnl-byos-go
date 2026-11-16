@@ -492,6 +492,7 @@ Each of these has a place in the design so it can land later without reshaping t
 | Firmware hosting from TRMNL releases | `firmware` sync job | Same validation as uploads. The release file names carry the version the descriptor lacks. |
 | Admin UI palette choice | A `setting` row naming the palette, set as an attribute on `<html>` | Each palette is one more block of the same CSS custom properties, so adding one changes no page. Candidates: oxblood on warm paper, teal on slate, indigo on plum. A light, dark or follow-the-device choice fits the same way. |
 | Server-side sensors | `sensor_reading` with source = server | Device sensors via the `SENSORS` header are not built either: nothing reads or stores the header. |
+| Isolate code the PR reviewer runs from the OAuth token | The review job in `.github/workflows/claude-code-review.yml` | Claude's `go build`, `go vet` and `go test` run the pull request's code in a job that holds `CLAUDE_CODE_OAUTH_TOKEN`. Today the only control is the prompt: the reviewer runs code only when it has read what will run, judges it safe, and needs a test to settle a finding. A pull request can try to talk its way past that. Options: run the Go commands in a separate job or runner user that has no token and no network except the module proxy, or in a container sandbox. This row exists to replace the prompt's judgment with a control the pull request can't argue with. |
 
 ## Open questions and risks
 
