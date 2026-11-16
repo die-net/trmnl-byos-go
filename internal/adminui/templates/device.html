@@ -76,6 +76,30 @@
 {{end}}</select>
 <p class="hint" id="locale-hint">The language and formats the device's screens are rendered in.</p>
 </div>
+<div class="pair">
+<div class="field">
+<label for="sleep_start">Sleep from</label>
+<input id="sleep_start" name="sleep_start" type="time" value="{{.Form.SleepStart}}" aria-describedby="sleep-hint">
+</div>
+<div class="field">
+<label for="sleep_end">Sleep until</label>
+<input id="sleep_end" name="sleep_end" type="time" value="{{.Form.SleepEnd}}" aria-describedby="sleep-hint">
+</div>
+</div>
+<p class="hint hint-form" id="sleep-hint">In the device's time zone. Leave both empty to never sleep. An end before the start runs past midnight. A sleeping device shows a Sleeping screen and wakes when the window ends.</p>
+<div class="field">
+<label for="button_command">Button press</label>
+<select id="button_command" name="button_command">
+{{range .Form.Buttons}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+</div>
+<div class="field">
+<label for="special_function">Button double-click</label>
+<select id="special_function" name="special_function" aria-describedby="special_function-hint">
+{{range .Form.Functions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+<p class="hint" id="special_function-hint">A change reaches the device at its next wake. Go to sleep lasts until the sleep window next ends, or for some hours when there is no window.</p>
+</div>
 <button class="btn btn-primary" type="submit">Save</button>
 </form>
 </section>

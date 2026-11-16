@@ -169,6 +169,17 @@ type deviceForm struct {
 	// Locales the choices.
 	Locale  string
 	Locales []localeOption
+	// SleepStart and SleepEnd are the ends of the sleep window as HH:MM in
+	// the device's time zone, both "" for none.
+	SleepStart, SleepEnd string
+	// Button is what a single press does, one of device.ButtonCommands, or
+	// "" for the default, and Buttons the choices.
+	Button  string
+	Buttons []choiceOption
+	// Function is what a double-click does, one of device.SpecialFunctions,
+	// or "" for the default, and Functions the choices.
+	Function  string
+	Functions []choiceOption
 	// Seen is the device.SettingsState of the settings stored when the page
 	// was made, which the form posts back.
 	Seen string
@@ -573,6 +584,11 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		Zone:    strings.TrimSpace(r.PostForm.Get("time_zone")),
 		Locale:  r.PostForm.Get("locale"),
 		Seen:    r.PostForm.Get("settings_state"),
+
+		SleepStart: strings.TrimSpace(r.PostForm.Get("sleep_start")),
+		SleepEnd:   strings.TrimSpace(r.PostForm.Get("sleep_end")),
+		Button:     r.PostForm.Get("button_command"),
+		Function:   r.PostForm.Get("special_function"),
 	}
 	// A setting the post does not carry is kept, and the page a refusal
 	// sends shows it as stored. A browser posts every text input and list
@@ -589,10 +605,15 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		{"palette", &form.Palette, &dev.PaletteOverride},
 		{"time_zone", &form.Zone, &dev.TimeZone},
 		{"locale", &form.Locale, &dev.Locale},
+		{"button_command", &form.Button, &dev.ButtonCommand},
+		{"special_function", &form.Function, &dev.SpecialFunction},
 	} {
 		if !r.PostForm.Has(f.name) {
 			*f.value = *f.stored
 		}
+	}
+	if !r.PostForm.Has("sleep_start") && !r.PostForm.Has("sleep_end") {
+		form.SleepStart, form.SleepEnd = sleepEnds(&dev)
 	}
 	seenDevice, err := strconv.ParseInt(r.PostForm.Get("seen_device"), 10, 64)
 	form.Device = seenDevice
@@ -655,12 +676,39 @@ func (s *Server) saveDevice(r *http.Request, id string, form *deviceForm) error 
 			return err
 		}
 	}
+	// The window's two ends are one setting, kept only when the post has
+	// neither.
+	var sleep *string
+	if r.PostForm.Has("sleep_start") || r.PostForm.Has("sleep_end") {
+		window, err := sleepWindow(form.SleepStart, form.SleepEnd)
+		if err != nil {
+			return err
+		}
+		sleep = &window
+	}
 	_, err := device.Update(r.Context(), s.db, id, device.Change{
 		Name: posted("name", &form.Name), UpdatesEnabled: &form.Updates, FwPin: posted("fw_pin", &pin),
 		Profile: posted("profile", &form.Profile), Palette: posted("palette", &form.Palette),
-		TimeZone: posted("time_zone", &form.Zone), Locale: posted("locale", &form.Locale), Seen: &form.Seen,
+		TimeZone: posted("time_zone", &form.Zone), Locale: posted("locale", &form.Locale), Sleep: sleep,
+		ButtonCommand: posted("button_command", &form.Button), SpecialFunction: posted("special_function", &form.Function),
+		Seen: &form.Seen,
 	})
 	return err
+}
+
+// sleepHalf is what a sleep window with only one end gets.
+var sleepHalf = errkind.New(errkind.ErrInvalid, "give the sleep window both a start and an end, or leave both empty")
+
+// sleepWindow joins the form's two times into the HH:MM-HH:MM that
+// device.Change takes, or "" when both are empty, which is no window.
+func sleepWindow(start, end string) (string, error) {
+	switch {
+	case start == "" && end == "":
+		return "", nil
+	case start == "" || end == "":
+		return "", sleepHalf
+	}
+	return start + "-" + end, nil
 }
 
 // capitalize returns msg with its first letter in upper case.
@@ -786,8 +834,9 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	}
 	stored := deviceForm{
 		Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin, Profile: dev.ProfileOverride, Palette: dev.PaletteOverride,
-		Zone: dev.TimeZone, Locale: dev.Locale,
+		Zone: dev.TimeZone, Locale: dev.Locale, Button: dev.ButtonCommand, Function: dev.SpecialFunction,
 	}
+	stored.SleepStart, stored.SleepEnd = sleepEnds(dev)
 	stale := form != nil && status == http.StatusConflict && msg == settingsChanged
 	if stale && form.Device != dev.ID {
 		form, stale, msg = nil, false, deviceReplaced
@@ -797,6 +846,8 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	}
 	form.ServerZone = s.zone.String()
 	form.Locales = localeOptions(serverLocale, form.Locale)
+	form.Buttons = commandOptions(device.ButtonCommands, buttonLabels, device.ButtonNext, form.Button)
+	form.Functions = commandOptions(device.SpecialFunctions, functionLabels, device.FuncRewind, form.Function)
 	form.Profiles = profileOptions(dev.FwModel, form.Profile)
 	// A stored palette the model no longer takes is listed while the form
 	// has the stored profile and palette, so saving the form leaves it as
@@ -1041,6 +1092,19 @@ func settingsChangedText(form, stored *deviceForm) string {
 	if form.Locale != stored.Locale {
 		now = append(now, "the locale is "+orWord(stored.Locale, "the server's"))
 	}
+	if form.SleepStart != stored.SleepStart || form.SleepEnd != stored.SleepEnd {
+		if stored.SleepStart == "" {
+			now = append(now, "there is no sleep window")
+		} else {
+			now = append(now, "the sleep window is "+stored.SleepStart+" to "+stored.SleepEnd)
+		}
+	}
+	if form.Button != stored.Button {
+		now = append(now, "the button is "+orWord(stored.Button, "the default"))
+	}
+	if form.Function != stored.Function {
+		now = append(now, "the double-click is "+orWord(stored.Function, "the default"))
+	}
 	if len(now) == 0 {
 		return settingsChanged + " The values below are what is stored now."
 	}
@@ -1063,4 +1127,54 @@ func localeOptions(server, selected string) []localeOption {
 		opts = append(opts, localeOption{Value: selected, Label: selected + " (not a locale the server has)", Selected: true})
 	}
 	return opts
+}
+
+// buttonLabels says what each button command does, for the form's list.
+var buttonLabels = map[string]string{
+	device.ButtonNext:     "Show the next item",
+	device.ButtonPrevious: "Show the previous item",
+	device.ButtonFirst:    "Show the first item",
+	device.ButtonRefresh:  "Refresh the current item",
+}
+
+// functionLabels says what each special function does, for the form's list.
+var functionLabels = map[string]string{
+	device.FuncNone:            "Do nothing",
+	device.FuncIdentify:        "Show which device this is",
+	device.FuncRestartPlaylist: "Go back to the first item",
+	device.FuncRewind:          "Show the last screen",
+	device.FuncSleep:           "Go to sleep",
+	device.FuncAddWiFi:         "Open Wi-Fi setup",
+}
+
+// commandOptions lists the choices of a button command or special function:
+// the default, which is the empty setting and does what def does, then every
+// value. A value with no label is listed by its name. The selected one is
+// always listed, so a stored value a release dropped shows as what it is.
+// The device does the default for such a value.
+func commandOptions(values []string, labels map[string]string, def, selected string) []choiceOption {
+	label := func(v string) string {
+		if l := labels[v]; l != "" {
+			return l
+		}
+		return v
+	}
+	opts := make([]choiceOption, 1, len(values)+2)
+	opts[0] = choiceOption{Label: "Default: " + strings.ToLower(label(def)), Selected: selected == ""}
+	found := selected == ""
+	for _, v := range values {
+		found = found || v == selected
+		opts = append(opts, choiceOption{Value: v, Label: label(v), Selected: v == selected})
+	}
+	if !found {
+		opts = append(opts, choiceOption{Value: selected, Label: selected + " (not a choice)", Selected: true})
+	}
+	return opts
+}
+
+// sleepEnds returns the two ends of a device's stored sleep window as HH:MM,
+// both "" for none, as the form's two time inputs take them.
+func sleepEnds(dev *db.Device) (start, end string) {
+	start, end, _ = strings.Cut(device.FormatSleep(dev.SleepStart, dev.SleepEnd), "-")
+	return start, end
 }

@@ -250,7 +250,7 @@ func withState(t *testing.T, tu *testUI, form url.Values) url.Values {
 		t.Fatal(err)
 	}
 	// A browser posts every text input and list of the form, empty or not.
-	for _, name := range []string{"name", "fw_pin", "profile", "palette", "time_zone", "locale"} {
+	for _, name := range []string{"name", "fw_pin", "profile", "palette", "time_zone", "locale", "sleep_start", "sleep_end", "button_command", "special_function"} {
 		if !form.Has(name) {
 			form.Set(name, "")
 		}
