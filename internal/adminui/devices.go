@@ -137,6 +137,9 @@ type deviceForm struct {
 	// Seen is the device.SettingsState of the settings stored when the page
 	// was made, which the form posts back.
 	Seen string
+	// Problem says why the stored profile or palette is ignored, as
+	// device.OverrideProblem does, or is "".
+	Problem string
 }
 
 // deviceDetail is a device as its own page shows it.
@@ -622,7 +625,17 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		form = &stored
 	}
 	form.Profiles = profileOptions(dev.FwModel, form.Profile)
-	form.PaletteModel, form.Palettes = paletteChoices(dev.FwModel, form.Profile, form.Palette)
+	// A stored palette the model no longer takes is listed while the form
+	// has the stored profile and palette, so saving the form leaves it as
+	// it is, as it leaves a stored profile the registry lacks.
+	keep := ""
+	if form.Profile == dev.ProfileOverride && form.Palette == dev.PaletteOverride {
+		keep = dev.PaletteOverride
+	}
+	form.PaletteModel, form.Palettes = paletteChoices(dev.FwModel, form.Profile, form.Palette, keep)
+	if problem := device.OverrideProblem(dev, dev.FwModel); problem != "" {
+		form.Problem = capitalize(problem) + "."
+	}
 	if form.Palettes[0].Selected {
 		// The list does not have the palette, so the form would post the
 		// default.
@@ -787,8 +800,9 @@ func profileOptions(fwModel, selected string) []profileOption {
 // paletteChoices lists the palettes a device with the firmware model and
 // the profile takes, after the model's default, and names that model. It is
 // the model device.Update checks a palette against. A selected palette the
-// model does not take is not listed, which leaves the default selected.
-func paletteChoices(fwModel, override, selected string) (string, []paletteOption) {
+// model does not take is not listed, which leaves the default selected,
+// unless it is keep, the stored one, which is listed as what it is.
+func paletteChoices(fwModel, override, selected, keep string) (string, []paletteOption) {
 	p := profile.Resolve(fwModel, nil, nil, profile.Override{Model: override})
 	model := "an unknown model"
 	if p.Model != "" {
@@ -799,9 +813,13 @@ func paletteChoices(fwModel, override, selected string) (string, []paletteOption
 		def += ": " + paletteLabel(p.DefaultPalette)
 	}
 	opts := make([]paletteOption, 0, len(p.Palettes)+1)
-	opts = append(opts, paletteOption{Label: def, Selected: !slices.Contains(p.Palettes, selected)})
+	kept := keep != "" && keep == selected && !slices.Contains(p.Palettes, keep)
+	opts = append(opts, paletteOption{Label: def, Selected: !kept && !slices.Contains(p.Palettes, selected)})
 	for _, id := range p.Palettes {
 		opts = append(opts, paletteOption{ID: id, Label: paletteLabel(id), Selected: id == selected})
+	}
+	if kept {
+		opts = append(opts, paletteOption{ID: keep, Label: paletteLabel(keep) + " (not a palette of this model)", Selected: true})
 	}
 	return model, opts
 }

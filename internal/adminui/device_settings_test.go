@@ -272,7 +272,6 @@ func TestDeviceSettingsStaleAfterRefusal(t *testing.T) {
 	}{
 		{"name too long", url.Values{"name": {strings.Repeat("n", 65)}}},
 		{"pin that is not a version", url.Values{"name": {"Hall"}, "fw_pin": {"latest"}}},
-		{"profile that is not a model", url.Values{"name": {"Hall"}, "profile": {"nope"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -313,5 +312,67 @@ func TestDeviceSettingsStalePin(t *testing.T) {
 		if got := settingsChangedText(&deviceForm{Name: "Kitchen", Pin: tc.pin}, &stored); got != tc.want {
 			t.Errorf("pin %q: %q, want %q", tc.pin, got, tc.want)
 		}
+	}
+}
+
+// TestDeviceStoredOverrideIgnored checks that a stored profile or palette
+// that no longer applies is said to be ignored, is still what the form
+// posts, and does not block a save of the other settings.
+func TestDeviceStoredOverrideIgnored(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// profile and palette are stored without a check, as after the
+		// registry dropped a model or the device reported another one.
+		profile, palette string
+		want             []string
+	}{
+		{
+			name: "profile the registry lacks", profile: "gone_model",
+			want: []string{
+				`<p class="note" id="profile-problem">Profile &#34;gone_model&#34; is not a model in the registry. A setting that does not apply is ignored until it is changed below.</p>`,
+				`<option value="gone_model" selected>gone_model</option>`, "These are the palettes of TRMNL OG (2-bit) (og_plus).",
+			},
+		},
+		{
+			name: "palette the model does not take", palette: "color-4bwry",
+			want: []string{
+				`Palette &#34;color-4bwry&#34; is not one of og_plus&#39;s palettes. A setting that does not apply is ignored until it is changed below.`,
+				`<option value="color-4bwry" selected>Color (4 colors: black, red, white, yellow) (not a palette of this model)</option>`,
+				`<option value="">Model&#39;s default: Black &amp; White (1-bit)</option>`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tu := newProfileUI(t)
+			err := tu.db.Write.UpdateDeviceSettings(t.Context(), db.UpdateDeviceSettingsParams{Name: "Kitchen", ProfileOverride: tc.profile, PaletteOverride: tc.palette, ID: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := tu.signIn(t)
+			body := tu.get(t, c, "/devices/ABC123").Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("page lacks %q:\n%s", want, body)
+				}
+			}
+			// A rename that posts the stored profile and palette back, as
+			// the page's form does, saves and leaves them as they are.
+			form := withState(t, tu, url.Values{"name": {"Hall"}, "profile": {tc.profile}, "palette": {tc.palette}})
+			if w := tu.post(t, c, "/devices/ABC123", form); w.Code != http.StatusSeeOther {
+				t.Fatalf("rename: status %d: %s", w.Code, w.Body)
+			}
+			if dev := testDevice(t, tu); dev.Name != "Hall" || dev.ProfileOverride != tc.profile || dev.PaletteOverride != tc.palette {
+				t.Errorf("after the rename: %+v", dev)
+			}
+			// Choosing what the device reports and the default clears it.
+			if w := tu.post(t, c, "/devices/ABC123", withState(t, tu, url.Values{"name": {"Hall"}})); w.Code != http.StatusSeeOther {
+				t.Fatalf("clear: status %d: %s", w.Code, w.Body)
+			}
+			if body := tu.get(t, c, "/devices/ABC123").Body.String(); strings.Contains(body, "profile-problem") {
+				t.Errorf("the page still flags an override after it was cleared:\n%s", body)
+			}
+		})
 	}
 }
