@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
@@ -51,10 +52,39 @@ type recipeInstanceView struct {
 	Palette string
 	// Playlists are the playlists that show the instance.
 	Playlists []linkView
+	// Render is how the instance's builds stand.
+	Render renderView
 	// EditHref is the page that edits the instance.
 	EditHref string
 	// DeleteHref is the page that asks to remove the instance.
 	DeleteHref string
+}
+
+// renderView is how an instance's builds stand: when the latest good one
+// finished, and why one failed.
+type renderView struct {
+	// Rendered is when the latest good build of any of the instance's
+	// render targets finished, with how long ago. Its ISO is "" when none
+	// has, as for an instance no device shows.
+	Rendered timeView
+	// Error is why a build failed: the error of the most recently built
+	// render target whose latest build failed, or "" when no target's did.
+	// Another target may have been built since, so it is not always the
+	// latest build's. The scheduler stored it with field values taken out
+	// and the URLs in trmnlp's lines cut to scheme and host. It is shown as
+	// text.
+	Error string
+}
+
+// renderViewOf returns the view of an instance's render status as
+// ListInstanceRenderStatus and GetInstanceRenderStatus give it, with how
+// long before now the render was.
+func (s *Server) renderViewOf(lastRenderedAt int64, lastError string, now time.Time) renderView {
+	v := renderView{Error: lastError}
+	if lastRenderedAt != 0 {
+		v.Rendered = s.timeAt(lastRenderedAt, now, true)
+	}
+	return v
 }
 
 // recipeView is a recipe as the list shows it.
@@ -85,8 +115,8 @@ func sourceText(source string) (shown, title string) {
 }
 
 // recipeViews describes every recipe with its instances and the playlists
-// that show them, from three list queries however many there are, read in
-// one snapshot.
+// that show them and how their builds stand, from four list queries
+// however many there are, read in one snapshot.
 func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 	// One snapshot, so every instance's recipe and every playlist link's
 	// instance is among the rows read.
@@ -94,6 +124,7 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 		recipes     []db.Recipe
 		insts       []db.ListInstancesRow
 		inPlaylists []db.ListInstancePlaylistsRow
+		statuses    []db.ListInstanceRenderStatusRow
 	)
 	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
 		var err error
@@ -105,6 +136,9 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 		}
 		if inPlaylists, err = q.ListInstancePlaylists(ctx); err != nil {
 			return fmt.Errorf("list instance playlists: %w", err)
+		}
+		if statuses, err = q.ListInstanceRenderStatus(ctx); err != nil {
+			return fmt.Errorf("list render status: %w", err)
 		}
 		return nil
 	})
@@ -127,11 +161,17 @@ func (s *Server) recipeViews(ctx context.Context) ([]recipeView, error) {
 	for _, p := range inPlaylists {
 		shown[p.InstanceID] = append(shown[p.InstanceID], playlistLink(p.PlaylistID, p.PlaylistName))
 	}
+	// An instance with no render rows has no status, which is the zero one.
+	renders := make(map[int64]renderView, len(statuses))
+	now := s.now()
+	for i := range statuses {
+		renders[statuses[i].InstanceID] = s.renderViewOf(statuses[i].LastRenderedAt, statuses[i].LastError, now)
+	}
 	for i := range insts {
 		inst := &insts[i].PluginInstance
 		// The snapshot has the recipe of every instance in it.
 		rv := byID[inst.RecipeID]
-		v := recipeInstanceView{ID: inst.ID, Name: inst.Name, Palette: devicePalette, Playlists: shown[inst.ID], EditHref: instanceHref(inst.ID), DeleteHref: instanceHref(inst.ID) + "/delete"}
+		v := recipeInstanceView{ID: inst.ID, Name: inst.Name, Palette: devicePalette, Playlists: shown[inst.ID], Render: renders[inst.ID], EditHref: instanceHref(inst.ID), DeleteHref: instanceHref(inst.ID) + "/delete"}
 		if inst.Palette != "" {
 			// A palette the registry no longer has shows as its ID.
 			p, _ := profile.PaletteByID(inst.Palette)

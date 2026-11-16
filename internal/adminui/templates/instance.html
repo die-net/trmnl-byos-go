@@ -3,7 +3,12 @@
 <div class="page-head">
 <h1>{{.Heading}}</h1>
 </div>{{end}}
-{{define "content"}}{{with .InstanceEdit}}{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
+{{define "content"}}{{with .InstanceEdit}}<section class="panel form-panel" aria-labelledby="render-title">
+<h2 id="render-title">Rendering</h2>
+<p class="rel render-when">{{template "rendered" .Render}}</p>
+{{if .Render.Error}}<p class="error">A build failed: {{.Render.Error}}</p>
+{{end}}</section>
+{{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
 <section class="panel form-panel" aria-labelledby="edit-title">
 <h2 id="edit-title">Edit instance</h2>
 <form method="post" action="{{.Action}}">

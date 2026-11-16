@@ -1,1 +1,2 @@
 {{define "time"}}{{if .ISO}}<time datetime="{{.ISO}}" data-local="{{.Kind}}">{{.Text}}</time>{{else}}{{.Text}}{{end}}{{end}}
+{{define "rendered"}}{{if .Rendered.ISO}}Last rendered {{template "time" .Rendered}} ({{.Rendered.Rel}}){{else}}Not rendered yet{{end}}{{end}}

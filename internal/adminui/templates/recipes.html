@@ -20,7 +20,9 @@
 <span class="item-name">{{.Name}}</span>
 <span class="rel">{{.Palette}}</span>
 {{if .Playlists}}<span class="rel">In {{range $i, $p := .Playlists}}{{if $i}}, {{end}}<a href="{{$p.Href}}">{{$p.Name}}</a>{{end}}</span>{{end}}
-</div>
+<span class="rel">{{template "rendered" .Render}}</span>
+{{if .Render.Error}}<span class="item-error">A build failed: {{.Render.Error}}</span>
+{{end}}</div>
 <div class="item-actions">
 <a class="btn btn-secondary" href="{{.EditHref}}" aria-label="Edit {{.Name}}">Edit</a>
 {{if not .Playlists}}<a class="btn btn-secondary btn-danger" href="{{.DeleteHref}}" aria-label="Remove {{.Name}}">Remove</a>

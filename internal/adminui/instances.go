@@ -18,6 +18,8 @@ type instanceEdit struct {
 	Name string
 	// Back is the recipes list at the instance's recipe.
 	Back string
+	// Render is how the instance's builds stand.
+	Render renderView
 	instanceFormView
 }
 
@@ -35,11 +37,13 @@ type instanceState struct {
 	marks       []string
 	// state is the recipe.InstanceState of inst, which the form sends back.
 	state string
+	// render is the instance's render status.
+	render db.GetInstanceRenderStatusRow
 }
 
 // loadInstance reads what the pages of the instance the path names show. The
-// instance and its recipe are read in one snapshot, and either one gone gets
-// the not-found page. It reads the recipe's settings file, so it is not
+// instance, its recipe and its render status are read in one snapshot, and
+// the instance or recipe gone gets the not-found page. It reads the recipe's settings file, so it is not
 // called inside a transaction.
 func (s *Server) loadInstance(w http.ResponseWriter, r *http.Request) (*instanceState, bool) {
 	id, ok := idFromPath(r)
@@ -56,6 +60,9 @@ func (s *Server) loadInstance(w http.ResponseWriter, r *http.Request) (*instance
 		}
 		if st.rec, err = q.GetRecipe(ctx, st.inst.RecipeID); err != nil {
 			return fmt.Errorf("get recipe: %w", err)
+		}
+		if st.render, err = q.GetInstanceRenderStatus(ctx, id); err != nil {
+			return fmt.Errorf("get render status: %w", err)
 		}
 		return nil
 	})
@@ -119,7 +126,10 @@ func (s *Server) renderInstance(w http.ResponseWriter, r *http.Request, status i
 	}
 	s.render(w, r, status, "instance", &pageData{
 		Nav: "recipes", Heading: st.inst.Name, Error: top,
-		InstanceEdit: &instanceEdit{Name: st.inst.Name, Back: "/recipes#recipe-" + strconv.FormatInt(st.inst.RecipeID, 10), instanceFormView: v},
+		InstanceEdit: &instanceEdit{
+			Name: st.inst.Name, Back: "/recipes#recipe-" + strconv.FormatInt(st.inst.RecipeID, 10),
+			Render: s.renderViewOf(st.render.LastRenderedAt, st.render.LastError, s.now()), instanceFormView: v,
+		},
 	})
 }
 
