@@ -30,13 +30,15 @@ type deviceJSON struct {
 	UpdatesEnabled bool `json:"updates_enabled"`
 	// FWPin is the firmware version the device stays on, or "" for none.
 	FWPin string `json:"fw_pin"`
+	// Blocked is whether the device's MAC is on the blocklist.
+	Blocked bool `json:"blocked"`
 }
 
-func newDevice(d *db.Device, lastSeen *int64, battery *float64, rssi, wakeMs *int64, source *string) deviceJSON {
+func newDevice(d *db.Device, lastSeen *int64, battery *float64, rssi, wakeMs *int64, source *string, blocked int64) deviceJSON {
 	return deviceJSON{
 		ID: d.FriendlyID, MAC: d.Mac, Name: d.Name, Model: d.FwModel, Firmware: d.FwVersion, CreatedAt: d.CreatedAt,
 		LastSeen: lastSeen, BatteryV: battery, RSSI: rssi, WakeTimeMs: wakeMs, UpdateSource: source,
-		UpdatesEnabled: d.UpdatesEnabled != 0, FWPin: d.FwPin,
+		UpdatesEnabled: d.UpdatesEnabled != 0, FWPin: d.FwPin, Blocked: blocked != 0,
 	}
 }
 
@@ -48,7 +50,7 @@ func (s *Server) listDevices(_ http.ResponseWriter, r *http.Request) ([]deviceJS
 	out := make([]deviceJSON, 0, len(rows))
 	for i := range rows {
 		x := &rows[i]
-		out = append(out, newDevice(&x.Device, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource))
+		out = append(out, newDevice(&x.Device, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource, x.Blocked))
 	}
 	return out, nil
 }
@@ -80,7 +82,7 @@ func deviceStatus(ctx context.Context, q *db.Queries, id int64) (deviceJSON, err
 	if err != nil {
 		return deviceJSON{}, fmt.Errorf("get device status: %w", err)
 	}
-	return newDevice(&x.Device, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource), nil
+	return newDevice(&x.Device, x.LastSeen, x.BatteryV, x.Rssi, x.WakeTimeMs, x.UpdateSource, x.Blocked), nil
 }
 
 // calibrateRequest is the body of a calibrate request. A field left out

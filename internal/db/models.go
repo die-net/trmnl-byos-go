@@ -20,6 +20,11 @@ type ApiToken struct {
 	LastUsedAt int64  `json:"last_used_at"`
 }
 
+type BlockedMac struct {
+	Mac       string `json:"mac"`
+	BlockedAt int64  `json:"blocked_at"`
+}
+
 type Device struct {
 	ID                  int64  `json:"id"`
 	Mac                 string `json:"mac"`
@@ -62,6 +67,11 @@ type DeviceState struct {
 	LastImage           string   `json:"last_image"`
 	Width               *int64   `json:"width"`
 	Height              *int64   `json:"height"`
+}
+
+type DeviceTombstone struct {
+	Mac       string `json:"mac"`
+	DeletedAt int64  `json:"deleted_at"`
 }
 
 type Firmware struct {

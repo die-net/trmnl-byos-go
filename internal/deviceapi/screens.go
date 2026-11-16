@@ -28,6 +28,26 @@ func (s *Server) tooLarge(sp screen.Profile, size, limit int64) (string, error) 
 	})
 }
 
+// blockedRefresh is how long a blocked device sleeps, in seconds: a day, so
+// it costs one request a day and still notices an unblock.
+const blockedRefresh = 24 * 3600
+
+// blockedScreen renders the screen a blocked MAC gets, from /api/display
+// when display is true and from /api/setup otherwise. The text is constant
+// for a MAC, so the image name is too, and the device does not repaint.
+func (s *Server) blockedScreen(sp screen.Profile, mac string, display bool) (string, error) {
+	retry := "This display tries again every 5 minutes."
+	if display {
+		retry = "This display checks again once a day."
+	}
+	return s.screen(sp, []screen.Line{
+		{Text: "Blocked", Size: 44, Bold: true},
+		{Text: "This device is blocked by its server.", Size: 22},
+		{Text: mac, Size: 28},
+		{Text: retry, Size: 18},
+	})
+}
+
 // screenProfile is what system screens are drawn for on a device: its size
 // and its richest gray palette, with the palette's measured light if known.
 func screenProfile(p profile.Profile) screen.Profile {

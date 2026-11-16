@@ -84,6 +84,28 @@ CREATE TABLE IF NOT EXISTS device_log (
 
 CREATE INDEX IF NOT EXISTS device_log_device ON device_log (device_id, id);
 
+-- device_tombstone is the MAC of a deleted device, kept until that MAC
+-- completes a new setup. The device still holds the key it had, and a
+-- request from it with that key gets reset_firmware, which sends it back
+-- through setup. Without the tombstone its MAC would be unknown, and an
+-- unknown MAC is never reset, so the device would poll forever. A MAC is
+-- never both a device and a tombstone.
+CREATE TABLE IF NOT EXISTS device_tombstone (
+  mac TEXT PRIMARY KEY,
+  deleted_at INTEGER NOT NULL
+);
+
+-- blocked_mac is a MAC the server refuses, registered or not. A blocked
+-- MAC gets a screen saying so from /api/display and /api/setup, even while
+-- the join window is open, and is never reset. A registered device keeps
+-- its row while blocked, but its key is refused and nothing is rendered
+-- for it, so an unblock gives it back as it was. A block is by MAC, so it
+-- outlives the device row, and it wins over a tombstone.
+CREATE TABLE IF NOT EXISTS blocked_mac (
+  mac TEXT PRIMARY KEY,
+  blocked_at INTEGER NOT NULL
+);
+
 -- setting holds server-wide values, such as the join window.
 CREATE TABLE IF NOT EXISTS setting (
   key TEXT PRIMARY KEY,

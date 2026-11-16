@@ -181,6 +181,7 @@ SELECT device.id AS device_id, device.fw_model, device_state.width, device_state
 FROM device_state
 JOIN device ON device.id = device_state.device_id
 LEFT JOIN device_cursor ON device_cursor.device_id = device.id
+WHERE NOT EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac)
 `
 
 type ListDeviceWakesRow struct {
@@ -194,9 +195,9 @@ type ListDeviceWakesRow struct {
 	ItemStartedAt       *int64 `json:"item_started_at"`
 }
 
-// What the scheduler needs to know about each device that has woken: its
-// size, when it last woke and how long it was told to sleep, and its
-// playlist cursor.
+// What the scheduler needs to know about each device that has woken and is
+// not blocked: its size, when it last woke and how long it was told to
+// sleep, and its playlist cursor.
 func (q *Queries) ListDeviceWakes(ctx context.Context) ([]ListDeviceWakesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDeviceWakes)
 	if err != nil {
@@ -348,6 +349,7 @@ JOIN plugin_instance ON plugin_instance.id = playlist_slot.instance_id
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
 LEFT JOIN instance_data ON instance_data.instance_id = plugin_instance.id
 WHERE playlist_item.hidden = 0
+  AND NOT EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac)
 `
 
 type ListRenderTargetsRow struct {
@@ -364,8 +366,9 @@ type ListRenderTargetsRow struct {
 	SettingsAt      int64  `json:"settings_at"`
 }
 
-// Every instance in a visible item of a playlist linked to a device, with what the device
-// reported about itself, from which its render size and palette follow.
+// Every instance in a visible item of a playlist linked to a device that is
+// not blocked, with what the device reported about itself, from which its
+// render size and palette follow.
 // A recipe's device_id is the device the render is for, which the caller
 // drops for a recipe whose renders every device shares. data_at is when
 // the instance's pushed data last changed, 0 if it has none. settings_at is

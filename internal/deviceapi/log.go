@@ -27,16 +27,21 @@ type logEntry struct {
 func (s *Server) log(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	debugRequest(r)
-	dev, ok, err := s.authenticate(ctx, r)
+	c, err := s.identify(ctx, r)
 	if err != nil {
 		slog.Error("log: authenticate", "err", err)
 		http.Error(w, "lookup failed", http.StatusInternalServerError)
 		return
 	}
-	if !ok {
+	if c.blocked() {
+		http.Error(w, "device is blocked", http.StatusForbidden)
+		return
+	}
+	if !c.ok {
 		http.Error(w, "unknown device or bad token", http.StatusUnauthorized)
 		return
 	}
+	dev := c.dev
 	var body struct {
 		Logs []json.RawMessage `json:"logs"`
 	}

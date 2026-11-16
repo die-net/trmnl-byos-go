@@ -179,7 +179,8 @@ func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDevic
 }
 
 const getDeviceStatus = `-- name: GetDeviceStatus :one
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 WHERE device.id = ?
@@ -196,6 +197,7 @@ type GetDeviceStatusRow struct {
 	LastImage           *string  `json:"last_image"`
 	Width               *int64   `json:"width"`
 	Height              *int64   `json:"height"`
+	Blocked             int64    `json:"blocked"`
 }
 
 func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatusRow, error) {
@@ -223,6 +225,7 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 		&i.LastImage,
 		&i.Width,
 		&i.Height,
+		&i.Blocked,
 	)
 	return i, err
 }
@@ -262,7 +265,8 @@ func (q *Queries) ListDeviceNames(ctx context.Context) ([]ListDeviceNamesRow, er
 }
 
 const listDeviceStatus = `-- name: ListDeviceStatus :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+  EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
 ORDER BY device.name, device.id
@@ -279,6 +283,7 @@ type ListDeviceStatusRow struct {
 	LastImage           *string  `json:"last_image"`
 	Width               *int64   `json:"width"`
 	Height              *int64   `json:"height"`
+	Blocked             int64    `json:"blocked"`
 }
 
 func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, error) {
@@ -312,6 +317,7 @@ func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, 
 			&i.LastImage,
 			&i.Width,
 			&i.Height,
+			&i.Blocked,
 		); err != nil {
 			return nil, err
 		}

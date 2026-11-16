@@ -37,7 +37,9 @@ go build -o trmnl-byos ./cmd/trmnl-byos
 ./trmnl-byos join -data data -for 10m
 ```
 
-The join window admits devices until it closes. A device that tries while it is closed shows "Not registered" with its MAC and tries again every 5 minutes. A device that lost its credentials, after a Wi-Fi reset for example, needs the window open again to re-pair. It keeps its friendly ID. `./trmnl-byos devices -data data` lists registered devices with their battery, signal and wake time. `serve -debug` logs each device request's headers, without its token.
+The join window admits devices until it closes. A device that tries while it is closed shows "Not registered" with its MAC and tries again every 5 minutes. A device that lost its credentials, after a Wi-Fi reset for example, needs the window open again to re-pair. It keeps its friendly ID. `./trmnl-byos device list -data data` lists registered devices with their battery, signal and wake time. `serve -debug` logs each device request's headers, without its token.
+
+`device delete ABC123` (a friendly ID or a MAC) removes a device with its state and renders. Its next request resets it into setup, where it needs the join window to re-pair. `device block ABC123` blocks a MAC, registered or not, and keeps the device's row. A blocked device shows a "Blocked" screen and sleeps a day between requests. `device unblock` lifts the block, and `device blocked` lists the blocked MACs. The admin API has `DELETE /api/v1/devices/{id}`, `GET /api/v1/blocklist`, and `PUT` and `DELETE /api/v1/blocklist/{id}`, where `{id}` is a MAC or a friendly ID. `GET /api/v1/devices` shows `blocked` for each device.
 
 A device with nothing scheduled shows a "Connected" screen with its friendly ID and a row of gray swatches. A panel in its gray mode shows each swatch as a different shade.
 
@@ -78,7 +80,7 @@ With one running, `TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker .
 
 ## Firmware updates
 
-A device installs firmware only when you ask. Only add a build made for the device's exact firmware model, the `Model` header it sends (`firmware list` and `devices` show it). The firmware does not check the board it installs onto, so a build for another board on the same chip installs and can leave the device needing a USB cable. The server checks the chip and the file's structure, not the board.
+A device installs firmware only when you ask. Only add a build made for the device's exact firmware model, the `Model` header it sends (`firmware list` and `device list` show it). The firmware does not check the board it installs onto, so a build for another board on the same chip installs and can leave the device needing a USB cable. The server checks the chip and the file's structure, not the board.
 
 ```
 trmnl-byos firmware add -model xiao_epaper_display -version 1.8.19 FW1.8.19.bin

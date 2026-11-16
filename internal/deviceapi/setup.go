@@ -41,11 +41,28 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	// alone must not be enough to take over a device.
 	key := rand.Text()
 	var dev db.Device
-	registered := false
+	registered, blocked := false, false
 	err := s.db.InTx(ctx, func(q *db.Queries) error {
+		registered, blocked = false, false
+		// A blocked MAC is refused even while the join window is open.
+		standing, err := q.GetMACStanding(ctx, mac)
+		if err != nil {
+			return fmt.Errorf("get mac standing: %w", err)
+		}
+		if standing.Blocked != 0 {
+			blocked = true
+			return nil
+		}
 		until, err := device.JoinUntil(ctx, q)
 		if err != nil || !now.Before(until) {
 			return err
+		}
+		// A deleted device's MAC registers as a new device, and its
+		// tombstone goes, since there is no old key left to reset.
+		if standing.Deleted != 0 {
+			if err := q.DeleteDeviceTombstone(ctx, mac); err != nil {
+				return fmt.Errorf("delete tombstone: %w", err)
+			}
 		}
 		dev, err = q.GetDeviceByMAC(ctx, mac)
 		switch {
@@ -70,9 +87,17 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !registered {
-		slog.Info("setup refused: join window closed", "mac", mac)
 		resp := setupResponse{Status: statusSetupUnknown, Message: "MAC not registered"}
+		if blocked {
+			slog.Info("setup refused: MAC blocked", "mac", mac)
+			resp.Message = "MAC blocked"
+		} else {
+			slog.Info("setup refused: join window closed", "mac", mac)
+		}
 		name, err := systemScreen(r, func(sp screen.Profile) (string, error) {
+			if blocked {
+				return s.blockedScreen(sp, mac, false)
+			}
 			return s.screen(sp, []screen.Line{
 				{Text: "Not registered", Size: 44, Bold: true},
 				{Text: mac, Size: 28},
