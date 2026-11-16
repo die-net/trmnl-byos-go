@@ -1,14 +1,18 @@
 package deviceapi
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 	_ "time/tzdata" // So the zones the tests name load on any host.
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
+	"github.com/die-net/trmnl-byos-go/internal/firmware"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
 	"github.com/die-net/trmnl-byos-go/internal/screen"
@@ -325,34 +329,126 @@ func TestDisplaySpecialFunction(t *testing.T) {
 	}
 	kept("restart_playlist", m)
 
-	// The configured function is what true asks for, and is sent on every
-	// normal answer, in the same answer to a name that asks for another.
+	// The configured function is sent on every answer, and a normal answer
+	// is what the device saves it from, so true asks for it from then on.
 	configured := "identify"
 	ts.setDevice(t, device.Change{SpecialFunction: &configured})
-	if got := ask("true"); got["action"] != "identify" || got["special_function"] != "identify" {
-		t.Errorf("true with identify configured: %v", got)
-	}
 	if got := ask("add_wifi"); got["action"] != "add_wifi" || got["special_function"] != "identify" {
 		t.Errorf("add_wifi with identify configured: %v", got)
 	}
 	if got := ts.getJSON(t, "/api/display", timer); got["special_function"] != "identify" || got["action"] != nil {
 		t.Errorf("normal answer with identify configured: %v", got)
 	}
-	// With none configured since the device saved a function, true is that
-	// saved function, which draws nothing for an answer without its action.
-	// So it is a timer wake: the cursor stays, and the device keeps its
-	// interval.
+	if got := ask("true"); got["action"] != "identify" || got["special_function"] != "identify" {
+		t.Errorf("true after a normal answer sent identify: %v", got)
+	}
+}
+
+// TestDisplaySpecialFunctionSaved checks that true is answered with the
+// function the device saved from its last normal answer, not one configured
+// since, which the firmware has not seen: with its action, the interval the
+// device stored, the cursor where it was and the last image kept. Once a
+// normal answer sends the new function, true asks for that. With none
+// recorded as sent, true runs a function the server does not know, so it is
+// answered as a timer wake.
+func TestDisplaySpecialFunctionSaved(t *testing.T) {
+	t.Parallel()
+	for _, since := range []string{"sleep", "restart_playlist", "identify", "add_wifi", "none"} {
+		t.Run(since, func(t *testing.T) {
+			t.Parallel()
+			ts := newTestServer(t)
+			ts.now = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+			b := ts.buttonDevice(t)
+			ts.cursorAt(t, b, 1)
+			timer := displayHeaders(testMAC, b.key)
+			timer["Update-Source"] = "timer"
+			if m := ts.getJSON(t, "/api/display", timer); m["special_function"] != "rewind" || m["refresh_rate"] != float64(540) {
+				t.Fatalf("normal answer: %v; want rewind and 540 s", m)
+			}
+			ts.setDevice(t, device.Change{SpecialFunction: &since})
+			double := displayHeaders(testMAC, b.key)
+			double["special_function"] = "true"
+			unchanged := func(what string, m map[string]any) {
+				t.Helper()
+				if m["refresh_rate"] != float64(540) || ts.lastRate(t, b) != 540 {
+					t.Errorf("%s: refresh %v, recorded %v; want the 540 s the device keeps", what, m["refresh_rate"], ts.lastRate(t, b))
+				}
+				if i, started := ts.cursor(t, b); i != 1 || started != ts.now.Add(-time.Minute).Unix() {
+					t.Errorf("%s moved the cursor to item %d started %d", what, i, started)
+				}
+			}
+
+			m := ts.getJSON(t, "/api/display", double)
+			if m["action"] != "rewind" || m["image_url"] != nil || m["special_function"] != since {
+				t.Errorf("true with %s configured since: %v; want action rewind and no image", since, m)
+			}
+			unchanged("true", m)
+			if got := ts.lastImage(t, b); got != b.images[1] {
+				t.Errorf("last image %q, want item 1's render, kept", got)
+			}
+			// The firmware saves no function from an answer to a double-click
+			// or a named function, though each carries the new one, so the
+			// next true still runs rewind.
+			for i, v := range []string{"true", "add_wifi", "true"} {
+				double["special_function"] = v
+				want := v
+				if v == "true" {
+					want = "rewind"
+				}
+				if got := ts.getJSON(t, "/api/display", double); got["action"] != want {
+					t.Errorf("wake %d, %s, with %s configured since: %v; want action %s", i, v, since, got, want)
+				}
+			}
+			double["special_function"] = "true"
+
+			// A normal answer sends the new function, which the device saves.
+			ts.getJSON(t, "/api/display", timer)
+			ts.cursorAt(t, b, 1)
+			m = ts.getJSON(t, "/api/display", double)
+			if since == "none" {
+				if m["action"] != nil || m["filename"] != b.images[1] {
+					t.Errorf("true with none sent: %v; want item 1 again, as a timer wake", m)
+				}
+				unchanged("true with none sent", m)
+			} else if m["action"] != since {
+				t.Errorf("true after a normal answer sent %s: %v", since, m)
+			}
+		})
+	}
+}
+
+// TestDisplayFirmwareOnlyAtNormalWake checks that a wake with a
+// special_function header is offered no firmware, so an update never starts
+// from a double-click or the TRMNL X menu, and that such wakes do not use up
+// the canary's offers, which the next normal wakes get.
+func TestDisplayFirmwareOnlyAtNormalWake(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t)
+	key := ts.register(t)
 	none := "none"
-	ts.setDevice(t, device.Change{SpecialFunction: &none})
-	ts.cursorAt(t, b, 0)
-	m = ask("true")
-	if m["action"] != nil || m["special_function"] != "none" || m["filename"] != b.images[0] {
-		t.Errorf("true with none configured: %v; want item 0 again, as a timer wake", m)
+	if _, err := device.Update(t.Context(), ts.db, testMAC, device.Change{UpdatesEnabled: ptr(true), SpecialFunction: &none}); err != nil {
+		t.Fatal(err)
 	}
-	if i, _ := ts.cursor(t, b); i != 0 {
-		t.Errorf("true with none configured moved the cursor to item %d", i)
+	// Records the version, and none as the function sent.
+	ts.getJSON(t, "/api/display", firmwareDisplayHeaders(key, "1.8.17"))
+	fw := ts.addFirmware(t, []byte("image"))
+	if _, err := firmware.StartRollout(t.Context(), ts.db, fw.ID, testMAC, ts.now); err != nil {
+		t.Fatal(err)
 	}
-	kept("true with none configured", m)
+	// true is answered as a timer wake, and bogus as a normal one, but the
+	// firmware runs neither as a normal wake.
+	for _, v := range []string{"true", "bogus", "identify", "guest_mode", "rewind", "true", "bogus"} {
+		h := firmwareDisplayHeaders(key, "1.8.17")
+		h["special_function"] = v
+		if m := ts.getJSON(t, "/api/display", h); m["update_firmware"] == true || m["firmware_url"] != nil {
+			t.Errorf("%s: offered firmware: %v", v, m)
+		}
+	}
+	for i := 1; i <= firmware.MaxOffers; i++ {
+		if m := ts.getJSON(t, "/api/display", firmwareDisplayHeaders(key, "1.8.17")); m["update_firmware"] != true {
+			t.Fatalf("normal wake %d: %v; want an offer", i, m)
+		}
+	}
 }
 
 // TestDisplaySpecialFunctionSleep checks the refresh_rate of the sleep
@@ -451,16 +547,34 @@ func TestDisplaySpecialFunctionBlocked(t *testing.T) {
 	}
 }
 
+// failStatus is a db.DBTX that fails every GetDeviceStatus and passes every
+// other query to the database.
+type failStatus struct{ db.DBTX }
+
+// QueryRowContext fails GetDeviceStatus by running it with a context that
+// is already canceled.
+func (f failStatus) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.HasPrefix(query, "-- name: GetDeviceStatus ") {
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		ctx = canceled
+	}
+	return f.DBTX.QueryRowContext(ctx, query, args...)
+}
+
 // TestDisplayFailedKeepsSpecialFunction checks that a failure inside
-// /api/display for a known device carries its configured special function,
-// so the firmware does not save none and turn its double-click off, and that
-// one before the device is known sends none.
+// /api/display for a known device carries the special function recorded as
+// sent, or the configured one with none recorded, so the firmware does not
+// save none and turn its double-click off, and saves what the server
+// expects. One before the device is known sends none.
 func TestDisplayFailedKeepsSpecialFunction(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		breakIt func(t *testing.T, ts *testServer)
-		want    string
+		// want is the function sent with none recorded. With rewind
+		// recorded, a known device is sent rewind.
+		want string
 	}{
 		{"render screen", func(t *testing.T, ts *testServer) {
 			if err := os.RemoveAll(ts.imagesDir); err != nil {
@@ -477,20 +591,34 @@ func TestDisplayFailedKeepsSpecialFunction(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "identify"},
+		// What the device saved is not known, so it is sent none.
+		{"get device state", func(_ *testing.T, ts *testServer) {
+			ts.db.Read = db.New(failStatus{ts.db.Reader})
+		}, "none"},
 		// The device cannot be found, so the answer is for an unknown one.
 		{"database", func(_ *testing.T, ts *testServer) { _ = ts.db.Close() }, "none"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			ts := newTestServer(t)
-			key := ts.register(t)
-			configured := "identify"
-			ts.setDevice(t, device.Change{SpecialFunction: &configured})
-			tc.breakIt(t, ts)
-			m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
-			if m["refresh_rate"] != float64(retryRefresh) || m["image_url"] != nil || m["special_function"] != tc.want {
-				t.Errorf("%v; want the failure answer with special_function %s", m, tc.want)
-			}
-		})
+		for _, recorded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s recorded %v", tc.name, recorded), func(t *testing.T) {
+				t.Parallel()
+				ts := newTestServer(t)
+				key := ts.register(t)
+				want := tc.want
+				if recorded {
+					// A normal answer records rewind, the default, as sent.
+					ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+					if want != device.FuncNone {
+						want = "rewind"
+					}
+				}
+				configured := "identify"
+				ts.setDevice(t, device.Change{SpecialFunction: &configured})
+				tc.breakIt(t, ts)
+				m := ts.getJSON(t, "/api/display", displayHeaders(testMAC, key))
+				if m["refresh_rate"] != float64(retryRefresh) || m["image_url"] != nil || m["special_function"] != want {
+					t.Errorf("%v; want the failure answer with special_function %s", m, want)
+				}
+			})
+		}
 	}
 }

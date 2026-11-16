@@ -219,7 +219,7 @@ func (q *Queries) GetDeviceCursor(ctx context.Context, deviceID int64) (GetDevic
 }
 
 const getDeviceStatus = `-- name: GetDeviceStatus :one
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device.button_command, device.special_function, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device.button_command, device.special_function, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.last_special_function_sent, s.width, s.height,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
@@ -227,17 +227,18 @@ WHERE device.id = ?
 `
 
 type GetDeviceStatusRow struct {
-	Device              Device   `json:"device"`
-	LastSeen            *int64   `json:"last_seen"`
-	BatteryV            *float64 `json:"battery_v"`
-	Rssi                *int64   `json:"rssi"`
-	WakeTimeMs          *int64   `json:"wake_time_ms"`
-	UpdateSource        *string  `json:"update_source"`
-	LastRefreshRateSent *int64   `json:"last_refresh_rate_sent"`
-	LastImage           *string  `json:"last_image"`
-	Width               *int64   `json:"width"`
-	Height              *int64   `json:"height"`
-	Blocked             int64    `json:"blocked"`
+	Device                  Device   `json:"device"`
+	LastSeen                *int64   `json:"last_seen"`
+	BatteryV                *float64 `json:"battery_v"`
+	Rssi                    *int64   `json:"rssi"`
+	WakeTimeMs              *int64   `json:"wake_time_ms"`
+	UpdateSource            *string  `json:"update_source"`
+	LastRefreshRateSent     *int64   `json:"last_refresh_rate_sent"`
+	LastImage               *string  `json:"last_image"`
+	LastSpecialFunctionSent *string  `json:"last_special_function_sent"`
+	Width                   *int64   `json:"width"`
+	Height                  *int64   `json:"height"`
+	Blocked                 int64    `json:"blocked"`
 }
 
 func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatusRow, error) {
@@ -271,6 +272,7 @@ func (q *Queries) GetDeviceStatus(ctx context.Context, id int64) (GetDeviceStatu
 		&i.UpdateSource,
 		&i.LastRefreshRateSent,
 		&i.LastImage,
+		&i.LastSpecialFunctionSent,
 		&i.Width,
 		&i.Height,
 		&i.Blocked,
@@ -313,7 +315,7 @@ func (q *Queries) ListDeviceNames(ctx context.Context) ([]ListDeviceNamesRow, er
 }
 
 const listDeviceStatus = `-- name: ListDeviceStatus :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device.button_command, device.special_function, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.width, s.height,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override, device.time_zone, device.locale, device.sleep_start, device.sleep_end, device.button_command, device.special_function, s.last_seen, s.battery_v, s.rssi, s.wake_time_ms, s.update_source, s.last_refresh_rate_sent, s.last_image, s.last_special_function_sent, s.width, s.height,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
 FROM device
 LEFT JOIN device_state s ON s.device_id = device.id
@@ -321,17 +323,18 @@ ORDER BY device.name, device.id
 `
 
 type ListDeviceStatusRow struct {
-	Device              Device   `json:"device"`
-	LastSeen            *int64   `json:"last_seen"`
-	BatteryV            *float64 `json:"battery_v"`
-	Rssi                *int64   `json:"rssi"`
-	WakeTimeMs          *int64   `json:"wake_time_ms"`
-	UpdateSource        *string  `json:"update_source"`
-	LastRefreshRateSent *int64   `json:"last_refresh_rate_sent"`
-	LastImage           *string  `json:"last_image"`
-	Width               *int64   `json:"width"`
-	Height              *int64   `json:"height"`
-	Blocked             int64    `json:"blocked"`
+	Device                  Device   `json:"device"`
+	LastSeen                *int64   `json:"last_seen"`
+	BatteryV                *float64 `json:"battery_v"`
+	Rssi                    *int64   `json:"rssi"`
+	WakeTimeMs              *int64   `json:"wake_time_ms"`
+	UpdateSource            *string  `json:"update_source"`
+	LastRefreshRateSent     *int64   `json:"last_refresh_rate_sent"`
+	LastImage               *string  `json:"last_image"`
+	LastSpecialFunctionSent *string  `json:"last_special_function_sent"`
+	Width                   *int64   `json:"width"`
+	Height                  *int64   `json:"height"`
+	Blocked                 int64    `json:"blocked"`
 }
 
 func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, error) {
@@ -371,6 +374,7 @@ func (q *Queries) ListDeviceStatus(ctx context.Context) ([]ListDeviceStatusRow, 
 			&i.UpdateSource,
 			&i.LastRefreshRateSent,
 			&i.LastImage,
+			&i.LastSpecialFunctionSent,
 			&i.Width,
 			&i.Height,
 			&i.Blocked,
@@ -494,8 +498,8 @@ func (q *Queries) UpdateDeviceSettings(ctx context.Context, arg UpdateDeviceSett
 }
 
 const upsertDeviceState = `-- name: UpsertDeviceState :exec
-INSERT INTO device_state (device_id, last_seen, battery_v, rssi, wake_time_ms, update_source, last_refresh_rate_sent, last_image, width, height)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO device_state (device_id, last_seen, battery_v, rssi, wake_time_ms, update_source, last_refresh_rate_sent, last_image, last_special_function_sent, width, height)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (device_id) DO UPDATE SET
   last_seen = excluded.last_seen,
   battery_v = excluded.battery_v,
@@ -504,25 +508,28 @@ ON CONFLICT (device_id) DO UPDATE SET
   update_source = excluded.update_source,
   last_refresh_rate_sent = excluded.last_refresh_rate_sent,
   last_image = COALESCE(NULLIF(excluded.last_image, ''), device_state.last_image),
+  last_special_function_sent = COALESCE(NULLIF(excluded.last_special_function_sent, ''), device_state.last_special_function_sent),
   width = excluded.width,
   height = excluded.height
 `
 
 type UpsertDeviceStateParams struct {
-	DeviceID            int64    `json:"device_id"`
-	LastSeen            int64    `json:"last_seen"`
-	BatteryV            *float64 `json:"battery_v"`
-	Rssi                *int64   `json:"rssi"`
-	WakeTimeMs          *int64   `json:"wake_time_ms"`
-	UpdateSource        *string  `json:"update_source"`
-	LastRefreshRateSent int64    `json:"last_refresh_rate_sent"`
-	LastImage           string   `json:"last_image"`
-	Width               *int64   `json:"width"`
-	Height              *int64   `json:"height"`
+	DeviceID                int64    `json:"device_id"`
+	LastSeen                int64    `json:"last_seen"`
+	BatteryV                *float64 `json:"battery_v"`
+	Rssi                    *int64   `json:"rssi"`
+	WakeTimeMs              *int64   `json:"wake_time_ms"`
+	UpdateSource            *string  `json:"update_source"`
+	LastRefreshRateSent     int64    `json:"last_refresh_rate_sent"`
+	LastImage               string   `json:"last_image"`
+	LastSpecialFunctionSent string   `json:"last_special_function_sent"`
+	Width                   *int64   `json:"width"`
+	Height                  *int64   `json:"height"`
 }
 
 // An empty last_image keeps the one stored, for an answer that sends the device
-// no image.
+// no image. An empty last_special_function_sent keeps the one stored, for an
+// answer the firmware does not save a special function from.
 func (q *Queries) UpsertDeviceState(ctx context.Context, arg UpsertDeviceStateParams) error {
 	_, err := q.db.ExecContext(ctx, upsertDeviceState,
 		arg.DeviceID,
@@ -533,6 +540,7 @@ func (q *Queries) UpsertDeviceState(ctx context.Context, arg UpsertDeviceStatePa
 		arg.UpdateSource,
 		arg.LastRefreshRateSent,
 		arg.LastImage,
+		arg.LastSpecialFunctionSent,
 		arg.Width,
 		arg.Height,
 	)

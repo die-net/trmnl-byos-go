@@ -65,16 +65,17 @@ type DeviceLog struct {
 }
 
 type DeviceState struct {
-	DeviceID            int64    `json:"device_id"`
-	LastSeen            int64    `json:"last_seen"`
-	BatteryV            *float64 `json:"battery_v"`
-	Rssi                *int64   `json:"rssi"`
-	WakeTimeMs          *int64   `json:"wake_time_ms"`
-	UpdateSource        *string  `json:"update_source"`
-	LastRefreshRateSent int64    `json:"last_refresh_rate_sent"`
-	LastImage           string   `json:"last_image"`
-	Width               *int64   `json:"width"`
-	Height              *int64   `json:"height"`
+	DeviceID                int64    `json:"device_id"`
+	LastSeen                int64    `json:"last_seen"`
+	BatteryV                *float64 `json:"battery_v"`
+	Rssi                    *int64   `json:"rssi"`
+	WakeTimeMs              *int64   `json:"wake_time_ms"`
+	UpdateSource            *string  `json:"update_source"`
+	LastRefreshRateSent     int64    `json:"last_refresh_rate_sent"`
+	LastImage               string   `json:"last_image"`
+	Width                   *int64   `json:"width"`
+	Height                  *int64   `json:"height"`
+	LastSpecialFunctionSent string   `json:"last_special_function_sent"`
 }
 
 type DeviceTombstone struct {

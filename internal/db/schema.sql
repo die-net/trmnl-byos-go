@@ -84,7 +84,12 @@ CREATE TABLE IF NOT EXISTS device_state (
   -- firmware reports, which renders for a model the server does not know
   -- are drawn at.
   width INTEGER,
-  height INTEGER
+  height INTEGER,
+  -- last_special_function_sent is the special_function in our last answer
+  -- to a wake that asked for no special function, which is the function the
+  -- firmware saves and runs at its next double-click. It is '' when no such
+  -- answer was recorded.
+  last_special_function_sent TEXT NOT NULL DEFAULT ''
 );
 
 -- device_cursor is where a device is in its playlist: item_id is the item it
