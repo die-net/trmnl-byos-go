@@ -7,7 +7,7 @@
 -- the instance's pushed data last changed, 0 if it has none. settings_at is
 -- when its field values last changed.
 SELECT DISTINCT plugin_instance.id AS instance_id, plugin_instance.palette, recipe.id AS recipe_id,
-  recipe.refresh_interval, device.id AS device_id, device.fw_model, device_state.width, device_state.height,
+  recipe.refresh_interval, device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
   device_state.device_id IS NOT NULL AS woken,
   CAST(COALESCE(instance_data.updated_at, 0) AS INTEGER) AS data_at,
   plugin_instance.settings_at
@@ -26,7 +26,7 @@ WHERE playlist_item.hidden = 0
 -- What the scheduler needs to know about each device that has woken and is
 -- not blocked: its size, when it last woke and how long it was told to
 -- sleep, and its playlist cursor.
-SELECT device.id AS device_id, device.fw_model, device_state.width, device_state.height,
+SELECT device.id AS device_id, device.fw_model, device.profile_override, device.palette_override, device_state.width, device_state.height,
   device_state.last_seen, device_state.last_refresh_rate_sent, device_cursor.item_id, device_cursor.item_started_at
 FROM device_state
 JOIN device ON device.id = device_state.device_id

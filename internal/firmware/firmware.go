@@ -518,36 +518,30 @@ type Policy struct {
 // SetPolicy changes the policy of the device named by its friendly ID or
 // MAC, and returns the device.
 func SetPolicy(ctx context.Context, client *db.Client, name string, p Policy) (db.Device, error) {
-	var pin string
-	if p.Pin != nil && *p.Pin != "" {
-		v, err := ParseVersion(*p.Pin)
+	c := device.Change{UpdatesEnabled: p.UpdatesEnabled}
+	if p.Pin != nil {
+		pin, err := CleanPin(*p.Pin)
 		if err != nil {
 			return db.Device{}, err
 		}
-		pin = v.String()
+		c.FwPin = &pin
 	}
-	var dev db.Device
-	err := client.InTx(ctx, func(q *db.Queries) error {
-		var err error
-		if dev, err = device.FindDevice(ctx, q, name); err != nil {
-			return err
-		}
-		if p.UpdatesEnabled != nil {
-			dev.UpdatesEnabled = 0
-			if *p.UpdatesEnabled {
-				dev.UpdatesEnabled = 1
-			}
-		}
-		if p.Pin != nil {
-			dev.FwPin = pin
-		}
-		err = q.SetDeviceFirmwarePolicy(ctx, db.SetDeviceFirmwarePolicyParams{UpdatesEnabled: dev.UpdatesEnabled, FwPin: dev.FwPin, ID: dev.ID})
-		if err != nil {
-			return fmt.Errorf("set firmware policy: %w", err)
-		}
-		return nil
-	})
-	return dev, err
+	return device.Update(ctx, client, name, c)
+}
+
+// CleanPin returns a firmware pin as it is stored, a version in its
+// canonical form, or "" for none, and an error of kind errkind.ErrInvalid
+// for one that is not a version. A caller building a device.Change with a
+// pin passes it through here.
+func CleanPin(pin string) (string, error) {
+	if pin == "" {
+		return "", nil
+	}
+	v, err := ParseVersion(pin)
+	if err != nil {
+		return "", err
+	}
+	return v.String(), nil
 }
 
 // Offer returns the build the device should be told to install, or nil.

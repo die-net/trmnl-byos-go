@@ -414,7 +414,7 @@ func (q *Queries) ListFirmwareClashes(ctx context.Context, arg ListFirmwareClash
 }
 
 const listFirmwareDevices = `-- name: ListFirmwareDevices :many
-SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin,
+SELECT device.id, device.mac, device.api_key_hash, device.friendly_id, device.name, device.fw_model, device.fw_version, device.created_at, device.screen_override, device.screen_override_until, device.updates_enabled, device.fw_pin, device.profile_override, device.palette_override,
   CAST(COALESCE(o.offers, 0) AS INTEGER) AS offers,
   CAST(COALESCE(o.last_offered_at, 0) AS INTEGER) AS last_offered_at,
   EXISTS (SELECT 1 FROM blocked_mac WHERE blocked_mac.mac = device.mac) AS blocked
@@ -460,6 +460,8 @@ func (q *Queries) ListFirmwareDevices(ctx context.Context, arg ListFirmwareDevic
 			&i.Device.ScreenOverrideUntil,
 			&i.Device.UpdatesEnabled,
 			&i.Device.FwPin,
+			&i.Device.ProfileOverride,
+			&i.Device.PaletteOverride,
 			&i.Offers,
 			&i.LastOfferedAt,
 			&i.Blocked,
@@ -507,21 +509,6 @@ type ResetFirmwareOffersParams struct {
 
 func (q *Queries) ResetFirmwareOffers(ctx context.Context, arg ResetFirmwareOffersParams) error {
 	_, err := q.db.ExecContext(ctx, resetFirmwareOffers, arg.DeviceID, arg.FirmwareID)
-	return err
-}
-
-const setDeviceFirmwarePolicy = `-- name: SetDeviceFirmwarePolicy :exec
-UPDATE device SET updates_enabled = ?, fw_pin = ? WHERE id = ?
-`
-
-type SetDeviceFirmwarePolicyParams struct {
-	UpdatesEnabled int64  `json:"updates_enabled"`
-	FwPin          string `json:"fw_pin"`
-	ID             int64  `json:"id"`
-}
-
-func (q *Queries) SetDeviceFirmwarePolicy(ctx context.Context, arg SetDeviceFirmwarePolicyParams) error {
-	_, err := q.db.ExecContext(ctx, setDeviceFirmwarePolicy, arg.UpdatesEnabled, arg.FwPin, arg.ID)
 	return err
 }
 

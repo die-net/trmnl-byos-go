@@ -1,6 +1,10 @@
 package profile
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 func ptr(v int64) *int64 { return &v }
 
@@ -27,7 +31,7 @@ func TestResolve(t *testing.T) {
 		{"unknown, no size", "", nil, nil, "", 800, 480, FallbackImageSizeLimit, 2, false},
 		{"unknown, absurd size", "mystery", ptr(100000), ptr(1), "", 800, 480, FallbackImageSizeLimit, 2, false},
 	} {
-		p := Resolve(tc.fwModel, tc.width, tc.height)
+		p := Resolve(tc.fwModel, tc.width, tc.height, Override{})
 		levels := p.GrayLevels()
 		if p.Model != tc.model || p.Width != tc.w || p.Height != tc.h || p.ImageSizeLimit != tc.limit ||
 			levels != tc.levels || (p.Light != nil) != tc.measured {
@@ -36,6 +40,57 @@ func TestResolve(t *testing.T) {
 		if tc.measured && len(p.Light) != levels {
 			t.Errorf("%s: %d light values for %d levels", tc.name, len(p.Light), levels)
 		}
+	}
+}
+
+// TestResolveOverride checks an admin's override: the model sets the size
+// and palettes, the size limit stays the firmware's unless the model's is
+// smaller, the measured light stays only for the same model, and a palette
+// override sets the default palette when the model takes it.
+func TestResolveOverride(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		fwModel  string
+		o        Override
+		model    string
+		w        int
+		limit    int64
+		def      string
+		measured bool
+	}{
+		{"4-color OG on old firmware", "og", Override{Model: "og_bwry"}, "og_bwry", 800, 90000, "color-4bwry", false},
+		{"DIY kit as an X keeps its firmware's limit", "xiao_epaper_display", Override{Model: "v2"}, "v2", 1872, 750000, "gray-16", false},
+		{"X as an OG takes the smaller limit", "x", Override{Model: "og_plus"}, "og_plus", 800, 90000, "bw", false},
+		{"no registry limit keeps the firmware's", "og", Override{Model: "byod_custom"}, "byod_custom", 800, 90000, "", false},
+		{"unknown firmware gets the fallback limit", "mystery", Override{Model: "v2"}, "v2", 1872, FallbackImageSizeLimit, "gray-16", false},
+		{"same model keeps the measured light", "xiao_epaper_display", Override{Model: "og_plus"}, "og_plus", 800, 750000, "bw", true},
+		{"palette only", "xiao_epaper_display", Override{Palette: "gray-4"}, "og_plus", 800, 750000, "gray-4", true},
+		{"palette the model lacks is ignored", "og", Override{Palette: "gray-16"}, "og_plus", 800, 90000, "bw", false},
+		{"unknown model is ignored", "og", Override{Model: "og_nope"}, "og_plus", 800, 90000, "bw", false},
+	} {
+		p := Resolve(tc.fwModel, nil, nil, tc.o)
+		def := p.DefaultPalette
+		if tc.def == "" {
+			def = ""
+		}
+		if p.Model != tc.model || p.Width != tc.w || p.ImageSizeLimit != tc.limit || def != tc.def || (p.Light != nil) != tc.measured {
+			t.Errorf("%s: %+v", tc.name, p)
+		}
+	}
+}
+
+func TestModels(t *testing.T) {
+	t.Parallel()
+	models := Models()
+	if len(models) < 10 || !slices.IsSortedFunc(models, func(a, b Model) int { return strings.Compare(a.Name, b.Name) }) {
+		t.Errorf("Models = %d models, sorted %v", len(models), slices.IsSortedFunc(models, func(a, b Model) int { return strings.Compare(a.Name, b.Name) }))
+	}
+	if m, ok := ModelByName("og_bwry"); !ok || m.Width != 800 {
+		t.Errorf("ModelByName(og_bwry) = %+v, %v", m, ok)
+	}
+	if _, ok := ModelByName(""); ok {
+		t.Error("the empty name is a model")
 	}
 }
 

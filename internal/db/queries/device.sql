@@ -9,8 +9,10 @@ SELECT * FROM device WHERE friendly_id = ?;
 -- name: SetScreenOverride :exec
 UPDATE device SET screen_override = ?, screen_override_until = ? WHERE id = ?;
 
--- name: SetDeviceName :exec
-UPDATE device SET name = ? WHERE id = ?;
+-- name: UpdateDeviceSettings :exec
+-- Writes every setting an admin changes on a device at once, so a change of
+-- several is one statement in the caller's transaction.
+UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ? WHERE id = ?;
 
 -- name: GetDevice :one
 SELECT * FROM device WHERE id = ?;

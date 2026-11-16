@@ -38,6 +38,8 @@ type Device struct {
 	ScreenOverrideUntil int64  `json:"screen_override_until"`
 	UpdatesEnabled      int64  `json:"updates_enabled"`
 	FwPin               string `json:"fw_pin"`
+	ProfileOverride     string `json:"profile_override"`
+	PaletteOverride     string `json:"palette_override"`
 }
 
 type DeviceCursor struct {

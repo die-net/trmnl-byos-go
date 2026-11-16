@@ -303,7 +303,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 	byTarget := make(map[target]*candidate, len(rows))
 	for i := range rows {
 		r := &rows[i]
-		t := s.newTarget(r.InstanceID, r.RecipeID, r.DeviceID, r.FwModel, r.Width, r.Height, r.Palette, r.RefreshInterval)
+		t := s.newTarget(r.InstanceID, r.RecipeID, r.DeviceID, r.FwModel, profile.Override{Model: r.ProfileOverride, Palette: r.PaletteOverride}, r.Width, r.Height, r.Palette, r.RefreshInterval)
 		c := byTarget[t]
 		if c == nil {
 			c = &candidate{target: t}
@@ -352,7 +352,7 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 			continue
 		}
 		it := &groups[c][j]
-		t := s.newTarget(it.InstanceID, it.RecipeID, w.DeviceID, w.FwModel, w.Width, w.Height, it.Palette, it.RefreshInterval)
+		t := s.newTarget(it.InstanceID, it.RecipeID, w.DeviceID, w.FwModel, profile.Override{Model: w.ProfileOverride, Palette: w.PaletteOverride}, w.Width, w.Height, it.Palette, it.RefreshInterval)
 		if c := byTarget[t]; c != nil {
 			c.wanted = append(c.wanted, next)
 		}
@@ -365,12 +365,12 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 }
 
 // newTarget returns the target for an instance shown on a device of the
-// given model and size. A target that cannot be built, because its recipe
+// given model, override and size. A target that cannot be built, because its recipe
 // cannot be scanned, is returned with broken set, so that it is recorded as
 // a failed render and does not stop the others.
-func (s *Scheduler) newTarget(instance, recipeID, device int64, fwModel string, width, height *int64, palette string, refreshSeconds int64) target {
+func (s *Scheduler) newTarget(instance, recipeID, device int64, fwModel string, o profile.Override, width, height *int64, palette string, refreshSeconds int64) target {
 	t := target{instance: instance, device: device, palette: palette, refresh: time.Duration(refreshSeconds) * time.Second}
-	p := profile.Resolve(fwModel, width, height)
+	p := profile.Resolve(fwModel, width, height, o)
 	t.width, t.height, t.palette = p.Width, p.Height, p.RenderPalette(palette)
 	per, err := s.readsDevice(recipeID)
 	if err != nil {

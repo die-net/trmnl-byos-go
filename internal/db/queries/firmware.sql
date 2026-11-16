@@ -109,6 +109,3 @@ ON CONFLICT (firmware_id) DO UPDATE SET
 
 -- name: CancelFirmwareRollout :execrows
 UPDATE firmware_rollout SET state = 'canceled' WHERE firmware_id = ? AND state = 'active';
-
--- name: SetDeviceFirmwarePolicy :exec
-UPDATE device SET updates_enabled = ?, fw_pin = ? WHERE id = ?;

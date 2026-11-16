@@ -41,6 +41,8 @@ The join window admits devices until it closes. A device that tries while it is 
 
 `device delete ABC123` (a friendly ID or a MAC) removes a device with its state and renders. Its next request resets it into setup, where it needs the join window to re-pair. `device block ABC123` blocks a MAC, registered or not, and keeps the device's row. A blocked device shows a "Blocked" screen and sleeps a day between requests. `device unblock` lifts the block, and `device blocked` lists the blocked MACs. The admin API has `DELETE /api/v1/devices/{id}`, `GET /api/v1/blocklist`, and `PUT` and `DELETE /api/v1/blocklist/{id}`, where `{id}` is a MAC or a friendly ID. `GET /api/v1/devices` shows `blocked` for each device.
 
+`device set ABC123 -name Kitchen` names a device. `-profile og_bwry` tells the server what panel a device has when its firmware reports another, as a 4-color OG on firmware 1.8.10 or older reports `og`, and `-palette gray-4` picks the palette it renders with when a plugin instance asks for none. `none` clears either. The same settings are in `PATCH /api/v1/devices/{id}`.
+
 A device with nothing scheduled shows a "Connected" screen with its friendly ID and a row of gray swatches. A panel in its gray mode shows each swatch as a different shade.
 
 ```

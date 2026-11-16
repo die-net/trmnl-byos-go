@@ -56,7 +56,7 @@ func (ts *testServer) saveRender(t *testing.T, instance int64, failure string) s
 func (ts *testServer) saveDeviceRender(t *testing.T, instance, device int64, text, failure string) string {
 	t.Helper()
 	ctx := t.Context()
-	p := profile.Resolve("xiao_epaper_display", nil, nil)
+	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	params := db.SaveRenderFailureParams{
 		InstanceID: instance, DeviceID: device, Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""),
 		AttemptedAt: ts.now.Unix(), Error: failure,
@@ -333,7 +333,7 @@ func (ts *testServer) nothingScheduled(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := profile.Resolve("xiao_epaper_display", nil, nil)
+	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	name, _, err := ts.srv.screenSized(screenProfile(p), []screen.Line{
 		{Text: "Nothing scheduled now", Size: 44, Bold: true},
 		{Text: dev.FriendlyID, Size: 28},
