@@ -1085,9 +1085,9 @@ var tableNamePrefix = regexp.MustCompile(`^CREATE TABLE (IF NOT EXISTS )?("?)(\w
 // AUTOINCREMENT, as it was before step 7, in a database made from
 // schema.sql that holds no rows yet. It reads each table's SQL, because a
 // test may do that, and uses the same rebuild as step 7. It takes out the
-// tables and columns of the later steps first, with dropButtons, dropSleep,
-// dropZoneLocale, dropProfileOverride and dropBlocklist. A migration test for
-// an older version calls it first.
+// tables and columns of the later steps first, with dropRenderedSettingsAt,
+// dropButtons, dropSleep, dropZoneLocale, dropProfileOverride and
+// dropBlocklist. A migration test for an older version calls it first.
 func dropAutoincrement(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx := t.Context()
@@ -1102,7 +1102,7 @@ func dropAutoincrement(t *testing.T, db *sql.DB) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	for _, stmt := range slices.Concat(dropButtons, dropSleep, dropZoneLocale, dropProfileOverride, dropBlocklist) {
+	for _, stmt := range slices.Concat(dropRenderedSettingsAt, dropButtons, dropSleep, dropZoneLocale, dropProfileOverride, dropBlocklist) {
 		exec(stmt)
 	}
 	exec(`PRAGMA foreign_keys = OFF`)
@@ -1444,7 +1444,7 @@ func TestMigrateBlocklist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropButtons, dropSleep, dropZoneLocale, dropProfileOverride, dropBlocklist, []string{
+	for _, stmt := range slices.Concat(dropRenderedSettingsAt, dropButtons, dropSleep, dropZoneLocale, dropProfileOverride, dropBlocklist, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
 		`PRAGMA user_version = 7`,
 	}) {
@@ -1511,7 +1511,7 @@ func TestMigrateProfileOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropButtons, dropSleep, dropZoneLocale, dropProfileOverride, []string{
+	for _, stmt := range slices.Concat(dropRenderedSettingsAt, dropButtons, dropSleep, dropZoneLocale, dropProfileOverride, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
 		`PRAGMA user_version = 8`,
 	}) {
@@ -1599,7 +1599,7 @@ func TestMigrateZoneLocaleKeepsSequence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, stmt := range slices.Concat(dropButtons, dropSleep, dropZoneLocale, []string{
+			for _, stmt := range slices.Concat(dropRenderedSettingsAt, dropButtons, dropSleep, dropZoneLocale, []string{
 				`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
 				`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
 				`PRAGMA user_version = 9`,
@@ -1650,7 +1650,7 @@ func TestMigrateZoneLocale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropButtons, dropSleep, dropZoneLocale, []string{
+	for _, stmt := range slices.Concat(dropRenderedSettingsAt, dropButtons, dropSleep, dropZoneLocale, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
 		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
 		`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
@@ -1778,7 +1778,7 @@ func TestMigrateSleepWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropButtons, dropSleep, []string{
+	for _, stmt := range slices.Concat(dropRenderedSettingsAt, dropButtons, dropSleep, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
 		`PRAGMA user_version = 10`,
 	}) {
@@ -1829,7 +1829,7 @@ func TestMigrateButtons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropButtons, []string{
+	for _, stmt := range slices.Concat(dropRenderedSettingsAt, dropButtons, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
 		`INSERT INTO device_state (device_id, last_seen, last_refresh_rate_sent, last_image) VALUES (3, 5, 900, 'img')`,
 		`PRAGMA user_version = 11`,
@@ -1860,5 +1860,72 @@ func TestMigrateButtons(t *testing.T) {
 	st, err := client.Read.GetDeviceStatus(ctx, 3)
 	if err != nil || st.LastImage == nil || *st.LastImage != "img" || st.LastSpecialFunctionSent == nil || *st.LastSpecialFunctionSent != "" {
 		t.Errorf("device state after migration: %+v, %v", st, err)
+	}
+}
+
+// dropRenderedSettingsAt takes the columns of step 13 out of a database
+// made from schema.sql, so that it has the shape from before that step.
+var dropRenderedSettingsAt = []string{
+	`ALTER TABLE render DROP COLUMN rendered_settings_at`,
+	`ALTER TABLE render DROP COLUMN failed_settings_at`,
+	`ALTER TABLE render DROP COLUMN failed_error`,
+}
+
+// TestMigrateRenderedSettingsAt checks step 13: a database at version 12
+// gets render.rendered_settings_at, which is the settings_at of a render
+// with images and 0 for one that never had any, and failed_settings_at and
+// failed_error, which are the settings_at and error of a render whose builds
+// failed since its last good one, and ends with the shape of schema.sql.
+func TestMigrateRenderedSettingsAt(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	want := shapeOf(t, openTest(t).Writer)
+
+	path := filepath.Join(t.TempDir(), "v12.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range slices.Concat(dropRenderedSettingsAt, []string{
+		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
+		`INSERT INTO plugin_instance (id, recipe_id, name, field_values, palette, created_at) VALUES (1, 1, 'i', '{}', '', 1)`,
+		`INSERT INTO render (id, instance_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, settings_at) VALUES (1, 1, 800, 480, 'bw', 'UTC', 'en', 5, 5, 1, 7)`,
+		`INSERT INTO render (id, instance_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, settings_at, failures) VALUES (2, 1, 400, 300, 'bw', 'UTC', 'en', 0, 5, 1, 'boom', 9, 2)`,
+		`INSERT INTO render (id, instance_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, settings_at, failures) VALUES (3, 1, 200, 100, 'bw', 'UTC', 'en', 4, 5, 1, 'busy', 8, 0)`,
+		`PRAGMA user_version = 12`,
+	}) {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if v := userVersion(t, client.Writer); v != len(steps) || v < 13 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, tc := range []struct {
+		id, rendered, failed int64
+		failedError          string
+	}{
+		{1, 7, 0, ""},     // Its images were made from the settings it read.
+		{2, 0, 9, "boom"}, // It never had images, and its builds failed.
+		{3, 8, 0, ""},     // Its last build failed, but it did not count.
+	} {
+		var rendered, failed int64
+		var failedError string
+		err := client.Reader.QueryRowContext(ctx, `SELECT rendered_settings_at, failed_settings_at, failed_error FROM render WHERE id = ?`, tc.id).Scan(&rendered, &failed, &failedError)
+		if err != nil || rendered != tc.rendered || failed != tc.failed || failedError != tc.failedError {
+			t.Errorf("render %d: %d, %d, %q, %v; want %d, %d, %q", tc.id, rendered, failed, failedError, err, tc.rendered, tc.failed, tc.failedError)
+		}
 	}
 }

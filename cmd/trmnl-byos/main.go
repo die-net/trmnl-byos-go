@@ -194,10 +194,14 @@ func serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("sweep leftovers: %w", err)
 	}
 
+	// A settings save through the API or the web UI wakes the scheduler, so
+	// what it makes due is built now. The CLI is another process, and its
+	// changes wait for the scheduler's next check.
+	wake := scheduler.NewWaker()
 	mux := http.NewServeMux()
 	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
-	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
-	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Secrets: key}).Register(mux)
+	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Zone: zone, Rebuild: wake.Wake}).Register(mux)
+	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Secrets: key, Rebuild: wake.Wake}).Register(mux)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,
@@ -215,7 +219,7 @@ func serve(ctx context.Context, args []string) error {
 	if *renderURL != "" {
 		// It fails before it starts anything, so returning here leaves
 		// nothing running.
-		proxy, err := startRendering(ctx, g, client, images, key, zone, *data, *renderURL, *cacheDir)
+		proxy, err := startRendering(ctx, g, client, images, key, zone, *data, *renderURL, *cacheDir, wake)
 		if err != nil {
 			return err
 		}
@@ -267,11 +271,11 @@ const (
 )
 
 // startRendering starts the scheduler and the asset cache's janitor in g.
-// The scheduler renders through the renderer at renderURL. It returns the
-// proxy the renderer's builds reach the internet through. If it fails, it
-// has started nothing.
+// The scheduler renders through the renderer at renderURL, and wake makes
+// it scan at once. It returns the proxy the renderer's builds reach the
+// internet through. If it fails, it has started nothing.
 func startRendering(ctx context.Context, g *errgroup.Group, client *db.Client, images *imagestore.Store, key *secrets.Key,
-	zone *time.Location, data, renderURL, cacheDir string,
+	zone *time.Location, data, renderURL, cacheDir string, wake scheduler.Waker,
 ) (http.Handler, error) {
 	assets, err := cache.New(cacheDir)
 	if err != nil {
@@ -289,6 +293,7 @@ func startRendering(ctx context.Context, g *errgroup.Group, client *db.Client, i
 		Secrets:    key,
 		Zone:       zone,
 		AssetHosts: renderproxy.AssetHosts,
+		Wake:       wake,
 	})
 	g.Go(func() error {
 		sched.Run(ctx)
