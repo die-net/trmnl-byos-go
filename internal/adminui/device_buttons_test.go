@@ -41,7 +41,7 @@ func TestDeviceButtonFields(t *testing.T) {
 				`<option value="identify">Show which device this is</option>`, `<option value="restart_playlist">Go back to the first item</option>`,
 				`<option value="rewind">Show the last screen</option>`, `<option value="sleep">Go to sleep</option>`,
 				`<option value="add_wifi">Open Wi-Fi setup</option>`,
-				`Go to sleep lasts until the sleep window next ends, or 8 hours when there is no window.`,
+				`Go to sleep lasts until the sleep window next ends, or for ` + spanText(device.FuncSleepSeconds) + ` when there is no window.`,
 			},
 		},
 		{
