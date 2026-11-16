@@ -1505,3 +1505,37 @@ func TestInstanceStaleAtUpdate(t *testing.T) {
 		t.Errorf("second save: status %d, name %q", w.Code, got.Name)
 	}
 }
+
+// TestInstanceSharedOptionValueUnchangedSave checks that an unchanged save
+// of a multi-select whose options share a value is stored as it was. The
+// page ticks both options that share the chosen value, so the browser posts
+// it twice.
+func TestInstanceSharedOptionValueUnchangedSave(t *testing.T) {
+	t.Parallel()
+	tu, rec := newFormUI(t, `name: Colors
+custom_fields:
+- keyname: colors
+  name: Colors
+  field_type: select
+  multiple: true
+  options: [Red, red, Green]
+`, true)
+	inst := createdInstance(t, tu, rec, url.Values{"name": {"Home"}, "palette": {""}, "f.colors": {"red"}})
+	before, all, _ := current(t, tu, inst.ID)
+	if strings.Join(all["colors"].Many, ",") != "red" {
+		t.Fatalf("created colors = %v, want [red]", all["colors"].Many)
+	}
+	c := tu.signIn(t)
+	form := formControls(t, tu.get(t, c, "/recipes/instances/"+id(inst.ID)).Body.String())
+	if got := form["f.colors"]; strings.Join(got, ",") != "red,red" {
+		t.Fatalf("the page posts colors %v, want red twice", got)
+	}
+	w := tu.post(t, c, "/recipes/instances/"+id(inst.ID), form)
+	after, _, _ := current(t, tu, inst.ID)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if after.FieldValues != before.FieldValues || !bytes.Equal(after.SecretValues, before.SecretValues) || after.SettingsAt != before.SettingsAt || after.Name != before.Name {
+		t.Errorf("an unchanged save changed the row: before %+v, after %+v", before, after)
+	}
+}

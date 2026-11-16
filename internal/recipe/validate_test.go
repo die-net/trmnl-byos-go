@@ -91,7 +91,7 @@ func TestCheckValues(t *testing.T) {
 		{"select by label", map[string]Value{"sel": {One: "A"}}, false, map[string]string{"sel": "is not one of the options"}},
 		{"multi ok", map[string]Value{"multi": {Many: []string{"a", "b"}}}, false, nil},
 		{"multi one bad", map[string]Value{"multi": {Many: []string{"a", "c"}}}, false, map[string]string{"multi": "is not one of the options"}},
-		{"multi with a choice twice", map[string]Value{"multi": {Many: []string{"a", "b", "a"}}}, false, map[string]string{"multi": "chooses an option twice"}},
+		{"multi with a choice twice", map[string]Value{"multi": {Many: []string{"a", "b", "a"}}}, false, nil},
 		{"multi given a string", map[string]Value{"multi": {One: "b"}}, false, nil},
 		{"bool ok", map[string]Value{"bool": {One: "false"}}, false, nil},
 		{"bool bad", map[string]Value{"bool": {One: "yes"}}, false, map[string]string{"bool": `must be "true" or "false"`}},
@@ -170,7 +170,8 @@ func TestCheckValuesNormalizes(t *testing.T) {
 
 // TestOptionsSharingAValue checks that a multi-select whose options share a
 // value, as Red and red do, or Metric: m and Meters: m, stores the value
-// once, in the order of its first option, and still refuses it chosen twice.
+// once, in the order of its first option, also when the list names it
+// twice, as a form does that ticks both options.
 func TestOptionsSharingAValue(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -188,8 +189,9 @@ func TestOptionsSharingAValue(t *testing.T) {
 			t.Errorf("%s: got %v, %v; want %v", tc.name, got["multi"], err, tc.want)
 		}
 		twice := []string{tc.chosen[0], tc.chosen[0]}
-		if _, err := checkPasswords(fields, map[string]Value{"multi": {Many: twice}}, false); err == nil || !strings.Contains(err.Error(), "chooses an option twice") {
-			t.Errorf("%s: a value chosen twice: %v", tc.name, err)
+		got, err = checkPasswords(fields, map[string]Value{"multi": {Many: twice}}, false)
+		if err != nil || !slices.Equal(got["multi"].Many, twice[:1]) {
+			t.Errorf("%s: a value chosen twice: got %v, %v; want %v", tc.name, got["multi"], err, twice[:1])
 		}
 	}
 }

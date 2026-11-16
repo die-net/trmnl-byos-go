@@ -165,7 +165,7 @@ func (f *fileFlag) Set(v string) error {
 
 // addFiles reads each file of the flag into fields, as -field would give it
 // the contents: from stdin for the path "-", which only one may be, and with
-// one trailing newline dropped, since an editor or echo adds one. A value
+// one trailing LF or CR LF dropped, since an editor or echo adds one. A value
 // cannot be bigger than a render job takes, so a file is read to that and no
 // further.
 func (f fileFlag) addFiles(fields fieldFlag, stdin io.Reader) error {
@@ -182,7 +182,11 @@ func (f fileFlag) addFiles(fields fieldFlag, stdin io.Reader) error {
 		if err != nil {
 			return fmt.Errorf("field %q: %w", name, err)
 		}
-		b = bytes.TrimSuffix(b, []byte("\n"))
+		// A file's last line ends in LF, or CR LF from Windows. That ending
+		// is not part of the value.
+		if c, ok := bytes.CutSuffix(b, []byte("\n")); ok {
+			b = bytes.TrimSuffix(c, []byte("\r"))
+		}
 		if err := fields.Set(name + "=" + string(b)); err != nil {
 			return err
 		}
