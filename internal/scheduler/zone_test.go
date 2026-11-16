@@ -79,6 +79,32 @@ func TestRenderPerZoneLocale(t *testing.T) {
 	h.renderDue(t, 4) // Nothing is due.
 }
 
+// TestCandidatesOrderZoneLocale checks that targets that differ only in
+// their time zone or locale come out of candidates in one fixed order,
+// sorted by zone and then locale, on every scan, as the order of the other
+// fields does.
+func TestCandidatesOrderZoneLocale(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.zoneDevice(t, "ABC124", "Asia/Tokyo", "")
+	h.zoneDevice(t, "ABC125", "Europe/Berlin", "de")
+	h.zoneDevice(t, "ABC126", "Europe/Berlin", "")
+	want := []string{"Asia/Tokyo en", "Europe/Berlin de", "Europe/Berlin en", testZone.String() + " en"}
+	for range 20 {
+		cands, err := h.s.candidates(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, 0, len(cands))
+		for _, c := range cands {
+			got = append(got, c.zone+" "+c.locale)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates in the order %q, want %q", got, want)
+		}
+	}
+}
+
 // builtConfig is the part of a build's .trmnlp.yml these tests read.
 type builtConfig struct {
 	TimeZone  string `yaml:"time_zone"`

@@ -379,7 +379,8 @@ func (s *Scheduler) candidates(ctx context.Context) ([]*candidate, error) {
 
 	return slices.SortedFunc(maps.Values(byTarget), func(a, b *candidate) int {
 		return cmp.Or(cmp.Compare(a.instance, b.instance), cmp.Compare(a.device, b.device), cmp.Compare(a.width, b.width),
-			cmp.Compare(a.height, b.height), strings.Compare(a.palette, b.palette))
+			cmp.Compare(a.height, b.height), strings.Compare(a.palette, b.palette),
+			strings.Compare(a.zone, b.zone), strings.Compare(a.locale, b.locale))
 	}), nil
 }
 
