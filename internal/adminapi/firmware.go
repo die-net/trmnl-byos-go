@@ -197,6 +197,13 @@ type devicePatch struct {
 	// Sleep is the window in which the device is shown no playlist item,
 	// written HH:MM-HH:MM in its time zone, as 23:00-06:30, or "" for none.
 	Sleep *string `json:"sleep"`
+	// ButtonCommand is what a single button press does, one of next,
+	// previous, first and refresh, or "" for the default, next.
+	ButtonCommand *string `json:"button_command"`
+	// SpecialFunction is what a double-click does, one of none, identify,
+	// restart_playlist, rewind, sleep and add_wifi, or "" for the default,
+	// rewind.
+	SpecialFunction *string `json:"special_function"`
 	// SettingsState is the settings_state the caller read. When given, a
 	// device whose settings have changed since is refused with 409.
 	SettingsState *string `json:"settings_state"`
@@ -211,7 +218,7 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) (deviceJSON
 	}
 	c := device.Change{
 		Name: req.Name, UpdatesEnabled: req.UpdatesEnabled, Profile: req.Profile, Palette: req.Palette,
-		TimeZone: req.TimeZone, Locale: req.Locale, Sleep: req.Sleep, Seen: req.SettingsState,
+		TimeZone: req.TimeZone, Locale: req.Locale, Sleep: req.Sleep, ButtonCommand: req.ButtonCommand, SpecialFunction: req.SpecialFunction, Seen: req.SettingsState,
 	}
 	if req.FWPin != nil {
 		pin, err := firmware.CleanPin(*req.FWPin)

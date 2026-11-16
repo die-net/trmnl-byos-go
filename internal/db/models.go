@@ -44,6 +44,8 @@ type Device struct {
 	Locale              string `json:"locale"`
 	SleepStart          int64  `json:"sleep_start"`
 	SleepEnd            int64  `json:"sleep_end"`
+	ButtonCommand       string `json:"button_command"`
+	SpecialFunction     string `json:"special_function"`
 }
 
 type DeviceCursor struct {

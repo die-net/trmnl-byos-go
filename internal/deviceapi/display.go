@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,9 +34,16 @@ type displayResponse struct {
 	ResetFirmware bool  `json:"reset_firmware"`
 	// UpdateFirmware tells the device to install the firmware at
 	// FirmwareURL. It is only ever true with a URL.
-	UpdateFirmware  bool   `json:"update_firmware"`
-	FirmwareURL     string `json:"firmware_url,omitempty"`
+	UpdateFirmware bool   `json:"update_firmware"`
+	FirmwareURL    string `json:"firmware_url,omitempty"`
+	// SpecialFunction is what the device's next double-click asks for. The
+	// firmware saves it from every normal answer, so an answer that leaves it
+	// out or sends none turns the double-click off until the next one.
 	SpecialFunction string `json:"special_function,omitempty"`
+	// Action names the function the device asked for with a special_function
+	// header. The firmware does nothing useful with an answer to one that
+	// has none.
+	Action string `json:"action,omitempty"`
 }
 
 // displayFailed answers a /api/display request that failed inside the
@@ -44,10 +52,13 @@ type displayResponse struct {
 // an unrelated Wi-Fi error after an hour of that. A status 0 answer with no
 // image_url makes it keep its screen and sleep for refresh_rate, so this
 // sends that, with the scheduler's retry interval. Status 500 is never
-// sent, since it erases the device's credentials.
-func displayFailed(w http.ResponseWriter, mac, step string, err error) {
+// sent, since it erases the device's credentials. special is the special
+// function to send, which the firmware saves: a known device's configured
+// one, so a failure does not turn its double-click off, and none for a
+// request that came from no known device, which reads nothing.
+func displayFailed(w http.ResponseWriter, mac, step, special string, err error) {
 	slog.Error("display: "+step, "mac", mac, "err", err)
-	writeJSON(w, displayResponse{Status: statusOK, RefreshRate: retryRefresh, SpecialFunction: "none"})
+	writeJSON(w, displayResponse{Status: statusOK, RefreshRate: retryRefresh, SpecialFunction: special})
 }
 
 // refreshRate returns the seconds a device sleeps between wakes, from the
@@ -67,7 +78,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	debugRequest(r)
 	c, err := s.identify(ctx, r)
 	if err != nil {
-		displayFailed(w, r.Header.Get("ID"), "authenticate", err)
+		displayFailed(w, r.Header.Get("ID"), "authenticate", device.FuncNone, err)
 		return
 	}
 	switch {
@@ -79,10 +90,10 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		}
 		name, err := systemScreen(r, o, func(sp screen.Profile) (string, error) { return s.blockedScreen(sp, c.mac, true) })
 		if err != nil {
-			displayFailed(w, c.mac, "render screen", err)
+			displayFailed(w, c.mac, "render screen", device.FuncNone, err)
 			return
 		}
-		writeJSON(w, displayResponse{Status: statusOK, ImageURL: s.imageURL(r, name), Filename: name, RefreshRate: blockedRefresh, SpecialFunction: "none"})
+		writeJSON(w, displayResponse{Status: statusOK, ImageURL: s.imageURL(r, name), Filename: name, RefreshRate: blockedRefresh, SpecialFunction: device.FuncNone})
 		return
 	case c.reset(r):
 		slog.Warn("display: MAC deleted or paired again; resetting the device", "mac", c.mac, "deleted", c.standing.Deleted != 0)
@@ -109,14 +120,30 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 
 	p := profile.Resolve(model, headerInt(r, "Width"), headerInt(r, "Height"), device.ProfileOverride(&dev))
 	sp := screenProfile(p)
+	special := device.SpecialFunctionOf(dev.SpecialFunction)
+	fn := requestedFunction(r, special)
+	// A press moves the cursor as the device's button command says. A
+	// restart_playlist moves it to the first item shown. Any other function
+	// leaves the cursor alone, since it does not show a new item.
+	command := ""
+	if playlist.Pressed(r.Header.Get("Update-Source")) {
+		command = device.ButtonCommandOf(dev.ButtonCommand)
+	}
+	if fn == device.FuncRestartPlaylist {
+		command = device.ButtonFirst
+	}
 	choice := screenChoice{refresh: s.refreshRate(ctx)}
 	dot, calibrating := device.CalibrationDot(dev.ScreenOverride)
-	if left := dev.ScreenOverrideUntil - s.now().Unix(); calibrating && left > 0 && sp.Levels > 2 {
+	left := dev.ScreenOverrideUntil - s.now().Unix()
+	switch {
+	case fn != "" && fn != device.FuncRestartPlaylist:
+		choice, err = s.functionScreen(dev, sp, fn, choice.refresh)
+	case fn == "" && calibrating && left > 0 && sp.Levels > 2:
 		choice.name, choice.size, err = s.cached(fmt.Sprintf("calibration %d %+v", dot, sp), func(w io.Writer) error { return screen.Calibration(w, sp, dot) })
 		// Wake when the override ends, so the usual screen comes back on time.
 		choice.refresh = min(choice.refresh, left)
-	} else {
-		choice, err = s.playlistScreen(ctx, dev, p, sp, playlist.Pressed(r.Header.Get("Update-Source")), choice.refresh)
+	default:
+		choice, err = s.playlistScreen(ctx, dev, p, sp, command, choice.refresh)
 		if err == nil && !choice.shown {
 			choice.name, choice.size, err = s.screenSized(sp, []screen.Line{
 				{Text: "Connected", Size: 44, Bold: true},
@@ -136,7 +163,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		choice.refresh = tooLargeRefresh
 	}
 	if err != nil {
-		displayFailed(w, dev.Mac, "render screen", err)
+		displayFailed(w, dev.Mac, "render screen", special, err)
 		return
 	}
 
@@ -166,22 +193,112 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		displayFailed(w, dev.Mac, "save state", err)
+		displayFailed(w, dev.Mac, "save state", special, err)
 		return
 	}
 
 	resp := displayResponse{
 		Status:          statusOK,
-		ImageURL:        s.imageURL(r, choice.name),
-		Filename:        choice.name,
 		RefreshRate:     choice.refresh,
-		SpecialFunction: "none",
+		SpecialFunction: special,
+		Action:          functionAction(fn),
 	}
-	if fw := s.offerFirmware(ctx, &dev, model, version); fw != nil {
-		slog.Info("display: offering firmware", "mac", dev.Mac, "model", model, "from", version, "to", fw.Version)
-		resp.UpdateFirmware, resp.FirmwareURL = true, s.baseURL(r)+"/firmware/"+firmware.FileName(fw.Sha256)
+	if choice.name != "" {
+		resp.ImageURL, resp.Filename = s.imageURL(r, choice.name), choice.name
+	}
+	// The firmware reads little but the action from an answer to a special
+	// function, so a device is offered firmware only at a normal wake.
+	if fn == "" {
+		if fw := s.offerFirmware(ctx, &dev, model, version); fw != nil {
+			slog.Info("display: offering firmware", "mac", dev.Mac, "model", model, "from", version, "to", fw.Version)
+			resp.UpdateFirmware, resp.FirmwareURL = true, s.baseURL(r)+"/firmware/"+firmware.FileName(fw.Sha256)
+		}
 	}
 	writeJSON(w, resp)
+}
+
+// cloudFunctions are the special functions that are TRMNL cloud features,
+// which this server has no use for. The firmware may send them, and is
+// answered with the action none.
+var cloudFunctions = []string{"send_to_me", "guest_mode", "toggle_hold"}
+
+// requestedFunction returns the special function a request asks for, or ""
+// for a normal wake. The firmware sends the header as true to ask for the
+// function configured on the server, which is configured, and as a function's
+// name to ask for that one, as the TRMNL X menu and touch bar do. A value
+// that names no function, such as none, is a normal wake.
+func requestedFunction(r *http.Request, configured string) string {
+	v := strings.ToLower(strings.TrimSpace(r.Header.Get("special_function")))
+	if v == "true" {
+		v = configured
+	}
+	if v != device.FuncNone && (slices.Contains(device.SpecialFunctions, v) || slices.Contains(cloudFunctions, v)) {
+		return v
+	}
+	return ""
+}
+
+// functionAction is the action field that answers the special function fn,
+// or "" for a normal wake. A function this server does not implement is
+// answered with the action none.
+func functionAction(fn string) string {
+	switch {
+	case fn == "":
+		return ""
+	case slices.Contains(device.SpecialFunctions, fn):
+		return fn
+	default:
+		return device.FuncNone
+	}
+}
+
+// sleepFunctionRefresh is how long, in seconds, a device that is told to
+// sleep sleeps when it has no sleep window: 8 hours, a night's sleep. The
+// design did not name a number, so this is a choice, not a firmware limit.
+const sleepFunctionRefresh = 8 * 60 * 60
+
+// functionScreen answers a special function that does not move the playlist
+// cursor: fn is anything but restart_playlist, which picks a screen as a
+// normal wake does. identify draws a screen that says which device this is.
+// The others send no image, and the device keeps what it shows: rewind
+// redraws its own previous image, add_wifi has opened its portal already,
+// the cloud functions are not built, and sleep sets how long the device
+// sleeps. refresh is the usual seconds to the next wake.
+func (s *Server) functionScreen(dev db.Device, sp screen.Profile, fn string, refresh int64) (screenChoice, error) {
+	switch fn {
+	case device.FuncIdentify:
+		lines := []screen.Line{
+			{Text: "Identify", Size: 44, Bold: true},
+			{Text: dev.FriendlyID, Size: 64, Bold: true},
+		}
+		if dev.Name != "" {
+			lines = append(lines, screen.Line{Text: dev.Name, Size: 28})
+		}
+		lines = append(lines, screen.Line{Text: dev.Mac, Size: 22})
+		name, size, err := s.screenSized(sp, lines)
+		return screenChoice{name: name, size: size, refresh: refresh, shown: true}, err
+	case device.FuncSleep:
+		zone := device.ZoneOf(dev.TimeZone, s.cfg.Zone)
+		return screenChoice{refresh: sleepRefresh(dev.SleepEnd, s.now().In(zone))}, nil
+	default:
+		return screenChoice{refresh: refresh}, nil
+	}
+}
+
+// sleepRefresh returns the seconds from now, which is in the device's time
+// zone, to the next end of a sleep window that ends at end, in minutes after
+// midnight, whether or not now is inside the window. It is
+// sleepFunctionRefresh for end below 0, which is no window.
+func sleepRefresh(end int64, now time.Time) int64 {
+	if end < 0 {
+		return sleepFunctionRefresh
+	}
+	at := time.Date(now.Year(), now.Month(), now.Day(), int(end/60), int(end%60), 0, 0, now.Location())
+	if !at.After(now) {
+		at = time.Date(now.Year(), now.Month(), now.Day()+1, int(end/60), int(end%60), 0, 0, now.Location())
+	}
+	// Round up, so the device does not wake just before the end.
+	return max(int64((at.Sub(now)+time.Second-1)/time.Second), 1)
 }
 
 // Refresh rates, in seconds, for a device whose playlist item has no
@@ -234,15 +351,16 @@ func untilChange(lists []playlist.List, awake playlist.Schedule, now time.Time, 
 }
 
 // playlistScreen picks what a device shows from its playlists, moving its
-// cursor first. Its schedules and sleep window are read in the device's time
+// cursor first as command says, which is a button command, or empty for a
+// timer wake. Its schedules and sleep window are read in the device's time
 // zone, and it is shown the render made for that zone and its locale. A
 // device in its sleep window is shown a screen that says so, with the cursor
-// where it was, and sleeps until the window ends. A button press in the
-// window is the exception: it is shown what it would be shown awake, and its
-// next timer wake puts it back to sleep.
+// where it was, and sleeps until the window ends. A button press or a
+// restart_playlist in the window is the exception: it is shown what it would
+// be shown awake, and its next timer wake puts it back to sleep.
 // The refresh rate it returns is refresh, shortened to wake the device when
 // the item ends, a schedule or its sleep changes or a render is ready.
-func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, pressed bool, refresh int64) (screenChoice, error) {
+func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Profile, sp screen.Profile, command string, refresh int64) (screenChoice, error) {
 	// The locale is part of the render's key, so a default in place of a
 	// setting that cannot be read would find no render and send the
 	// Rendering screen over a good image. The error is returned, so the
@@ -258,13 +376,14 @@ func (s *Server) playlistScreen(ctx context.Context, dev db.Device, p profile.Pr
 	// the device would be told to sleep until the next window.
 	now := s.now().In(device.ZoneOf(dev.TimeZone, s.cfg.Zone))
 	awake := playlist.Awake(dev.SleepStart, dev.SleepEnd)
-	if pressed && !awake.Active(now.Add(playlist.WakeSlack)) {
-		// A press in the sleep window wakes the device for this screen: it
-		// is shown what it would show awake, as a press then. Its next timer
-		// wake is still in the window, so that wake puts it back to sleep.
+	if command != "" && !awake.Active(now.Add(playlist.WakeSlack)) {
+		// A press in the sleep window, or a restart_playlist, wakes the
+		// device for this screen: it is shown what it would show awake, as
+		// the command says. Its next timer wake is still in the window, so
+		// that wake puts it back to sleep.
 		awake = playlist.Always
 	}
-	pick, err := s.advance(ctx, dev.ID, now, awake, pressed)
+	pick, err := s.advance(ctx, dev.ID, now, awake, command)
 	if err != nil {
 		return screenChoice{refresh: refresh}, err
 	}
@@ -391,13 +510,13 @@ type pick struct {
 	started time.Time
 }
 
-// advance moves a device's playlist cursor for this wake and returns the
-// item it now shows. The playlist is the first that is scheduled at the
-// wake, now, plus the slack a timer wake may come early, read in now's
-// location, and has an item that is shown then. A device that is not awake
-// then, by its awake schedule, is shown nothing, and its cursor stays where
-// it is.
-func (s *Server) advance(ctx context.Context, deviceID int64, now time.Time, awake playlist.Schedule, pressed bool) (pick, error) {
+// advance moves a device's playlist cursor for this wake, as playlist.Advance
+// does for command, and returns the item it now shows. The playlist is the
+// first that is scheduled at the wake, now, plus the slack a timer wake may
+// come early, read in now's location, and has an item that is shown then. A
+// device that is not awake then, by its awake schedule, is shown nothing, and
+// its cursor stays where it is.
+func (s *Server) advance(ctx context.Context, deviceID int64, now time.Time, awake playlist.Schedule, command string) (pick, error) {
 	var out pick
 	err := s.db.InTx(ctx, func(q *db.Queries) error {
 		out = pick{}
@@ -420,7 +539,7 @@ func (s *Server) advance(ctx context.Context, deviceID int64, now time.Time, awa
 		if err == nil {
 			cur = &playlist.Cursor{ItemID: cursor.ItemID, Started: time.Unix(cursor.ItemStartedAt, 0)}
 		}
-		i, start := playlist.Advance(lists[c].Items(now.Add(playlist.WakeSlack)), cur, now, pressed)
+		i, start := playlist.Advance(lists[c].Items(now.Add(playlist.WakeSlack)), cur, now, command)
 		if i < 0 {
 			return nil
 		}

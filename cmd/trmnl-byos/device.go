@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -24,9 +25,11 @@ func devices(ctx context.Context, args []string, out io.Writer) error {
 	})
 }
 
-// deviceSet changes a device's name, profile, palette, time zone, locale and
-// sleep window. A flag left out keeps its setting, and none clears a profile,
-// palette, time zone, locale or sleep window.
+// deviceSet changes a device's name, profile, palette, time zone, locale,
+// sleep window, button command and double-click function. A flag left out
+// keeps its setting, and none clears a profile, palette, time zone, locale or
+// sleep window. A button command or double-click function is cleared by
+// default instead, since none is a double-click function.
 func deviceSet(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("device set", flag.ExitOnError)
 	data := dataFlag(fs)
@@ -36,13 +39,21 @@ func deviceSet(ctx context.Context, args []string, out io.Writer) error {
 	zone := fs.String("zone", "", "the IANA time zone the device's schedules are read in and its renders are made for, such as America/Los_Angeles, or none for the server's")
 	locale := fs.String("locale", "", "the locale the device's renders are made for, such as de or pt-BR, or none for the server's locale setting")
 	sleep := fs.String("sleep", "", "the window in which the device is shown no playlist item, as HH:MM-HH:MM in its time zone, such as 23:00-06:30, or none for always awake")
+	button := fs.String("button", "", "what a single button press does, one of "+strings.Join(device.ButtonCommands, ", ")+", or default for next")
+	double := fs.String("double-click", "", "what a double-click does, one of "+strings.Join(device.SpecialFunctions, ", ")+", or default for rewind")
 	rest := parseInterspersed(fs, args)
 	if len(rest) != 1 {
-		return errors.New("usage: trmnl-byos device set [-data dir] [-name name] [-profile model|none] [-palette id|none] [-zone name|none] [-locale code|none] [-sleep HH:MM-HH:MM|none] <friendly ID or MAC>")
+		return errors.New("usage: trmnl-byos device set [-data dir] [-name name] [-profile model|none] [-palette id|none] [-zone name|none] [-locale code|none] [-sleep HH:MM-HH:MM|none] [-button next|previous|first|refresh|default] [-double-click none|identify|restart_playlist|rewind|sleep|add_wifi|default] <friendly ID or MAC>")
 	}
 	var c device.Change
 	noneIsEmpty := func(v *string) *string {
 		if *v == "none" {
+			*v = ""
+		}
+		return v
+	}
+	defaultIsEmpty := func(v *string) *string {
+		if *v == "default" {
 			*v = ""
 		}
 		return v
@@ -61,10 +72,14 @@ func deviceSet(ctx context.Context, args []string, out io.Writer) error {
 			c.Locale = noneIsEmpty(locale)
 		case "sleep":
 			c.Sleep = noneIsEmpty(sleep)
+		case "button":
+			c.ButtonCommand = defaultIsEmpty(button)
+		case "double-click":
+			c.SpecialFunction = defaultIsEmpty(double)
 		}
 	})
-	if c.Name == nil && c.Profile == nil && c.Palette == nil && c.TimeZone == nil && c.Locale == nil && c.Sleep == nil {
-		return errors.New("device set: give -name, -profile, -palette, -zone, -locale or -sleep")
+	if c.Name == nil && c.Profile == nil && c.Palette == nil && c.TimeZone == nil && c.Locale == nil && c.Sleep == nil && c.ButtonCommand == nil && c.SpecialFunction == nil {
+		return errors.New("device set: give -name, -profile, -palette, -zone, -locale, -sleep, -button or -double-click")
 	}
 	client, err := openDB(ctx, *data)
 	if err != nil {
@@ -75,9 +90,9 @@ func deviceSet(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "%s: name %s, profile %s, palette %s, zone %s, locale %s, sleep %s.\n", dev.FriendlyID,
+	_, err = fmt.Fprintf(out, "%s: name %s, profile %s, palette %s, zone %s, locale %s, sleep %s, button %s, double-click %s.\n", dev.FriendlyID,
 		orNone(dev.Name), orNone(dev.ProfileOverride), orNone(dev.PaletteOverride), orNone(dev.TimeZone), orNone(dev.Locale),
-		orNone(device.FormatSleep(dev.SleepStart, dev.SleepEnd)))
+		orNone(device.FormatSleep(dev.SleepStart, dev.SleepEnd)), device.ButtonCommandOf(dev.ButtonCommand), device.SpecialFunctionOf(dev.SpecialFunction))
 	return err
 }
 

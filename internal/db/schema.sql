@@ -52,7 +52,14 @@ CREATE TABLE IF NOT EXISTS device (
   -- zone, 0 to 1439. The window wraps past midnight when the end is before
   -- the start. Both are -1 for no window, which is always awake.
   sleep_start INTEGER NOT NULL DEFAULT -1,
-  sleep_end INTEGER NOT NULL DEFAULT -1
+  sleep_end INTEGER NOT NULL DEFAULT -1,
+  -- button_command is what a single button press does: next, previous, first
+  -- or refresh. Empty means the default, next.
+  button_command TEXT NOT NULL DEFAULT '',
+  -- special_function is what a double-click does, one of the firmware's
+  -- function names the server lets an admin choose. Empty means the default,
+  -- rewind.
+  special_function TEXT NOT NULL DEFAULT ''
 );
 
 -- device_state is what a device reported on its last /api/display call, and

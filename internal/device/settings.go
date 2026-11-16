@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +54,12 @@ type Change struct {
 	// written HH:MM-HH:MM in the device's time zone, as ParseSleep takes it,
 	// or empty for none, which is always awake.
 	Sleep *string
+	// ButtonCommand is what a single button press does, one of
+	// ButtonCommands, or empty for the default, next.
+	ButtonCommand *string
+	// SpecialFunction is what a double-click does, one of SpecialFunctions,
+	// or empty for the default, rewind.
+	SpecialFunction *string
 	// Seen is the SettingsState the caller read, from a page or an API client.
 	// Nil means none was sent, as from the command line, and is not checked.
 	Seen *string
@@ -73,7 +80,7 @@ func SettingsState(dev *db.Device) string {
 	for _, s := range []string{
 		strconv.FormatInt(dev.ID, 10), strconv.FormatInt(dev.UpdatesEnabled, 10),
 		dev.Name, dev.FwPin, dev.ProfileOverride, dev.PaletteOverride, dev.TimeZone, dev.Locale,
-		FormatSleep(dev.SleepStart, dev.SleepEnd),
+		FormatSleep(dev.SleepStart, dev.SleepEnd), dev.ButtonCommand, dev.SpecialFunction,
 	} {
 		put(s)
 	}
@@ -89,10 +96,12 @@ func SettingsState(dev *db.Device) string {
 // leaves the stored palette outside the new model's palettes is refused
 // unless the change sets the palette too. A time zone must load, and a
 // locale must be one of locale.Codes. A sleep window must parse, as
-// ParseSleep says. Each of the profile, palette, zone, locale and sleep
-// window is checked only when the change changes it from what is
-// stored, so a stored one that stopped applying does not block a change of
-// the others, nor a form that posts it back as it is.
+// ParseSleep says. A button command must be one of ButtonCommands and a special
+// function one of SpecialFunctions. Each of the profile, palette, zone, locale,
+// sleep window, button command and special function is checked only when the
+// change changes it from what is stored, so a stored one that stopped
+// applying does not block a change of the others, nor a form that posts it
+// back as it is.
 func Update(ctx context.Context, client *db.Client, device string, c Change) (db.Device, error) {
 	var name string
 	if c.Name != nil {
@@ -162,10 +171,23 @@ func Update(ctx context.Context, client *db.Client, device string, c Change) (db
 			}
 			dev.SleepStart, dev.SleepEnd = start, end
 		}
+		if c.ButtonCommand != nil && *c.ButtonCommand != dev.ButtonCommand {
+			if *c.ButtonCommand != "" && !slices.Contains(ButtonCommands, *c.ButtonCommand) {
+				return fmt.Errorf("%w: button command %q is not one of %s", errkind.ErrInvalid, *c.ButtonCommand, strings.Join(ButtonCommands, ", "))
+			}
+			dev.ButtonCommand = *c.ButtonCommand
+		}
+		if c.SpecialFunction != nil && *c.SpecialFunction != dev.SpecialFunction {
+			if *c.SpecialFunction != "" && !slices.Contains(SpecialFunctions, *c.SpecialFunction) {
+				return fmt.Errorf("%w: special function %q is not one of %s", errkind.ErrInvalid, *c.SpecialFunction, strings.Join(SpecialFunctions, ", "))
+			}
+			dev.SpecialFunction = *c.SpecialFunction
+		}
 		err = q.UpdateDeviceSettings(ctx, db.UpdateDeviceSettingsParams{
 			Name: dev.Name, UpdatesEnabled: dev.UpdatesEnabled, FwPin: dev.FwPin,
 			ProfileOverride: dev.ProfileOverride, PaletteOverride: dev.PaletteOverride,
-			TimeZone: dev.TimeZone, Locale: dev.Locale, SleepStart: dev.SleepStart, SleepEnd: dev.SleepEnd, ID: dev.ID,
+			TimeZone: dev.TimeZone, Locale: dev.Locale, SleepStart: dev.SleepStart, SleepEnd: dev.SleepEnd,
+			ButtonCommand: dev.ButtonCommand, SpecialFunction: dev.SpecialFunction, ID: dev.ID,
 		})
 		if err != nil {
 			return fmt.Errorf("update device: %w", err)

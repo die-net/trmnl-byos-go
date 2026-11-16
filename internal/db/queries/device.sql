@@ -12,7 +12,7 @@ UPDATE device SET screen_override = ?, screen_override_until = ? WHERE id = ?;
 -- name: UpdateDeviceSettings :exec
 -- Writes every setting an admin changes on a device at once, so a change of
 -- several is one statement in the caller's transaction.
-UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ?, sleep_start = ?, sleep_end = ? WHERE id = ?;
+UPDATE device SET name = ?, updates_enabled = ?, fw_pin = ?, profile_override = ?, palette_override = ?, time_zone = ?, locale = ?, sleep_start = ?, sleep_end = ?, button_command = ?, special_function = ? WHERE id = ?;
 
 -- name: GetDevice :one
 SELECT * FROM device WHERE id = ?;
@@ -34,6 +34,8 @@ SELECT EXISTS (SELECT 1 FROM device WHERE friendly_id = ?);
 UPDATE device SET fw_model = COALESCE(NULLIF(CAST(sqlc.arg(fw_model) AS TEXT), ''), fw_model), fw_version = COALESCE(NULLIF(CAST(sqlc.arg(fw_version) AS TEXT), ''), fw_version) WHERE id = sqlc.arg(id);
 
 -- name: UpsertDeviceState :exec
+-- An empty last_image keeps the one stored, for an answer that sends the device
+-- no image.
 INSERT INTO device_state (device_id, last_seen, battery_v, rssi, wake_time_ms, update_source, last_refresh_rate_sent, last_image, width, height)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (device_id) DO UPDATE SET
@@ -43,7 +45,7 @@ ON CONFLICT (device_id) DO UPDATE SET
   wake_time_ms = excluded.wake_time_ms,
   update_source = excluded.update_source,
   last_refresh_rate_sent = excluded.last_refresh_rate_sent,
-  last_image = excluded.last_image,
+  last_image = COALESCE(NULLIF(excluded.last_image, ''), device_state.last_image),
   width = excluded.width,
   height = excluded.height;
 
