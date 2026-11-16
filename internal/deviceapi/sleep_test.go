@@ -139,6 +139,38 @@ func TestDisplaySleep(t *testing.T) {
 	}
 }
 
+// TestDisplaySleepAtWindowEnd checks a timer wake that comes early, just
+// before the window's end, with a clock that moves between reads, as a real
+// one does. The device is shown the Sleeping screen and told to sleep only
+// to the window's end. Reading the clock a second time, past the end, to
+// work out the sleep would have told it to sleep until the next window, most
+// of a day, with the Sleeping screen up.
+func TestDisplaySleepAtWindowEnd(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t)
+	key, first, _ := ts.playlistDevice(t)
+	ts.saveRender(t, first, "")
+	window := "23:00-06:30"
+	ts.setDevice(t, device.Change{Sleep: &window})
+	sleeping := ts.sleepingScreen(t, "06:30")
+	// 06:29:29.93 on the server's clock, 40 ms later at each read.
+	clock := time.Date(2026, 11, 13, 6, 29, 29, 930000000, testZone)
+	ts.srv.now = func() time.Time {
+		t := clock
+		clock = clock.Add(40 * time.Millisecond)
+		return t.UTC()
+	}
+	h := displayHeaders(testMAC, key)
+	h["Update-Source"] = "timer"
+	m := ts.getJSON(t, "/api/display", h)
+	if m["filename"] != sleeping {
+		t.Fatalf("%v; want the Sleeping screen, as the wake plus the slack is before 06:30", m)
+	}
+	if r, _ := m["refresh_rate"].(float64); r < 1 || r > 60 {
+		t.Errorf("refresh_rate %v; want the seconds to 06:30, about 30", m["refresh_rate"])
+	}
+}
+
 // TestDisplaySleepNoPlaylist checks that a device with no playlist items
 // still gets the Sleeping screen in its window, and is woken at its start.
 func TestDisplaySleepNoPlaylist(t *testing.T) {
