@@ -42,6 +42,7 @@ func (q *Queries) DeleteRenderWithImage(ctx context.Context, arg DeleteRenderWit
 const getItemScreen = `-- name: GetItemScreen :one
 SELECT plugin_instance.name, recipe.refresh_interval,
   render.id AS render_id, render.rendered_at, render.attempted_at, render.error,
+  render.rendered_settings_at, render.failed_settings_at, render.failed_error,
   render_image.image, render_image.bytes
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
@@ -67,14 +68,17 @@ type GetItemScreenParams struct {
 }
 
 type GetItemScreenRow struct {
-	Name            string  `json:"name"`
-	RefreshInterval int64   `json:"refresh_interval"`
-	RenderID        *int64  `json:"render_id"`
-	RenderedAt      *int64  `json:"rendered_at"`
-	AttemptedAt     *int64  `json:"attempted_at"`
-	Error           *string `json:"error"`
-	Image           *string `json:"image"`
-	Bytes           *int64  `json:"bytes"`
+	Name               string  `json:"name"`
+	RefreshInterval    int64   `json:"refresh_interval"`
+	RenderID           *int64  `json:"render_id"`
+	RenderedAt         *int64  `json:"rendered_at"`
+	AttemptedAt        *int64  `json:"attempted_at"`
+	Error              *string `json:"error"`
+	RenderedSettingsAt *int64  `json:"rendered_settings_at"`
+	FailedSettingsAt   *int64  `json:"failed_settings_at"`
+	FailedError        *string `json:"failed_error"`
+	Image              *string `json:"image"`
+	Bytes              *int64  `json:"bytes"`
 }
 
 // What a device showing an instance gets: the instance's name and refresh
@@ -101,6 +105,9 @@ func (q *Queries) GetItemScreen(ctx context.Context, arg GetItemScreenParams) (G
 		&i.RenderedAt,
 		&i.AttemptedAt,
 		&i.Error,
+		&i.RenderedSettingsAt,
+		&i.FailedSettingsAt,
+		&i.FailedError,
 		&i.Image,
 		&i.Bytes,
 	)
@@ -598,8 +605,11 @@ func (q *Queries) ListShownItems(ctx context.Context) ([]ListShownItemsRow, erro
 }
 
 const saveRenderFailure = `-- name: SaveRenderFailure :exec
-INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures, failed_settings_at, failed_error)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0,
+  ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+  CASE WHEN ?14 > 0 THEN ?13 ELSE 0 END,
+  CASE WHEN ?14 > 0 THEN ?10 ELSE '' END)
 ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
@@ -607,7 +617,9 @@ ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) 
   log = excluded.log,
   data_at = excluded.data_at,
   settings_at = excluded.settings_at,
-  failures = render.failures + excluded.failures
+  failures = render.failures + excluded.failures,
+  failed_settings_at = CASE WHEN excluded.failures > 0 THEN excluded.settings_at ELSE render.failed_settings_at END,
+  failed_error = CASE WHEN excluded.failures > 0 THEN excluded.error ELSE render.failed_error END
 `
 
 type SaveRenderFailureParams struct {
@@ -630,7 +642,8 @@ type SaveRenderFailureParams struct {
 // Records a failed build, keeping the last good images and their time.
 // failures is 1 for a failure that counts toward the backoff and 0 for one
 // that does not, such as an unreachable renderer. It is added to the row's
-// count.
+// count. Only a failure that counts records its settings_at and error as the
+// latest counted failure's, so one that does not changes neither.
 func (q *Queries) SaveRenderFailure(ctx context.Context, arg SaveRenderFailureParams) error {
 	_, err := q.db.ExecContext(ctx, saveRenderFailure,
 		arg.InstanceID,
@@ -675,8 +688,8 @@ func (q *Queries) SaveRenderImage(ctx context.Context, arg SaveRenderImageParams
 }
 
 const saveRenderSuccess = `-- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, rendered_settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?13, ?13)
 ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
@@ -685,7 +698,10 @@ ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) 
   log = excluded.log,
   data_at = excluded.data_at,
   settings_at = excluded.settings_at,
-  failures = 0
+  rendered_settings_at = excluded.settings_at,
+  failures = 0,
+  failed_settings_at = 0,
+  failed_error = ''
 RETURNING id
 `
 

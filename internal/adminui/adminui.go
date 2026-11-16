@@ -60,6 +60,10 @@ type Config struct {
 	// recipe instances. Nil means there is none, and then a form that sets a
 	// secret value is refused by the domain.
 	Secrets *secrets.Key
+	// Rebuild, when not nil, is called after a change that builds read,
+	// such as an instance's settings, so the scheduler rebuilds what it
+	// makes due at once rather than at its next check.
+	Rebuild func()
 }
 
 // Server handles admin UI requests.
@@ -74,11 +78,21 @@ type Server struct {
 	firmwareDir string
 	// secrets is Config.Secrets.
 	secrets *secrets.Key
+	// rebuildFn is Config.Rebuild.
+	rebuildFn func()
 	// secureURL is whether PublicURL is https.
 	secureURL bool
 	// cop refuses a cross-origin request that is not safe.
 	cop   *http.CrossOriginProtection
 	pages map[string]*template.Template
+}
+
+// rebuild asks the scheduler to look for due renders now, through
+// Config.Rebuild, after a change that builds read.
+func (s *Server) rebuild() {
+	if s.rebuildFn != nil {
+		s.rebuildFn()
+	}
 }
 
 // New returns a Server that keeps state in client.
@@ -90,6 +104,7 @@ func New(client *db.Client, cfg Config) *Server {
 		recipesDir:  cfg.RecipesDir,
 		firmwareDir: cfg.FirmwareDir,
 		secrets:     cfg.Secrets,
+		rebuildFn:   cfg.Rebuild,
 		cop:         http.NewCrossOriginProtection(),
 		pages:       map[string]*template.Template{},
 	}

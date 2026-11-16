@@ -37,6 +37,7 @@ var steps = []step{
 	{"add per-device time zone and locale, and key renders by them", addZoneLocale},
 	{"add per-device sleep windows", addSleepWindow},
 	{"add per-device button command and double-click function, and the function last sent", addButtons},
+	{"record the settings a render's images were made from, and its latest counted failure", addRenderedSettingsAt},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -682,6 +683,27 @@ ALTER TABLE device_state ADD COLUMN last_special_function_sent TEXT NOT NULL DEF
 func addButtons(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addButtonColumnsSQL); err != nil {
 		return fmt.Errorf("add button settings: %w", err)
+	}
+	return nil
+}
+
+// addRenderedSettingsAtSQL is step 13: render.rendered_settings_at,
+// failed_settings_at and failed_error, as in schema.sql. A row with images
+// gets its settings_at as rendered_settings_at, which is what its images
+// were made from unless a build failed since. A row whose builds failed
+// since its last good one gets its settings_at and error as the latest
+// counted failure's. For a row with images both guesses are the same
+// settings_at, so it keeps showing its images, as before the step.
+const addRenderedSettingsAtSQL = `ALTER TABLE render ADD COLUMN rendered_settings_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE render ADD COLUMN failed_settings_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE render ADD COLUMN failed_error TEXT NOT NULL DEFAULT '';
+UPDATE render SET rendered_settings_at = settings_at WHERE rendered_at != 0;
+UPDATE render SET failed_settings_at = settings_at, failed_error = error WHERE failures > 0`
+
+// addRenderedSettingsAt is step 13: see addRenderedSettingsAtSQL.
+func addRenderedSettingsAt(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addRenderedSettingsAtSQL); err != nil {
+		return fmt.Errorf("add rendered_settings_at: %w", err)
 	}
 	return nil
 }

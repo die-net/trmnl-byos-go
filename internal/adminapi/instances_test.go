@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -43,6 +44,28 @@ func TestInstanceFieldErrors(t *testing.T) {
 // TestPatchInstance checks that an update changes only what it names, that
 // an empty string or array clears a field, that secrets stay out of every
 // response, and that a refused update changes nothing.
+// TestPatchInstanceRebuilds checks that a saved change of an instance asks
+// the scheduler to look for due renders at once, and that a refused one
+// does not.
+func TestPatchInstanceRebuilds(t *testing.T) {
+	t.Parallel()
+	ta := newTestAPI(t, true)
+	var woken atomic.Int32
+	ta.srv.cfg.Rebuild = func() { woken.Add(1) }
+	rec := ta.addRecipe(t)
+	var inst instanceJSON
+	ta.call(t, "POST", "/api/v1/instances", `{"recipe_id": `+strconv.FormatInt(rec.ID, 10)+`, "name": "Home", "fields": {"city": "Oslo"}}`, 201, &inst)
+	path := "/api/v1/instances/" + strconv.FormatInt(inst.ID, 10)
+	ta.call(t, "PATCH", path, `{"fields": {"city": "Bergen"}}`, 200, nil)
+	if n := woken.Load(); n != 1 {
+		t.Fatalf("%d wake-ups after a saved change, want 1", n)
+	}
+	ta.call(t, "PATCH", path, `{"fields": {"nosuch": "x"}}`, 400, nil)
+	if n := woken.Load(); n != 1 {
+		t.Errorf("%d wake-ups after a refused change, want still 1", n)
+	}
+}
+
 func TestPatchInstance(t *testing.T) {
 	t.Parallel()
 	ta := newTestAPI(t, true)

@@ -69,8 +69,8 @@ SELECT id, instance_id, device_id, width, height, palette, time_zone, locale, re
 FROM render;
 
 -- name: SaveRenderSuccess :one
-INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, rendered_settings_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, sqlc.arg(settings_at), sqlc.arg(settings_at))
 ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   rendered_at = excluded.rendered_at,
   attempted_at = excluded.attempted_at,
@@ -79,16 +79,23 @@ ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) 
   log = excluded.log,
   data_at = excluded.data_at,
   settings_at = excluded.settings_at,
-  failures = 0
+  rendered_settings_at = excluded.settings_at,
+  failures = 0,
+  failed_settings_at = 0,
+  failed_error = ''
 RETURNING id;
 
 -- name: SaveRenderFailure :exec
 -- Records a failed build, keeping the last good images and their time.
 -- failures is 1 for a failure that counts toward the backoff and 0 for one
 -- that does not, such as an unreachable renderer. It is added to the row's
--- count.
-INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+-- count. Only a failure that counts records its settings_at and error as the
+-- latest counted failure's, so one that does not changes neither.
+INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms, error, log, data_at, settings_at, failures, failed_settings_at, failed_error)
+VALUES (sqlc.arg(instance_id), sqlc.arg(device_id), sqlc.arg(width), sqlc.arg(height), sqlc.arg(palette), sqlc.arg(time_zone), sqlc.arg(locale), 0,
+  sqlc.arg(attempted_at), sqlc.arg(duration_ms), sqlc.arg(error), sqlc.arg(log), sqlc.arg(data_at), sqlc.arg(settings_at), sqlc.arg(failures),
+  CASE WHEN sqlc.arg(failures) > 0 THEN sqlc.arg(settings_at) ELSE 0 END,
+  CASE WHEN sqlc.arg(failures) > 0 THEN sqlc.arg(error) ELSE '' END)
 ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) DO UPDATE SET
   attempted_at = excluded.attempted_at,
   duration_ms = excluded.duration_ms,
@@ -96,7 +103,9 @@ ON CONFLICT (instance_id, device_id, width, height, palette, time_zone, locale) 
   log = excluded.log,
   data_at = excluded.data_at,
   settings_at = excluded.settings_at,
-  failures = render.failures + excluded.failures;
+  failures = render.failures + excluded.failures,
+  failed_settings_at = CASE WHEN excluded.failures > 0 THEN excluded.settings_at ELSE render.failed_settings_at END,
+  failed_error = CASE WHEN excluded.failures > 0 THEN excluded.error ELSE render.failed_error END;
 
 -- name: SaveRenderImage :exec
 INSERT INTO render_image (render_id, layout, image, bytes)
@@ -111,6 +120,7 @@ ON CONFLICT (render_id, layout) DO UPDATE SET image = excluded.image, bytes = ex
 -- one is the fallback.
 SELECT plugin_instance.name, recipe.refresh_interval,
   render.id AS render_id, render.rendered_at, render.attempted_at, render.error,
+  render.rendered_settings_at, render.failed_settings_at, render.failed_error,
   render_image.image, render_image.bytes
 FROM plugin_instance
 JOIN recipe ON recipe.id = plugin_instance.recipe_id
