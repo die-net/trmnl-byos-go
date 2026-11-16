@@ -176,21 +176,24 @@ jobs:
 
       # With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB set, Claude Code runs each
       # command in a bubblewrap sandbox and won't start without bwrap. The
-      # action installs it only when allowed_non_write_users is set.
+      # sandbox also needs socat, or every command fails while the review
+      # itself still succeeds. The action installs both only when
+      # allowed_non_write_users is set.
       # Ubuntu 24.04 lets a program create a user namespace only if its
       # AppArmor profile allows it, and ships no profile for bwrap. So give
       # bwrap one, which keeps the restriction for every other program,
       # then check that bwrap can build a sandbox.
-      - name: Install bubblewrap
+      - name: Install bubblewrap and socat
         if: steps.prompt.outputs.found == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
           printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
             'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' |
             sudo tee /etc/apparmor.d/bwrap >/dev/null
           sudo apparmor_parser -r /etc/apparmor.d/bwrap
           bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc -- true
+          socat -V >/dev/null
 
       # github_token makes the action use this job's read-only token rather
       # than ask for the Claude App's, which can write. No inline comment
