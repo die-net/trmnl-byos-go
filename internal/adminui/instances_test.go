@@ -1539,3 +1539,76 @@ custom_fields:
 		t.Errorf("an unchanged save changed the row: before %+v, after %+v", before, after)
 	}
 }
+
+// TestInstanceSharedOptionRenameWithoutKey checks that a rename from the page
+// of an instance with a sealed secret, on a server with no secrets key, saves
+// when the page posts a multi-select whose options share a value. The form
+// compares the stored form of what it posted with what is stored, so it
+// sends no value, and the update needs no key.
+func TestInstanceSharedOptionRenameWithoutKey(t *testing.T) {
+	t.Parallel()
+	const colorsRecipe = `name: Colors
+custom_fields:
+- keyname: colors
+  name: Colors
+  field_type: select
+  multiple: true
+  options: [Red, red, Green]
+- keyname: pass
+  name: Password
+  field_type: password
+  optional: true
+`
+	tu, rec := newFormUI(t, colorsRecipe, false)
+	key, err := secrets.Parse(testKeyB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := recipe.CreateInstance(t.Context(), tu.db, key, tu.srv.recipesDir, recipe.InstanceParams{
+		RecipeID: rec.ID, Name: "Home", Values: map[string]recipe.Value{"colors": {Many: []string{"red"}}, "pass": {One: "hunter22"}},
+	}, tu.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := tu.signIn(t)
+	form := formControls(t, tu.get(t, c, "/recipes/instances/"+id(inst.ID)).Body.String())
+	if got := form["f.colors"]; strings.Join(got, ",") != "red,red" {
+		t.Fatalf("the page posts colors %v, want red twice", got)
+	}
+	form.Set("name", "Work")
+	w := tu.post(t, c, "/recipes/instances/"+id(inst.ID), form)
+	after, err := tu.db.Read.GetInstance(t.Context(), inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusSeeOther || after.Name != "Work" {
+		t.Fatalf("status %d, name %q: %s", w.Code, after.Name, w.Body)
+	}
+	if after.FieldValues != inst.FieldValues || !bytes.Equal(after.SecretValues, inst.SecretValues) || after.SettingsAt != inst.SettingsAt {
+		t.Errorf("a rename changed the values: before %+v, after %+v", inst, after)
+	}
+}
+
+// TestPostedValueStoredForm checks that the form reads a posted value in the
+// form the field stores it, so sameValue, which decides whether a save
+// sends the value and what a stale page shows, sees no change in a shared
+// value posted twice or a textarea's CR LF.
+func TestPostedValueStoredForm(t *testing.T) {
+	t.Parallel()
+	multi := recipe.Field{Keyname: "colors", Type: "select", Multiple: true, Options: []recipe.Option{{Label: "Red", Value: "red"}, {Label: "red", Value: "red"}, {Label: "Green", Value: "green"}}}
+	notes := recipe.Field{Keyname: "notes", Type: "text"}
+	for _, tc := range []struct {
+		name   string
+		f      recipe.Field
+		post   url.Values
+		stored recipe.Value
+	}{
+		{"a shared value posted twice", multi, url.Values{"f.colors": {"red", "red"}}, recipe.Value{Many: []string{"red"}}},
+		{"choices in another order", multi, url.Values{"f.colors": {"green", "red"}}, recipe.Value{Many: []string{"red", "green"}}},
+		{"CR LF in a textarea", notes, url.Values{"f.notes": {"a\r\nb"}}, recipe.Value{One: "a\nb"}},
+	} {
+		if got := postedValue(&tc.f, tc.post); !sameValue(&tc.f, got, tc.stored) {
+			t.Errorf("%s: posted %+v is not the stored %+v", tc.name, got, tc.stored)
+		}
+	}
+}
