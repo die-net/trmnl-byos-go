@@ -265,6 +265,14 @@ code {
   background: var(--danger-soft);
   color: var(--danger);
   border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+/* A message above a form that follows another panel, as wide as the
+   panels it is between. */
+.panel + .error {
+  max-width: 32rem;
+  margin-top: var(--space-4);
 }
 
 /* What a form's last post did, above the form. */
@@ -683,6 +691,17 @@ h2 {
   font-size: 0.875rem;
 }
 
+/* When an instance was last rendered, in its page's Rendering panel, and
+   under it why a build failed. Whichever is last has no space under it but
+   the panel's padding. */
+.render-when {
+  margin: 0;
+}
+
+.render-when + .error {
+  margin: var(--space-3) 0 0;
+}
+
 .playlist {
   display: grid;
   gap: var(--space-3);
@@ -762,6 +781,16 @@ h2 {
 .item-name {
   min-width: 0;
   font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* Why an item's latest build failed, on a line of its own. The text comes
+   from a build's log, so it wraps anywhere. */
+.item-error {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--danger);
+  font-size: 0.875rem;
   overflow-wrap: anywhere;
 }
 
