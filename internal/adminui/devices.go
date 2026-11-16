@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
+	"github.com/die-net/trmnl-byos-go/internal/profile"
 )
 
 const (
@@ -104,6 +106,14 @@ type pinOption struct {
 	Selected bool
 }
 
+// profileOption is a choice in the profile list.
+type profileOption struct {
+	// Value is the registry model's name, or "" for the reported one.
+	Value    string
+	Label    string
+	Selected bool
+}
+
 // deviceForm is the settings form's values.
 type deviceForm struct {
 	// Name is the device's name, or "" for none.
@@ -114,6 +124,19 @@ type deviceForm struct {
 	Pin string
 	// Pins are the versions the Pin list offers.
 	Pins []pinOption
+	// Profile is the registry model set for the device's panel, or "" for
+	// the one its firmware reports, and Profiles the choices.
+	Profile  string
+	Profiles []profileOption
+	// Palette is the palette the device renders with when an instance asks
+	// for none, or "" for the model's default. Palettes are the choices,
+	// which are the palettes of PaletteModel, the model Profile gives.
+	Palette      string
+	Palettes     []paletteOption
+	PaletteModel string
+	// Seen is the device.SettingsState of the settings stored when the page
+	// was made, which the form posts back.
+	Seen string
 }
 
 // deviceDetail is a device as its own page shows it.
@@ -436,11 +459,24 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		Name:    r.PostForm.Get("name"),
 		Updates: r.PostForm.Get("updates_enabled") != "",
 		Pin:     r.PostForm.Get("fw_pin"),
+		Profile: r.PostForm.Get("profile"),
+		Palette: r.PostForm.Get("palette"),
+		Seen:    r.PostForm.Get("settings_state"),
+	}
+	if form.Seen == "" {
+		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, &form, reloadText, "", "")
+		return
 	}
 	err := s.saveDevice(r, dev.FriendlyID, &form)
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/devices/"+dev.FriendlyID, http.StatusSeeOther)
+	case errors.Is(err, device.ErrNoDevice):
+		s.renderNotFound(w, r, noDevice)
+	case errors.Is(err, device.ErrSettingsChanged):
+		// The page says what is stored now, and its form has the typed
+		// values and the current state, so saving again applies them.
+		s.renderDevice(w, r, http.StatusConflict, dev.FriendlyID, &form, settingsChanged, "", "")
 	case errors.Is(err, errkind.ErrInvalid):
 		msg := strings.TrimPrefix(err.Error(), errkind.ErrInvalid.Error()+": ")
 		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, &form, capitalize(msg)+".", "", "")
@@ -450,14 +486,22 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// settingsChanged is what a refused save of the settings form says. The
+// page then lists what is stored now where it differs from the form.
+const settingsChanged = "This device's settings changed after the page loaded, so nothing was saved."
+
 // saveDevice stores the form in one transaction, so a refused field changes
-// nothing. It is what the JSON API's PATCH does with all three fields set.
+// nothing, and a form whose page showed other settings than are stored now
+// is refused. It is what the JSON API's PATCH does with every field and the
+// settings state set.
 func (s *Server) saveDevice(r *http.Request, id string, form *deviceForm) error {
 	pin, err := firmware.CleanPin(form.Pin)
 	if err != nil {
 		return err
 	}
-	_, err = device.Update(r.Context(), s.db, id, device.Change{Name: &form.Name, UpdatesEnabled: &form.Updates, FwPin: &pin})
+	_, err = device.Update(r.Context(), s.db, id, device.Change{
+		Name: &form.Name, UpdatesEnabled: &form.Updates, FwPin: &pin, Profile: &form.Profile, Palette: &form.Palette, Seen: &form.Seen,
+	})
 	return err
 }
 
@@ -572,8 +616,28 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 			}
 		}
 	}
+	stored := deviceForm{Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin, Profile: dev.ProfileOverride, Palette: dev.PaletteOverride}
+	stale := form != nil && status == http.StatusConflict && msg == settingsChanged
 	if form == nil {
-		form = &deviceForm{Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin}
+		form = &stored
+	}
+	form.Profiles = profileOptions(dev.FwModel, form.Profile)
+	form.PaletteModel, form.Palettes = paletteChoices(dev.FwModel, form.Profile, form.Palette)
+	if form.Palettes[0].Selected {
+		// The list does not have the palette, so the form would post the
+		// default.
+		form.Palette = ""
+	}
+	// A page gets the state stored now when it shows the stored settings,
+	// and when a stale save was refused and the page says what is stored.
+	// A form refused for another reason keeps the state it posted: that
+	// state may not have been checked, and the next save must check it.
+	if stale {
+		msg = settingsChangedText(form, &stored)
+		form.Seen = ""
+	}
+	if form.Seen == "" {
+		form.Seen = device.SettingsState(dev)
 	}
 	for i := range catalog {
 		// A rollout at the canary stage becomes blocked with its canary.
@@ -673,4 +737,114 @@ func pinOptions(catalog []firmware.Entry, model, selected string) []pinOption {
 		opts[i] = pinOption{Value: name, Selected: name == selected}
 	}
 	return opts
+}
+
+// modelLabel is how a registry model is named in a list: its label and its
+// name.
+func modelLabel(m *profile.Model) string {
+	if m.Label == "" {
+		return m.Name
+	}
+	return m.Label + " (" + m.Name + ")"
+}
+
+// modelLabelByName is modelLabel of the registry model with the name, or the
+// name alone for one the registry does not have.
+func modelLabelByName(name string) string {
+	if m, ok := profile.ModelByName(name); ok {
+		return modelLabel(&m)
+	}
+	return name
+}
+
+// profileOptions lists the choices of a device's profile: the model its
+// firmware reports, then every registry model by label. The selected one is
+// always listed, so a stored model the registry no longer has shows as what
+// it is.
+func profileOptions(fwModel, selected string) []profileOption {
+	reported := "unknown model"
+	if p := profile.Resolve(fwModel, nil, nil, profile.Override{}); p.Model != "" {
+		reported = modelLabelByName(p.Model)
+	}
+	models := profile.Models()
+	opts := make([]profileOption, 1, len(models)+2)
+	opts[0] = profileOption{Label: "As the device reports: " + reported, Selected: selected == ""}
+	found := selected == ""
+	for i := range models {
+		found = found || models[i].Name == selected
+		opts = append(opts, profileOption{Value: models[i].Name, Label: modelLabel(&models[i]), Selected: models[i].Name == selected})
+	}
+	if !found {
+		opts = append(opts, profileOption{Value: selected, Label: selected, Selected: true})
+	}
+	// The reported model stays first.
+	slices.SortStableFunc(opts[1:], func(a, b profileOption) int {
+		return strings.Compare(strings.ToLower(a.Label), strings.ToLower(b.Label))
+	})
+	return opts
+}
+
+// paletteChoices lists the palettes a device with the firmware model and
+// the profile takes, after the model's default, and names that model. It is
+// the model device.Update checks a palette against. A selected palette the
+// model does not take is not listed, which leaves the default selected.
+func paletteChoices(fwModel, override, selected string) (string, []paletteOption) {
+	p := profile.Resolve(fwModel, nil, nil, profile.Override{Model: override})
+	model := "an unknown model"
+	if p.Model != "" {
+		model = modelLabelByName(p.Model)
+	}
+	def := "Model's default"
+	if p.DefaultPalette != "" {
+		def += ": " + paletteLabel(p.DefaultPalette)
+	}
+	opts := make([]paletteOption, 0, len(p.Palettes)+1)
+	opts = append(opts, paletteOption{Label: def, Selected: !slices.Contains(p.Palettes, selected)})
+	for _, id := range p.Palettes {
+		opts = append(opts, paletteOption{ID: id, Label: paletteLabel(id), Selected: id == selected})
+	}
+	return model, opts
+}
+
+// paletteLabel is a palette's name, or its ID for one the registry does not
+// have.
+func paletteLabel(id string) string {
+	p, _ := profile.PaletteByID(id)
+	return cmp.Or(p.Name, id)
+}
+
+// settingsChangedText is settingsChanged with what is stored now, for each
+// setting where that is not what the form has.
+func settingsChangedText(form, stored *deviceForm) string {
+	orWord := func(s, none string) string {
+		if s == "" {
+			return none
+		}
+		return strconv.Quote(s)
+	}
+	var now []string
+	if strings.TrimSpace(form.Name) != stored.Name {
+		now = append(now, "the name is "+orWord(stored.Name, "empty"))
+	}
+	if form.Updates != stored.Updates {
+		if stored.Updates {
+			now = append(now, "firmware updates are on")
+		} else {
+			now = append(now, "firmware updates are off")
+		}
+	}
+	// A pin that is not a version is compared as typed.
+	if pin, err := firmware.CleanPin(form.Pin); (err == nil && pin != stored.Pin) || (err != nil && form.Pin != stored.Pin) {
+		now = append(now, "the firmware pin is "+orWord(stored.Pin, "not set"))
+	}
+	if form.Profile != stored.Profile {
+		now = append(now, "the profile is "+orWord(stored.Profile, "as the device reports"))
+	}
+	if form.Palette != stored.Palette {
+		now = append(now, "the palette is "+orWord(stored.Palette, "the model's default"))
+	}
+	if len(now) == 0 {
+		return settingsChanged + " The values below are what is stored now."
+	}
+	return settingsChanged + " Stored now: " + strings.Join(now, ", ") + ". Save again to use the values below."
 }
