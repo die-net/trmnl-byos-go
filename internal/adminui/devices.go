@@ -141,6 +141,12 @@ type deviceDetail struct {
 	Order       string
 	MoveAction  string
 	LinkedError string
+	// Blocked is whether the device's MAC is blocked, and RemoveError why a
+	// block or unblock was refused, shown in the Remove panel, or "".
+	Blocked     bool
+	RemoveError string
+	// Seen is the standing the page shows, which the block form posts back.
+	Seen standingView
 }
 
 // joinView is the state of the join window.
@@ -152,22 +158,51 @@ type joinView struct {
 }
 
 func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
-	s.renderDevices(w, r, http.StatusOK, "")
+	s.renderDevices(w, r, http.StatusOK, "", blockForm{})
+}
+
+// blockedView is a blocked MAC as the Blocked devices panel lists it.
+type blockedView struct {
+	// MAC is the blocked MAC.
+	MAC string
+	// Name is the name of the device that has the MAC, or its friendly ID if
+	// it has no name, and Href the path of its page. Both are "" when no
+	// registered device has the MAC.
+	Name, Href string
+	// Unblock is the path of the page that asks whether to unblock it.
+	Unblock string
+	// At is when the MAC was blocked.
+	At timeView
+}
+
+// blockForm is the block form of the Blocked devices panel.
+type blockForm struct {
+	// MAC is the text in the MAC input.
+	MAC string
+	// Error is why the last post was refused, shown in the panel, or "".
+	Error string
+	// Invalid is whether MAC is what the error is about, which marks the
+	// input.
+	Invalid bool
 }
 
 // renderDevices sends the devices page, with an error message above the
-// list if msg is not "". The list and the join window are read in one
-// snapshot.
-func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, status int, msg string) {
+// list if msg is not "", and bf as the Blocked devices panel's form. The list,
+// the join window and the blocked MACs are read in one snapshot.
+func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, status int, msg string, bf blockForm) {
 	ctx := r.Context()
 	var rows []db.ListDeviceStatusRow
+	var blocked []db.ListBlockedMACsRow
 	var until time.Time
 	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
 		var err error
 		if rows, err = device.ListStatus(ctx, q); err != nil {
 			return err
 		}
-		until, err = device.JoinUntil(ctx, q)
+		if until, err = device.JoinUntil(ctx, q); err != nil {
+			return err
+		}
+		blocked, err = device.ListBlocked(ctx, q)
 		return err
 	})
 	if err != nil {
@@ -186,13 +221,27 @@ func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, status in
 		join.Until = s.timeAt(until.Unix(), now, false)
 		join.Until.Text = s.untilText(until, now)
 	}
-	s.render(w, r, status, "devices", &pageData{Nav: "devices", Heading: "Devices", Error: msg, Devices: views, Join: join})
+	blockedViews := make([]blockedView, len(blocked))
+	for i := range blocked {
+		b := &blocked[i]
+		v := blockedView{MAC: b.Mac, Unblock: "/blocklist/" + b.Mac, At: s.timeAt(b.BlockedAt, now, false)}
+		if b.FriendlyID != nil {
+			v.Href = "/devices/" + *b.FriendlyID
+			name := ""
+			if b.Name != nil {
+				name = *b.Name
+			}
+			v.Name = deviceLabel(name, *b.FriendlyID)
+		}
+		blockedViews[i] = v
+	}
+	s.render(w, r, status, "devices", &pageData{Nav: "devices", Heading: "Devices", Error: msg, Devices: views, Join: join, Blocked: blockedViews, BlockForm: bf})
 }
 
 // joinWindowForm opens or closes the join window, as the action field of
 // the form says.
 func (s *Server) joinWindowForm(w http.ResponseWriter, r *http.Request) {
-	if !parseForm(w, r, func(status int, msg string) { s.renderDevices(w, r, status, msg) }) {
+	if !parseForm(w, r, func(status int, msg string) { s.renderDevices(w, r, status, msg, blockForm{}) }) {
 		return
 	}
 	now := s.now()
@@ -203,7 +252,7 @@ func (s *Server) joinWindowForm(w http.ResponseWriter, r *http.Request) {
 	case "close":
 		until = now
 	default:
-		s.renderDevices(w, r, http.StatusBadRequest, "Choose Open or Close.")
+		s.renderDevices(w, r, http.StatusBadRequest, "Choose Open or Close.", blockForm{})
 		return
 	}
 	if err := device.SetJoinWindow(r.Context(), s.db, until); err != nil {
@@ -242,10 +291,12 @@ func (s *Server) newDeviceView(x *db.ListDeviceStatusRow, now time.Time) deviceV
 	if x.Rssi != nil {
 		v.RSSI = strconv.FormatInt(*x.Rssi, 10) + " dBm"
 	}
-	switch device.StatusHealth(x.LastSeen, x.LastRefreshRateSent, now) {
-	case device.Online:
+	switch health := device.StatusHealth(x.LastSeen, x.LastRefreshRateSent, now); {
+	case x.Blocked != 0:
+		v.Badge, v.BadgeClass = "Blocked", "badge-warn"
+	case health == device.Online:
 		v.Badge, v.BadgeClass = "Online", "badge-ok"
-	case device.Late:
+	case health == device.Late:
 		v.Badge, v.BadgeClass = "Late", "badge-warn"
 	default:
 		v.Badge, v.BadgeClass = "Never seen", "badge-neutral"
@@ -361,7 +412,7 @@ func (s *Server) deviceFromPath(w http.ResponseWriter, r *http.Request) (db.Devi
 }
 
 func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
-	s.renderDevice(w, r, http.StatusOK, r.PathValue("id"), nil, "", "")
+	s.renderDevice(w, r, http.StatusOK, r.PathValue("id"), nil, "", "", "")
 }
 
 // updateDevice saves the settings form. It checks the name and the pin
@@ -372,7 +423,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !parseForm(w, r, func(status int, msg string) { s.renderDevice(w, r, status, dev.FriendlyID, nil, msg, "") }) {
+	if !parseForm(w, r, func(status int, msg string) { s.renderDevice(w, r, status, dev.FriendlyID, nil, msg, "", "") }) {
 		return
 	}
 	form := deviceForm{
@@ -386,7 +437,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/devices/"+dev.FriendlyID, http.StatusSeeOther)
 	case errors.Is(err, errkind.ErrInvalid):
 		msg := strings.TrimPrefix(err.Error(), errkind.ErrInvalid.Error()+": ")
-		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, &form, capitalize(msg)+".", "")
+		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, &form, capitalize(msg)+".", "", "")
 	default:
 		slog.Error("admin ui: save device", "device", dev.FriendlyID, "err", err)
 		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
@@ -418,16 +469,17 @@ func capitalize(msg string) string {
 // renderDevice sends the page of the device that ref names, a friendly ID or
 // a MAC. A device that does not exist gets the not-found page. A nil form
 // shows the device's stored settings, and a form is what was submitted. msg
-// is an error to show above the settings form, and listMsg one to show in the
-// playlists panel, or "". The page's reads, the device's own row among them,
-// are one snapshot, so the playlist it would show and the playlists it lists
-// agree.
-func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int, ref string, form *deviceForm, msg, listMsg string) {
+// is an error to show above the settings form, listMsg one to show in the
+// playlists panel, and removeMsg one to show in the Remove panel, or "". The
+// page's reads, the device's own row among them, are one snapshot, so the
+// playlist it would show and the playlists it lists agree.
+func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int, ref string, form *deviceForm, msg, listMsg, removeMsg string) {
 	ctx := r.Context()
 	var row db.GetDeviceStatusRow
 	var items []db.ListDeviceItemsRow
 	var linked []db.Playlist
 	var catalog []firmware.Entry
+	var st device.Standing
 	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
 		d, err := device.FindDevice(ctx, q, ref)
 		if err != nil {
@@ -435,6 +487,9 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		}
 		if row, err = q.GetDeviceStatus(ctx, d.ID); err != nil {
 			return fmt.Errorf("get device status: %w", err)
+		}
+		if st, err = device.ReadStanding(ctx, q, d.Mac); err != nil {
+			return err
 		}
 		if items, err = playlist.ListDeviceItems(ctx, q, d.ID); err != nil {
 			return err
@@ -471,6 +526,9 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		Playlist:    []playlistRow{},
 		MoveAction:  "/devices/" + dev.FriendlyID + "/playlists#playlists",
 		LinkedError: listMsg,
+		Blocked:     st.Blocked,
+		RemoveError: removeMsg,
+		Seen:        newStandingView(&st),
 	}
 	order := make([]int64, len(linked))
 	for i := range linked {
@@ -532,7 +590,7 @@ func (s *Server) moveDevicePlaylist(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	refuse := func(status int, msg string) { s.renderDevice(w, r, status, dev.FriendlyID, nil, "", msg) }
+	refuse := func(status int, msg string) { s.renderDevice(w, r, status, dev.FriendlyID, nil, "", msg, "") }
 	if !parseForm(w, r, refuse) {
 		return
 	}
