@@ -139,13 +139,16 @@ func ProfileOverride(dev *db.Device) profile.Override {
 }
 
 // OverrideProblem says why a device's stored profile or palette override
-// is ignored, as a sentence, or "" when it applies or there is none. A
-// stored override can stop applying when the registry drops its model or
-// the device reports a model that does not take its palette. Renders and
-// /api/display then use what the firmware reports, so the device is never
-// stuck, and this is what the device's JSON shows so a page can flag it.
-func OverrideProblem(dev *db.Device) string {
-	model, palette := ProfileOverride(dev).Check(dev.FwModel)
+// is ignored when its firmware reports fwModel, as a sentence, or "" when
+// it applies or there is none. A stored override can stop applying when
+// the registry drops its model or the device reports a model that does not
+// take its palette. Renders and /api/display then use what the firmware
+// reports, so the device is never stuck, and this is what the device's
+// JSON shows so a page can flag it. /api/display passes the request's Model
+// header, which it resolves the profile from, and a page passes the stored
+// fw_model.
+func OverrideProblem(dev *db.Device, fwModel string) string {
+	model, palette := ProfileOverride(dev).Check(fwModel)
 	switch {
 	case model != "" && palette != "":
 		return model + ", and " + palette
