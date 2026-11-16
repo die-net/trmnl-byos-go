@@ -264,7 +264,9 @@ func (s *Server) blockMAC(w http.ResponseWriter, r *http.Request) {
 
 // unblockView is the unblock of a MAC as its confirm page asks about it.
 type unblockView struct {
-	// MAC is the blocked MAC, and Action the path the form posts to.
+	// MAC is the blocked MAC, and Action the path the form posts to. Its
+	// fragment is the Blocked devices panel, where a refusal that sends the
+	// Devices page puts its message.
 	MAC, Action string
 	// Device is the name of the registered device that has the MAC, or its
 	// friendly ID if it has no name, and Href the path of its page. Both
@@ -317,7 +319,7 @@ func (s *Server) renderUnblock(w http.ResponseWriter, r *http.Request, status in
 		s.renderNotFound(w, r, noBlock)
 		return
 	}
-	v := &unblockView{MAC: mac, Action: "/blocklist/" + mac, Deleted: st.Deleted, Seen: newStandingView(&st)}
+	v := &unblockView{MAC: mac, Action: "/blocklist/" + mac + "#blocked", Deleted: st.Deleted, Seen: newStandingView(&st)}
 	if st.DeviceID != 0 {
 		v.Device, v.Href = deviceLabel(dev.Name, dev.FriendlyID), "/devices/"+dev.FriendlyID
 	}

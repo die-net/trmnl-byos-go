@@ -31,7 +31,7 @@
 {{range .Blocked}}<li class="item">
 <div class="item-main">
 <span class="item-name">{{.MAC}}</span>
-{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="rel">Not registered</span>{{end}}
+{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else if .Deleted}}<span class="rel">Deleted device</span>{{else}}<span class="rel">Not registered</span>{{end}}
 <span class="rel">Blocked <time datetime="{{.At.ISO}}">{{.At.Text}}</time></span>
 </div>
 <div class="item-actions">
@@ -39,7 +39,7 @@
 </div>
 </li>
 {{end}}</ol>{{else}}<p class="rel">No MAC is blocked.</p>{{end}}
-<form method="post" action="/blocklist">
+<form method="post" action="/blocklist#blocked">
 <div class="field">
 <label for="mac">MAC address</label>
 <input id="mac" name="mac" type="text" value="{{.BlockForm.MAC}}" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF"{{if .BlockForm.Invalid}} aria-invalid="true"{{end}} aria-describedby="{{if .BlockForm.Error}}mac-error {{end}}mac-hint">

@@ -7,7 +7,7 @@
 <div class="wide"><dt>MAC</dt><dd>{{.MAC}}</dd></div>
 </dl>
 <p class="rel">The device, its settings, logs, playlist links and firmware offers are deleted.{{if .Links}} {{.Links}}{{end}}</p>
-{{if .Blocked}}<p class="rel">It is blocked, so it is not reset while the block lasts. Unblocking it resets it at its next wake.</p>{{else}}<p class="rel">At its next wake the device is reset: it forgets its key, Wi-Fi settings and server, and starts its setup portal. To use it again, open the join window and set it up. It registers as a new device.</p>{{end}}
+{{if .Blocked}}<p class="rel">It is blocked, so it is not reset while the block lasts. Unblocking it resets it at its next check, within a day.</p>{{else}}<p class="rel">At its next wake the device is reset: it forgets its key, Wi-Fi settings and server, and starts its setup portal. To use it again, open the join window and set it up. It registers as a new device.</p>{{end}}
 {{range .Rollouts}}<p class="note">The rollout of {{.Version}} for {{.Model}} ends with it, so that build is offered to no device until a new rollout names a canary.</p>
 {{end}}<form method="post" action="{{.Action}}">
 {{template "standing" .Seen}}

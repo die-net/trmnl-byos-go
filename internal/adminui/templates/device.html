@@ -76,10 +76,12 @@
 <section class="panel" id="remove" aria-labelledby="remove-heading">
 <h2 id="remove-heading">Remove</h2>
 {{if .RemoveError}}<p class="error" role="alert">{{.RemoveError}}</p>{{end}}
-<form method="post" action="/devices/{{.ID}}/block">
+<form method="post" action="/devices/{{.ID}}/block#remove">
 {{template "standing" .Seen}}
-{{if .Blocked}}<p class="rel">This device is blocked. It shows a "Blocked" screen and checks back once a day. Unblocking restores it as it was, with no setup.</p>
-<button class="btn btn-secondary" type="submit" name="action" value="unblock">Unblock device</button>{{else}}<p class="rel">A blocked device shows a "Blocked" screen and checks back once a day. Unblocking restores it as it was.</p>
+{{if .Blocked}}<p class="rel">This device is blocked. It shows a "Blocked" screen and checks back once a day. Unblocking restores it as it was at its next check, within a day, with no setup.</p>{{range .Held}}
+<p class="note">The rollout of {{.Version}} for {{.Model}} waits while this device, its canary, is blocked. That build is offered to no device.</p>{{end}}
+<button class="btn btn-secondary" type="submit" name="action" value="unblock">Unblock device</button>{{else}}<p class="rel">A blocked device shows a "Blocked" screen and checks back once a day. Unblocking restores it as it was.</p>{{range .Held}}
+<p class="note">This device is the canary of the rollout of {{.Version}} for {{.Model}} and has not reported that version. While it is blocked, that build is offered to no device.</p>{{end}}
 <button class="btn btn-secondary btn-danger" type="submit" name="action" value="block">Block device</button>{{end}}
 </form>
 <p class="more"><a class="btn btn-secondary btn-danger" href="/devices/{{.ID}}/delete">Delete device…</a></p>
