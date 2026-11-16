@@ -23,4 +23,28 @@
 {{end}}</ul>{{else}}<div class="empty">
 <h2>No devices yet</h2>
 <p>Use Open for 10 minutes above, then set up the device.</p>
-</div>{{end}}{{end}}
+</div>{{end}}
+<section class="panel blocklist" id="blocked" aria-labelledby="blocked-heading">
+<h2 id="blocked-heading">Blocked devices</h2>
+{{if .BlockForm.Error}}<p class="error" id="mac-error" role="alert">{{.BlockForm.Error}}</p>{{end}}
+{{if .Blocked}}<ol class="items">
+{{range .Blocked}}<li class="item">
+<div class="item-main">
+<span class="item-name">{{.MAC}}</span>
+{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="rel">Not registered</span>{{end}}
+<span class="rel">Blocked <time datetime="{{.At.ISO}}">{{.At.Text}}</time></span>
+</div>
+<div class="item-actions">
+<a class="btn btn-secondary" href="{{.Unblock}}" aria-label="Unblock {{.MAC}}…">Unblock…</a>
+</div>
+</li>
+{{end}}</ol>{{else}}<p class="rel">No MAC is blocked.</p>{{end}}
+<form method="post" action="/blocklist">
+<div class="field">
+<label for="mac">MAC address</label>
+<input id="mac" name="mac" type="text" value="{{.BlockForm.MAC}}" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF"{{if .BlockForm.Invalid}} aria-invalid="true"{{end}} aria-describedby="{{if .BlockForm.Error}}mac-error {{end}}mac-hint">
+<p class="hint" id="mac-hint">A blocked device shows a "Blocked" screen and cannot register, even while the join window is open.</p>
+</div>
+<button class="btn btn-secondary btn-danger" type="submit">Block</button>
+</form>
+</section>{{end}}

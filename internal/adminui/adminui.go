@@ -99,8 +99,8 @@ func New(client *db.Client, cfg Config) *Server {
 	// Each page is the base layout with the page's own blocks, so pages
 	// that define the same block do not clash.
 	s.pages["login"] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/login.html"))
-	for _, name := range []string{"devices", "device", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "settings", "notfound"} {
-		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/instance_fields.html", "templates/"+name+".html"))
+	for _, name := range []string{"devices", "device", "device_delete", "unblock", "playlists", "playlist", "playlist_item", "playlist_item_delete", "playlist_delete", "recipes", "recipe", "instance", "instance_delete", "firmware", "firmware_build", "firmware_cancel", "settings", "notfound"} {
+		s.pages[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/shell.html", "templates/icons.html", "templates/screen.html", "templates/schedule.html", "templates/firmware_facts.html", "templates/instance_fields.html", "templates/standing.html", "templates/"+name+".html"))
 	}
 	return s
 }
@@ -116,6 +116,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /devices/{id}", page(s.requireSession(s.deviceDetail)))
 	mux.Handle("POST /devices/{id}", page(s.requireSession(s.updateDevice)))
 	mux.Handle("POST /devices/{id}/playlists", page(s.requireSession(s.moveDevicePlaylist)))
+	mux.Handle("POST /devices/{id}/block", page(s.requireSession(s.blockDevice)))
+	mux.Handle("GET /devices/{id}/delete", page(s.requireSession(s.confirmDeleteDevice)))
+	mux.Handle("POST /devices/{id}/delete", page(s.requireSession(s.deleteDevice)))
+	mux.Handle("POST /blocklist", page(s.requireSession(s.blockMAC)))
+	mux.Handle("GET /blocklist/{mac}", page(s.requireSession(s.confirmUnblock)))
+	mux.Handle("POST /blocklist/{mac}", page(s.requireSession(s.unblockMAC)))
 	mux.Handle("POST /join", page(s.requireSession(s.joinWindowForm)))
 	mux.Handle("GET /recipes", page(s.requireSession(s.recipes)))
 	mux.Handle("POST /recipes", page(s.requireSession(s.uploadRecipe)))
@@ -219,6 +225,14 @@ type pageData struct {
 	// join window it shows.
 	Devices []deviceView
 	Join    joinView
+	// Blocked is the MACs the devices page lists as blocked, and BlockForm
+	// the form that blocks another.
+	Blocked   []blockedView
+	BlockForm blockForm
+	// DeviceDelete is the device deletion its confirm page asks about, and
+	// Unblock the unblock of a MAC its confirm page asks about.
+	DeviceDelete *deviceDeleteView
+	Unblock      *unblockView
 	// Detail is the device the device page shows.
 	Detail *deviceDetail
 	// Playlists is what the playlists page lists, PlaylistEdit the playlist

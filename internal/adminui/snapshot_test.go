@@ -19,10 +19,13 @@ func TestVanishedRowIsNotFound(t *testing.T) {
 		want   string
 	}{
 		{"device by friendly ID", func(tu *testUI, w http.ResponseWriter, r *http.Request) {
-			tu.srv.renderDevice(w, r, http.StatusBadRequest, "ZZZ999", nil, "a message", "")
+			tu.srv.renderDevice(w, r, http.StatusBadRequest, "ZZZ999", nil, "a message", "", "")
 		}, "No such device"},
 		{"device by MAC", func(tu *testUI, w http.ResponseWriter, r *http.Request) {
-			tu.srv.renderDevice(w, r, http.StatusOK, "aa:bb:cc:dd:ee:ff", nil, "", "")
+			tu.srv.renderDevice(w, r, http.StatusOK, "aa:bb:cc:dd:ee:ff", nil, "", "", "")
+		}, "No such device"},
+		{"device to delete", func(tu *testUI, w http.ResponseWriter, r *http.Request) {
+			tu.srv.renderDeviceDelete(w, r, http.StatusConflict, "ZZZ999", "a message")
 		}, "No such device"},
 		{"instance to remove", func(tu *testUI, w http.ResponseWriter, r *http.Request) {
 			tu.srv.renderInstanceDelete(w, r, http.StatusConflict, 999)

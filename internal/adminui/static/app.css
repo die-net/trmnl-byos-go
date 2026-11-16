@@ -1017,3 +1017,27 @@ fieldset.field-setting legend {
     transition: none;
   }
 }
+
+/* A panel under the device grid or its empty state. */
+.grid + .panel,
+.empty + .panel {
+  margin-top: var(--space-4);
+}
+
+/* The form that blocks a MAC, after the list of blocked MACs or the line
+   that says there are none. */
+.blocklist .items + form,
+.blocklist .rel + form {
+  margin-top: var(--space-4);
+}
+
+.blocklist .items + form {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+/* A device name that is too long for the row wraps. */
+.blocklist .item-main a {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

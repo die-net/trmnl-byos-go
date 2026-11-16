@@ -73,5 +73,16 @@
 {{end}}</ol>{{else}}<p class="rel">This device is linked to no playlist. Link one from a playlist's page.</p>
 <p class="more"><a href="/playlists">All playlists</a></p>{{end}}
 </section>
+<section class="panel" id="remove" aria-labelledby="remove-heading">
+<h2 id="remove-heading">Remove</h2>
+{{if .RemoveError}}<p class="error" role="alert">{{.RemoveError}}</p>{{end}}
+<form method="post" action="/devices/{{.ID}}/block">
+{{template "standing" .Seen}}
+{{if .Blocked}}<p class="rel">This device is blocked. It shows a "Blocked" screen and checks back once a day. Unblocking restores it as it was, with no setup.</p>
+<button class="btn btn-secondary" type="submit" name="action" value="unblock">Unblock device</button>{{else}}<p class="rel">A blocked device shows a "Blocked" screen and checks back once a day. Unblocking restores it as it was.</p>
+<button class="btn btn-secondary btn-danger" type="submit" name="action" value="block">Block device</button>{{end}}
+</form>
+<p class="more"><a class="btn btn-secondary btn-danger" href="/devices/{{.ID}}/delete">Delete device…</a></p>
+</section>
 </div>
 </div>{{end}}{{end}}
