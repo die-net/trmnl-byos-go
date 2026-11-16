@@ -35,8 +35,8 @@ type Change struct {
 	// for none, one of its model's palettes, or empty for the model's
 	// default.
 	Palette *string
-	// Seen is the SettingsState a page showed, or nil from the command line
-	// and the API, which are not checked.
+	// Seen is the SettingsState the caller read, from a page or an API client.
+	// Nil means none was sent, as from the command line, and is not checked.
 	Seen *string
 }
 
