@@ -141,6 +141,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /recipes", page(s.requireSession(s.recipes)))
 	mux.Handle("POST /recipes", page(s.requireSession(s.uploadRecipe)))
 	mux.Handle("GET /recipes/{id}", page(s.requireSession(s.recipePage)))
+	mux.Handle("POST /recipes/replace/{id}", page(s.requireSession(s.replaceRecipe)))
 	mux.Handle("POST /recipes/add-instance/{id}", page(s.requireSession(s.addInstance)))
 	mux.Handle("GET /recipes/instances/{id}", page(s.requireSession(s.instancePage)))
 	mux.Handle("POST /recipes/instances/{id}", page(s.requireSession(s.saveInstance)))

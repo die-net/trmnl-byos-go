@@ -11,4 +11,27 @@
 {{template "instance-fields" .}}
 <button class="btn btn-primary" type="submit">{{.Submit}}</button>
 </form>
-</section>{{end}}{{end}}
+</section>
+{{with .Replace}}<section class="panel form-panel" id="replace" aria-labelledby="replace-title">
+<h2 id="replace-title">Replace the files</h2>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}{{if .Done}}<p class="done" role="status">{{.Done}}</p>{{end}}
+{{if .Instances}}{{if .Heading}}<p>{{.Heading}}</p>
+{{end}}<ul class="replaced">
+{{range .Instances}}<li>
+<a href="{{.Href}}">{{.Name}}</a>
+<ul>
+{{if .Sealed}}<li>Now sealed as a secret: {{range $i, $k := .Sealed}}{{if $i}}, {{end}}<code>{{$k}}</code>{{end}}</li>
+{{end}}{{if .Marked}}<li>Marked secret, so the sealed value stays sealed: {{range $i, $k := .Marked}}{{if $i}}, {{end}}<code>{{$k}}</code>{{end}}</li>
+{{end}}{{range .Problems}}<li><code>{{.Key}}</code> {{.Msg}}</li>
+{{end}}</ul>
+</li>
+{{end}}</ul>
+{{end}}<form method="post" action="{{.Action}}" enctype="multipart/form-data">
+<div class="field">
+<label for="recipe">Recipe zip file</label>
+<input id="recipe" name="recipe" type="file" accept=".zip,application/zip" required>
+<p class="hint">A zip file with a settings.yml, up to {{.Limit}}. The recipe keeps its instances and their values.</p>
+</div>
+<button class="btn btn-secondary" type="submit">Replace</button>
+</form>
+</section>{{end}}{{end}}{{end}}
