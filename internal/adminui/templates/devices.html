@@ -1,7 +1,7 @@
 {{define "title"}}{{.Heading}}{{end}}
 {{define "content"}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 <form class="notice" method="post" action="/join">
-{{if .Join.Open}}<p>New devices can register until <time datetime="{{.Join.Until.ISO}}">{{.Join.Until.Text}}</time>.</p>
+{{if .Join.Open}}<p>New devices can register until {{template "time" .Join.Until}}.</p>
 <button class="btn btn-secondary" type="submit" name="action" value="close">Close</button>{{else}}<p>New devices cannot register.</p>
 <button class="btn btn-secondary" type="submit" name="action" value="open">Open for 10 minutes</button>{{end}}
 </form>
@@ -14,7 +14,7 @@
 </div>
 {{if .Detail}}<p class="detail">{{.Detail}}</p>{{end}}
 <dl class="facts">
-<div><dt>Last seen</dt><dd>{{if .LastSeenISO}}<time datetime="{{.LastSeenISO}}" title="{{.LastSeenTitle}}">{{.LastSeenText}}</time>{{else}}{{.LastSeenText}}{{end}}</dd></div>
+<div><dt>Last seen</dt><dd>{{if .LastSeenISO}}<time datetime="{{.LastSeenISO}}" title="{{.LastSeenTitle}}" data-local="title">{{.LastSeenText}}</time>{{else}}{{.LastSeenText}}{{end}}</dd></div>
 <div><dt>Battery</dt><dd>{{.Battery}}</dd></div>
 <div><dt>Wi-Fi signal</dt><dd>{{.RSSI}}</dd></div>
 <div><dt>Firmware</dt><dd>{{.Firmware}}</dd></div>
@@ -32,7 +32,7 @@
 <div class="item-main">
 <span class="item-name">{{.MAC}}</span>
 {{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else if .Deleted}}<span class="rel">Deleted device</span>{{else}}<span class="rel">Not registered</span>{{end}}
-<span class="rel">Blocked <time datetime="{{.At.ISO}}">{{.At.Text}}</time></span>
+<span class="rel">Blocked {{template "time" .At}}</span>
 </div>
 <div class="item-actions">
 <a class="btn btn-secondary" href="{{.Unblock}}" aria-label="Unblock {{.MAC}}…">Unblock…</a>

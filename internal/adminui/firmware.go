@@ -56,8 +56,9 @@ type firmwareView struct {
 	ModelParts []string
 	Version    string
 	Chip       string
-	// Size and Uploaded are the file's size and the day it was added.
-	Size, Uploaded string
+	// Size is the file's size, and Uploaded the day it was added.
+	Size     string
+	Uploaded timeView
 	// SHA is the file's SHA-256, shown only when ShowSHA is set.
 	SHA     string
 	ShowSHA bool
@@ -72,9 +73,9 @@ type firmwareView struct {
 	// CanaryReports is the version the canary last reported, or words for
 	// none.
 	CanaryReports string
-	// LastOffered is when the canary was last offered the build, and
-	// Started when the rollout started.
-	LastOffered, Started string
+	// LastOffered is when the canary was last offered the build, with no
+	// ISO if it never was, and Started when the rollout started.
+	LastOffered, Started timeView
 	// Href is the build's page. StartLabel is the text of the link to it
 	// that starts or restarts the rollout, and StartAria its accessible
 	// name.
@@ -110,9 +111,10 @@ type deviceOfferView struct {
 	Offered     bool
 	Why         string
 	InsteadHref string
-	// Offers says how often the device was offered the build and when it
-	// last was, or is "" if never.
-	Offers string
+	// Offers says how often the device was offered the build, or is "" if
+	// never, and LastOffer is when it last was, with no ISO if not known.
+	Offers    string
+	LastOffer timeView
 }
 
 // buildView is the page of one build.
@@ -199,7 +201,7 @@ func (s *Server) firmwareViewOf(e *firmware.Entry) firmwareView {
 	name := e.FwModel + " " + e.Version
 	v := firmwareView{
 		ID: e.ID, Model: e.FwModel, ModelParts: strings.SplitAfter(e.FwModel, "_"), Version: e.Version, Chip: e.Chip, Size: firmware.ByteSize(e.Bytes), SHA: e.Sha256,
-		Uploaded: time.Unix(e.UploadedAt, 0).In(s.zone).Format(dayLayout),
+		Uploaded: s.dayAt(e.UploadedAt),
 		Badge:    stageBadge(e.Stage), Offer: stageText(e),
 		Href: buildHref(e.ID), StartLabel: "Start rollout",
 	}
@@ -210,11 +212,11 @@ func (s *Server) firmwareViewOf(e *firmware.Entry) firmwareView {
 		if v.CanaryReports == "" {
 			v.CanaryReports = "Nothing yet"
 		}
-		v.LastOffered = "Never"
+		v.LastOffered = timeView{Text: "Never"}
 		if e.CanaryLastOfferedAt != 0 {
-			v.LastOffered = time.Unix(e.CanaryLastOfferedAt, 0).In(s.zone).Format(timeLayout)
+			v.LastOffered = s.timeAt(e.CanaryLastOfferedAt, time.Time{}, false)
 		}
-		v.Started = time.Unix(e.StartedAt, 0).In(s.zone).Format(timeLayout)
+		v.Started = s.timeAt(e.StartedAt, time.Time{}, false)
 	}
 	if hasActiveRollout(e) {
 		v.StartLabel = "Restart rollout"
@@ -456,7 +458,7 @@ func (s *Server) deviceOfferViewOf(o *firmware.DeviceOffer, name string) deviceO
 	if o.Offers > 0 {
 		v.Offers = fmt.Sprintf("Offered %d of %d times", o.Offers, firmware.MaxOffers)
 		if o.LastOfferedAt != 0 {
-			v.Offers += ", last " + time.Unix(o.LastOfferedAt, 0).In(s.zone).Format(timeLayout)
+			v.LastOffer = s.timeAt(o.LastOfferedAt, time.Time{}, false)
 		}
 	}
 	return v

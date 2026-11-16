@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/locale"
 	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
@@ -65,7 +66,7 @@ func TestSettingsPage(t *testing.T) {
 	if n := strings.Count(body, "Reset to default"); n != 1 {
 		t.Errorf("%d reset buttons, want 1", n)
 	}
-	for _, bad := range []string{"<script", "style=", "<style", " onclick=", " onsubmit="} {
+	for _, bad := range []string{"<script>", "style=", "<style", " onclick=", " onsubmit="} {
 		if strings.Contains(body, bad) {
 			t.Errorf("page has inline %q, which the CSP refuses", bad)
 		}
@@ -356,5 +357,160 @@ func TestSettingsNav(t *testing.T) {
 	body := tu.get(t, tu.signIn(t), "/settings").Body.String()
 	if strings.Count(body, `aria-current="page"`) != 1 || !strings.Contains(body, `<a href="/settings" aria-current="page">`) {
 		t.Error("the page does not mark Settings as the current page")
+	}
+}
+
+// localePanel returns the locale setting's panel of the settings page.
+func localePanel(t *testing.T, body string) string {
+	t.Helper()
+	_, panel, ok := strings.Cut(body, `id="locale"`)
+	if !ok {
+		t.Fatalf("page has no locale panel: %s", body)
+	}
+	panel, _, _ = strings.Cut(panel, "</li>")
+	return panel
+}
+
+// selectedOption returns the options of the panel that are selected.
+func selectedOption(panel string) []string {
+	var out []string
+	for _, part := range strings.Split(panel, "<option ")[1:] {
+		if strings.HasPrefix(part, `value="`) && strings.Contains(strings.SplitN(part, ">", 2)[0], " selected") {
+			out = append(out, strings.SplitN(part[len(`value="`):], `"`, 2)[0])
+		}
+	}
+	return out
+}
+
+func TestSettingsLocalePanel(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	c := tu.signIn(t)
+	w := tu.get(t, c, "/settings")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	panel := localePanel(t, w.Body.String())
+	for _, want := range []string{"<h2>Locale</h2>", "<code>locale</code>", `<select id="value-locale" name="value" aria-describedby="hint-locale">`, "This is the default."} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("panel lacks %q", want)
+		}
+	}
+	for _, code := range locale.Codes() {
+		label := code
+		if code == locale.Default {
+			label += " (default)"
+		}
+		if want := `<option value="` + code + `"`; !strings.Contains(panel, want) || !strings.Contains(panel, ">"+label+"</option>") {
+			t.Errorf("panel lacks the option %q", label)
+		}
+	}
+	if got := selectedOption(panel); len(got) != 1 || got[0] != locale.Default {
+		t.Errorf("selected %v, want only %q", got, locale.Default)
+	}
+	if strings.Contains(panel, "Reset to default") {
+		t.Error("an unset locale has a reset button")
+	}
+}
+
+func TestSettingsLocaleSaveAndReset(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	c := tu.signIn(t)
+	var want string
+	for _, code := range locale.Codes() {
+		if code != locale.Default {
+			want = code
+			break
+		}
+	}
+	if want == "" {
+		t.Fatal("no locale other than the default")
+	}
+	w := tu.post(t, c, "/settings", url.Values{"key": {"locale"}, "value": {want}})
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/settings#locale" {
+		t.Fatalf("status %d to %q, want 303 to /settings#locale", w.Code, w.Header().Get("Location"))
+	}
+	if got, err := settings.Locale(t.Context(), tu.db.Read); err != nil || got != want {
+		t.Fatalf("stored %q, %v, want %q", got, err, want)
+	}
+	panel := localePanel(t, tu.get(t, c, "/settings").Body.String())
+	if got := selectedOption(panel); len(got) != 1 || got[0] != want {
+		t.Errorf("selected %v, want only %q", got, want)
+	}
+	for _, s := range []string{"Reset to default", "The default is " + locale.Default + "."} {
+		if !strings.Contains(panel, s) {
+			t.Errorf("panel after a save lacks %q", s)
+		}
+	}
+
+	w = tu.post(t, c, "/settings/reset", url.Values{"key": {"locale"}})
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/settings#locale" {
+		t.Fatalf("reset status %d to %q", w.Code, w.Header().Get("Location"))
+	}
+	if st := storedSettings(t, tu)["locale"]; st.Set || st.Text != locale.Default {
+		t.Errorf("after reset %+v, want the default and not set", st)
+	}
+	panel = localePanel(t, tu.get(t, c, "/settings").Body.String())
+	if got := selectedOption(panel); len(got) != 1 || got[0] != locale.Default || strings.Contains(panel, "Reset to default") {
+		t.Errorf("after reset selected %v, panel %s", got, panel)
+	}
+}
+
+func TestSaveLocaleRefused(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"xx", "", "EN", "en "} {
+		t.Run("value "+value, func(t *testing.T) {
+			t.Parallel()
+			tu := newTestUI(t, Config{}, true)
+			w := tu.post(t, tu.signIn(t), "/settings", url.Values{"key": {"locale"}, "value": {value}})
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400", w.Code)
+			}
+			body := w.Body.String()
+			panel := localePanel(t, body)
+			wantInOrder(t, panel, `<p class="error" role="alert" id="error-locale">Choose one of the listed values.</p>`,
+				`<select id="value-locale" name="value" aria-describedby="error-locale hint-locale" aria-invalid="true">`)
+			if got := selectedOption(panel); len(got) != 1 || got[0] != locale.Default {
+				t.Errorf("selected %v, want the value in effect %q", got, locale.Default)
+			}
+			if n := strings.Count(body, `role="alert"`); n != 1 {
+				t.Errorf("%d messages, want 1", n)
+			}
+			if st := storedSettings(t, tu)["locale"]; st.Set {
+				t.Errorf("stored %+v after a refusal", st)
+			}
+		})
+	}
+}
+
+func TestSettingsLocaleBadRow(t *testing.T) {
+	t.Parallel()
+	tu := newTestUI(t, Config{}, true)
+	c := tu.signIn(t)
+	putBadSetting(t, tu, "locale", "xx")
+	w := tu.get(t, c, "/settings")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200", w.Code)
+	}
+	panel := localePanel(t, w.Body.String())
+	wantInOrder(t, panel, `<p class="error" role="alert" id="error-locale">The stored value &#34;xx&#34; is not usable, so the default is in effect.`,
+		`aria-describedby="error-locale hint-locale">`, "The default is "+locale.Default+".", "Reset to default")
+	if got := selectedOption(panel); len(got) != 1 || got[0] != locale.Default {
+		t.Errorf("selected %v, want %q", got, locale.Default)
+	}
+	if strings.Contains(panel, "aria-invalid") {
+		t.Error("the select is marked invalid")
+	}
+
+	w = tu.post(t, c, "/settings", url.Values{"key": {"locale"}, "value": {locale.Default}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("save status %d, want 303", w.Code)
+	}
+	if st := storedSettings(t, tu)["locale"]; st.Bad != nil || !st.Set || st.Text != locale.Default {
+		t.Errorf("after a save %+v, want a good row", st)
+	}
+	if body := tu.get(t, c, "/settings").Body.String(); strings.Contains(body, `role="alert"`) {
+		t.Error("the page still has a message")
 	}
 }

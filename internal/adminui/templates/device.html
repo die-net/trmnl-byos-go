@@ -4,7 +4,7 @@
 <h1>{{.Heading}}</h1>
 <span class="badge {{.Detail.View.BadgeClass}}">{{.Detail.View.Badge}}</span>
 </div>{{end}}
-{{define "when"}}{{if .ISO}}<time datetime="{{.ISO}}">{{.Text}}</time>{{if .Rel}} <span class="rel">({{.Rel}})</span>{{end}}{{else}}{{.Text}}{{end}}{{end}}
+{{define "when"}}{{template "time" .}}{{if .Rel}} <span class="rel">({{.Rel}})</span>{{end}}{{end}}
 {{define "content"}}{{with .Detail}}<div class="detail-layout">
 <div class="detail-main">
 {{template "screen" .View}}
@@ -23,7 +23,10 @@
 <div><dt>Last wake took</dt><dd>{{.WakeTime}}</dd></div>
 <div><dt>Last wake cause</dt><dd>{{.WakeCause}}</dd></div>
 <div class="wide"><dt>Registered</dt><dd>{{template "when" .Registered}}</dd></div>
+<div class="wide"><dt>Time zone</dt><dd>{{.Zone.Value}}{{if .Zone.Note}} <span class="rel">({{.Zone.Note}})</span>{{end}}</dd></div>
+<div class="wide"><dt>Locale</dt><dd>{{.Locale.Value}}{{if .Locale.Note}} <span class="rel">({{.Locale.Note}})</span>{{end}}</dd></div>
 </dl>
+<p class="rel zone-note" id="zone-note" data-device-zone="{{.ZoneNote.Device}}"{{if .ZoneNote.Same}} hidden{{end}}>The times above are in {{.ZoneNote.Page}}, the server's time zone. Schedules are read in this device's time zone, {{.ZoneNote.Device}}.</p>
 </section>
 </div>
 <div class="detail-side">
@@ -61,6 +64,18 @@
 {{end}}</select>
 <p class="hint" id="palette-hint">Used when an instance asks for no palette. These are the palettes of {{.Form.PaletteModel}}. To pick a palette of another profile, save the profile first.</p>
 </div>
+<div class="field">
+<label for="time_zone">Time zone</label>
+<input id="time_zone" name="time_zone" type="text" value="{{.Form.Zone}}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="{{.Form.ServerZone}}" aria-describedby="time_zone-hint">
+<p class="hint" id="time_zone-hint">An IANA name, such as Europe/Berlin. Leave empty for the server's, {{.Form.ServerZone}}. The device's schedules are read in this zone, and its screens are rendered for it.</p>
+</div>
+<div class="field">
+<label for="locale">Locale</label>
+<select id="locale" name="locale" aria-describedby="locale-hint">
+{{range .Form.Locales}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+<p class="hint" id="locale-hint">The language and formats the device's screens are rendered in.</p>
+</div>
 <button class="btn btn-primary" type="submit">Save</button>
 </form>
 </section>
@@ -74,7 +89,7 @@
 <section class="panel" id="playlists" aria-labelledby="playlists-heading">
 <h2 id="playlists-heading">Playlists</h2>
 {{if .LinkedError}}<p class="error" role="alert">{{.LinkedError}}</p>{{end}}
-{{if .Linked}}{{$many := gt (len .Linked) 1}}<p class="rel">The device shows the first of these that is scheduled now.</p>
+{{if .Linked}}{{$many := gt (len .Linked) 1}}<p class="rel">The device shows the first of these that is scheduled now. Their hours are on the device's clock, in {{$.Detail.ZoneNote.Device}}.</p>
 <ol class="items">
 {{range .Linked}}<li class="item">
 <div class="item-main">

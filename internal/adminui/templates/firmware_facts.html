@@ -3,11 +3,11 @@
 <div class="wide"><dt>Model</dt><dd><code>{{.Model}}</code></dd></div>
 <div><dt>Chip</dt><dd>{{.Chip}}</dd></div>
 <div><dt>Size</dt><dd>{{.Size}}</dd></div>
-<div><dt>Uploaded</dt><dd>{{.Uploaded}}</dd></div>
+<div><dt>Uploaded</dt><dd>{{template "time" .Uploaded}}</dd></div>
 {{if .ShowSHA}}<div class="wide"><dt>SHA-256</dt><dd><code>{{.SHA}}</code></dd></div>
 {{end}}{{if .HasRollout}}<div><dt>Canary</dt><dd><a href="{{.Canary.Href}}">{{.Canary.Name}}</a></dd></div>
 <div><dt>Canary reports</dt><dd>{{.CanaryReports}}</dd></div>
-<div><dt>Canary last offered</dt><dd>{{.LastOffered}}</dd></div>
-<div><dt>Started</dt><dd>{{.Started}}</dd></div>
+<div><dt>Canary last offered</dt><dd>{{template "time" .LastOffered}}</dd></div>
+<div><dt>Started</dt><dd>{{template "time" .Started}}</dd></div>
 {{end}}</dl>
 <p class="rel">{{.Offer}}</p>{{end}}

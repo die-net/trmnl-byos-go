@@ -41,6 +41,10 @@ var settingTexts = map[string]settingText{
 		unit:    "seconds",
 		seconds: true,
 	},
+	settings.KeyLocale: {
+		label: "Locale",
+		help:  []helpPart{{Text: "The language and formats screens are rendered in, unless a device sets its own. A change makes each affected screen render again."}},
+	},
 	settings.KeyMinPasswordLength: {
 		label: "Minimum password length",
 		help: []helpPart{
@@ -50,6 +54,15 @@ var settingTexts = map[string]settingText{
 		},
 		unit: "bytes",
 	},
+}
+
+// choiceOption is one value a choice setting may have, as an option of its
+// select.
+type choiceOption struct {
+	// Value is the code that is saved, and Label is the option's text.
+	Value, Label string
+	// Selected is whether this is the value in effect.
+	Selected bool
 }
 
 // settingView is a setting as the settings page shows it.
@@ -64,11 +77,14 @@ type settingView struct {
 	Value string
 	// Words is the value in effect in hours, minutes and seconds, or "".
 	Words string
-	// Range says what values are allowed, and State that the value is the
-	// default, or what the default is.
+	// Range says what values are allowed, or is "" for a choice setting,
+	// and State that the value is the default, or what the default is.
 	Range, State string
 	// Min and Max bound the input.
 	Min, Max int64
+	// Choices are the options of the select, for a setting with a fixed set
+	// of values. It is nil for a setting that is a whole number.
+	Choices []choiceOption
 	// CanReset is whether the setting has a stored value to remove.
 	CanReset bool
 	// Error is why a save of this setting was refused, or "".
@@ -89,19 +105,31 @@ func newSettingView(st *settings.Setting) settingView {
 		Key: st.Key, Label: label, Help: text.help, Unit: text.unit,
 		Value: strconv.FormatInt(st.Value, 10), Min: st.Min, Max: st.Max, CanReset: st.Set,
 	}
+	if st.Choices != nil {
+		v.Value = st.Text
+		v.Choices = make([]choiceOption, len(st.Choices))
+		for i, c := range st.Choices {
+			v.Choices[i] = choiceOption{Value: c, Label: c, Selected: c == st.Text}
+			if c == st.DefaultText {
+				v.Choices[i].Label += " (default)"
+			}
+		}
+	}
 	if st.Bad != nil {
 		v.Bad = `The stored value "` + *st.Bad + `" is not usable, so the default is in effect. Save a value or reset to the default.`
 	}
 	if text.seconds && st.Value >= 60 {
 		v.Words = spanText(st.Value)
 	}
-	v.Range = fmt.Sprintf("Allowed: %d to %d", st.Min, st.Max)
-	if text.unit != "" {
-		v.Range += " " + text.unit
+	if st.Choices == nil {
+		v.Range = fmt.Sprintf("Allowed: %d to %d", st.Min, st.Max)
+		if text.unit != "" {
+			v.Range += " " + text.unit
+		}
+		v.Range += "."
 	}
-	v.Range += "."
 	if st.Set {
-		v.State = fmt.Sprintf("The default is %d.", st.Default)
+		v.State = "The default is " + st.DefaultText + "."
 	} else {
 		v.State = "This is the default."
 	}
@@ -115,8 +143,8 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 
 // renderSettings sends the settings page with the status. msg is shown at
 // the top. If refused is not "", it is the key of a setting whose save was
-// refused as not a whole number in its bounds: its panel says so, with the
-// bounds the settings package reports, and its input shows typed. The
+// refused as not a whole number in its bounds, or not one of its choices: its
+// panel says so, and for a number its input shows typed. The
 // settings are read in one snapshot, so two changed together are never shown
 // half changed.
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status int, msg, refused, typed string) {
@@ -132,15 +160,16 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 	}
 	views := make([]settingView, 0, len(list))
 	for i := range list {
-		if list[i].Choices != nil {
-			// The panel is for a whole number. A setting with a fixed set of
-			// values has no panel yet.
-			continue
-		}
 		v := newSettingView(&list[i])
 		if refused != "" && list[i].Key == refused {
-			v.Error = fmt.Sprintf("Enter a whole number from %d to %d.", list[i].Min, list[i].Max)
-			v.Value = typed
+			if list[i].Choices != nil {
+				// A value outside the list cannot be shown, so the select
+				// keeps the value in effect.
+				v.Error = "Choose one of the listed values."
+			} else {
+				v.Error = fmt.Sprintf("Enter a whole number from %d to %d.", list[i].Min, list[i].Max)
+				v.Value = typed
+			}
 		}
 		views = append(views, v)
 	}

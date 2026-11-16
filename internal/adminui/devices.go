@@ -16,8 +16,10 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
+	"github.com/die-net/trmnl-byos-go/internal/locale"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
+	"github.com/die-net/trmnl-byos-go/internal/settings"
 )
 
 const (
@@ -65,13 +67,29 @@ type deviceView struct {
 	Lazy bool
 }
 
-// timeView is a time as the detail page shows it.
+// The ways a time is written, which the page's script follows when it
+// writes the time again in the browser's zone.
+const (
+	// timeFull is the day and the time of day, as timeLayout.
+	timeFull = "full"
+	// timeClock is the time of day alone, for a time later today.
+	timeClock = "clock"
+	// timeDay is the day alone.
+	timeDay = "day"
+)
+
+// timeView is a time as a page shows it: a time element with the instant in
+// UTC and, as its text, the time in the server's zone. The text is what a
+// browser without the script shows. The script writes it again in the
+// browser's zone.
 type timeView struct {
 	// ISO is the time as RFC 3339, or "" if it is not known, when Text is
 	// missing.
 	ISO string
 	// Text is the time in the server's zone.
 	Text string
+	// Kind is how Text is written: timeFull, timeClock or timeDay.
+	Kind string
 	// Rel is how long ago it was, such as "4 min ago", or "".
 	Rel string
 }
@@ -114,6 +132,16 @@ type profileOption struct {
 	Selected bool
 }
 
+// localeOption is a choice in the locale list.
+type localeOption struct {
+	// Value is the locale's code, or "" for the server's.
+	Value string
+	// Label is the option's text.
+	Label string
+	// Selected is whether it is the form's locale.
+	Selected bool
+}
+
 // deviceForm is the settings form's values.
 type deviceForm struct {
 	// Name is the device's name, or "" for none.
@@ -134,6 +162,13 @@ type deviceForm struct {
 	Palette      string
 	Palettes     []paletteOption
 	PaletteModel string
+	// Zone is the IANA time zone set for the device, or "" for the
+	// server's, and ServerZone the server's, which an empty Zone uses.
+	Zone, ServerZone string
+	// Locale is the locale set for the device, or "" for the server's, and
+	// Locales the choices.
+	Locale  string
+	Locales []localeOption
 	// Seen is the device.SettingsState of the settings stored when the page
 	// was made, which the form posts back.
 	Seen string
@@ -176,12 +211,71 @@ type deviceDetail struct {
 	// block or unblock was refused, shown in the Remove panel, or "".
 	Blocked     bool
 	RemoveError string
+	// Zone and Locale are the time zone and locale in use for the device.
+	Zone, Locale inUseView
+	// ZoneNote tells the reader which zone the page's times are in and
+	// which the device is in.
+	ZoneNote zoneNote
 	// Seen is the standing the page shows, which the block form posts back.
 	Seen standingView
 	// Held are the rollouts that offer their build to no device while this
 	// device, their canary, is blocked: those it has not yet reported the
 	// version of.
 	Held []rolloutRef
+}
+
+// inUseView is a time zone or locale in use for a device.
+type inUseView struct {
+	// Value is the one in use.
+	Value string
+	// Note says where it comes from when it is not the device's own, such
+	// as "the server's", or is "".
+	Note string
+}
+
+// zoneNote is the line that says which zone a device page's times are in
+// and which the device is in. It is written for the server's zone, and the
+// page's script writes it again for the browser's.
+type zoneNote struct {
+	// Page is the zone the times are written in: the server's.
+	Page string
+	// Device is the zone in use for the device.
+	Device string
+	// Same is whether the two keep the same time, when the line is left
+	// out.
+	Same bool
+}
+
+// sameZone reports whether two zones keep the same time: at now and at two
+// more times of the year, so two names for one zone, such as UTC and
+// Etc/UTC, are the same, and two zones that agree only for part of the year
+// are not. The page's script decides the same way for the browser's zone.
+func sameZone(a, b *time.Location, now time.Time) bool {
+	if a.String() == b.String() {
+		return true
+	}
+	for k := range 3 {
+		t := now.Add(time.Duration(k) * 120 * 24 * time.Hour)
+		_, offA := t.In(a).Zone()
+		_, offB := t.In(b).Zone()
+		if offA != offB {
+			return false
+		}
+	}
+	return true
+}
+
+// inUse describes the value in use for a device setting: stored when it is
+// the one in use, the server's when stored is empty, and the server's with
+// a reason when stored does not apply.
+func inUse(stored, used, reason string) inUseView {
+	switch {
+	case stored == "":
+		return inUseView{Value: used, Note: "the server's"}
+	case stored != used:
+		return inUseView{Value: used, Note: "the server's, since " + strconv.Quote(stored) + " " + reason}
+	}
+	return inUseView{Value: used}
 }
 
 // joinView is the state of the join window.
@@ -256,7 +350,7 @@ func (s *Server) renderDevices(w http.ResponseWriter, r *http.Request, status in
 	join := joinView{Open: until.After(now)}
 	if join.Open {
 		join.Until = s.timeAt(until.Unix(), now, false)
-		join.Until.Text = s.untilText(until, now)
+		join.Until.Text, join.Until.Kind = s.untilText(until, now)
 	}
 	blockedViews := make([]blockedView, len(blocked))
 	for i := range blocked {
@@ -358,25 +452,32 @@ func (s *Server) formatTime(t time.Time) string {
 	return t.In(s.zone).Format(timeLayout)
 }
 
-// untilText says when until is, for the join window. The window usually
-// closes within minutes, so a time later today is given as the time alone.
-func (s *Server) untilText(until, now time.Time) string {
+// untilText says when until is, for the join window, and how it is written.
+// The window usually closes within minutes, so a time later today is given
+// as the time alone.
+func (s *Server) untilText(until, now time.Time) (text, kind string) {
 	u, n := until.In(s.zone), now.In(s.zone)
 	if u.Year() == n.Year() && u.YearDay() == n.YearDay() {
-		return u.Format(clockLayout)
+		return u.Format(clockLayout), timeClock
 	}
-	return u.Format(timeLayout)
+	return u.Format(timeLayout), timeFull
 }
 
 // timeAt returns the time given in Unix seconds, with how long ago it was
 // if rel is set.
 func (s *Server) timeAt(unix int64, now time.Time, rel bool) timeView {
 	t := time.Unix(unix, 0)
-	v := timeView{ISO: t.UTC().Format(time.RFC3339), Text: s.formatTime(t)}
+	v := timeView{ISO: t.UTC().Format(time.RFC3339), Text: s.formatTime(t), Kind: timeFull}
 	if rel {
 		v.Rel = strings.ToLower(relativeTime(now.Sub(t)))
 	}
 	return v
+}
+
+// dayAt returns the day of the time given in Unix seconds.
+func (s *Server) dayAt(unix int64) timeView {
+	t := time.Unix(unix, 0)
+	return timeView{ISO: t.UTC().Format(time.RFC3339), Text: t.In(s.zone).Format(dayLayout), Kind: timeDay}
 }
 
 // relativeTime describes how long ago something was, rounded down to a
@@ -469,6 +570,8 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		Pin:     r.PostForm.Get("fw_pin"),
 		Profile: r.PostForm.Get("profile"),
 		Palette: r.PostForm.Get("palette"),
+		Zone:    strings.TrimSpace(r.PostForm.Get("time_zone")),
+		Locale:  r.PostForm.Get("locale"),
 		Seen:    r.PostForm.Get("settings_state"),
 	}
 	seenDevice, err := strconv.ParseInt(r.PostForm.Get("seen_device"), 10, 64)
@@ -522,7 +625,8 @@ func (s *Server) saveDevice(r *http.Request, id string, form *deviceForm) error 
 		return err
 	}
 	_, err = device.Update(r.Context(), s.db, id, device.Change{
-		Name: &form.Name, UpdatesEnabled: &form.Updates, FwPin: &pin, Profile: &form.Profile, Palette: &form.Palette, Seen: &form.Seen,
+		Name: &form.Name, UpdatesEnabled: &form.Updates, FwPin: &pin, Profile: &form.Profile, Palette: &form.Palette,
+		TimeZone: &form.Zone, Locale: &form.Locale, Seen: &form.Seen,
 	})
 	return err
 }
@@ -549,6 +653,7 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	var linked []db.Playlist
 	var catalog []firmware.Entry
 	var st device.Standing
+	var serverLocale string
 	err := s.db.ReadTx(ctx, func(q *db.Queries) error {
 		d, err := device.FindDevice(ctx, q, ref)
 		if err != nil {
@@ -558,6 +663,9 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 			return fmt.Errorf("get device status: %w", err)
 		}
 		if st, err = device.ReadStanding(ctx, q, d.Mac); err != nil {
+			return err
+		}
+		if serverLocale, err = settings.Locale(ctx, q); err != nil {
 			return err
 		}
 		if items, err = playlist.ListDeviceItems(ctx, q, d.ID); err != nil {
@@ -599,6 +707,10 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 		RemoveError: removeMsg,
 		Seen:        newStandingView(&st),
 	}
+	zone := device.ZoneOf(dev.TimeZone, s.zone).String()
+	d.Zone = inUse(dev.TimeZone, zone, "does not load on this server")
+	d.Locale = inUse(dev.Locale, device.LocaleOf(dev.Locale, serverLocale), "is not a locale the server has")
+	d.ZoneNote = zoneNote{Page: s.zone.String(), Device: zone, Same: sameZone(s.zone, device.ZoneOf(dev.TimeZone, s.zone), now)}
 	order := make([]int64, len(linked))
 	for i := range linked {
 		order[i] = linked[i].ID
@@ -639,7 +751,10 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 			}
 		}
 	}
-	stored := deviceForm{Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin, Profile: dev.ProfileOverride, Palette: dev.PaletteOverride}
+	stored := deviceForm{
+		Name: dev.Name, Updates: dev.UpdatesEnabled != 0, Pin: dev.FwPin, Profile: dev.ProfileOverride, Palette: dev.PaletteOverride,
+		Zone: dev.TimeZone, Locale: dev.Locale,
+	}
 	stale := form != nil && status == http.StatusConflict && msg == settingsChanged
 	if stale && form.Device != dev.ID {
 		form, stale, msg = nil, false, deviceReplaced
@@ -647,6 +762,8 @@ func (s *Server) renderDevice(w http.ResponseWriter, r *http.Request, status int
 	if form == nil {
 		form = &stored
 	}
+	form.ServerZone = s.zone.String()
+	form.Locales = localeOptions(serverLocale, form.Locale)
 	form.Profiles = profileOptions(dev.FwModel, form.Profile)
 	// A stored palette the model no longer takes is listed while the form
 	// has the stored profile and palette, so saving the form leaves it as
@@ -885,8 +1002,32 @@ func settingsChangedText(form, stored *deviceForm) string {
 	if form.Palette != stored.Palette {
 		now = append(now, "the palette is "+orWord(stored.Palette, "the model's default"))
 	}
+	if form.Zone != stored.Zone {
+		now = append(now, "the time zone is "+orWord(stored.Zone, "the server's"))
+	}
+	if form.Locale != stored.Locale {
+		now = append(now, "the locale is "+orWord(stored.Locale, "the server's"))
+	}
 	if len(now) == 0 {
 		return settingsChanged + " The values below are what is stored now."
 	}
 	return settingsChanged + " Stored now: " + strings.Join(now, ", ") + ". Save again to use the values below."
+}
+
+// localeOptions lists the choices of a device's locale: the server's, then
+// every locale. The selected one is always listed, so a stored locale the
+// server no longer has shows as what it is.
+func localeOptions(server, selected string) []localeOption {
+	codes := locale.Codes()
+	opts := make([]localeOption, 1, len(codes)+2)
+	opts[0] = localeOption{Label: "The server's: " + server, Selected: selected == ""}
+	found := selected == ""
+	for _, code := range codes {
+		found = found || code == selected
+		opts = append(opts, localeOption{Value: code, Label: code, Selected: code == selected})
+	}
+	if !found {
+		opts = append(opts, localeOption{Value: selected, Label: selected + " (not a locale the server has)", Selected: true})
+	}
+	return opts
 }
