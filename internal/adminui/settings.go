@@ -130,13 +130,19 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 		serverError(w, r, "list settings", err)
 		return
 	}
-	views := make([]settingView, len(list))
+	views := make([]settingView, 0, len(list))
 	for i := range list {
-		views[i] = newSettingView(&list[i])
-		if refused != "" && list[i].Key == refused {
-			views[i].Error = fmt.Sprintf("Enter a whole number from %d to %d.", list[i].Min, list[i].Max)
-			views[i].Value = typed
+		if list[i].Choices != nil {
+			// The panel is for a whole number. A setting with a fixed set of
+			// values has no panel yet.
+			continue
 		}
+		v := newSettingView(&list[i])
+		if refused != "" && list[i].Key == refused {
+			v.Error = fmt.Sprintf("Enter a whole number from %d to %d.", list[i].Min, list[i].Max)
+			v.Value = typed
+		}
+		views = append(views, v)
 	}
 	s.render(w, r, status, "settings", &pageData{Nav: "settings", Heading: "Settings", Error: msg, Settings: views})
 }

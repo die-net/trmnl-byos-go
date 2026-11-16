@@ -1004,7 +1004,7 @@ var autoincrementTables = []struct{ table, insert, del, ids string }{
 	{"plugin_instance", `INSERT INTO plugin_instance (recipe_id, name, created_at) VALUES (9001, 'i' || ?1, 1)`, `DELETE FROM plugin_instance WHERE id = ?`, `SELECT id FROM plugin_instance ORDER BY id`},
 	{"playlist", `INSERT INTO playlist (name) VALUES ('p' || ?1)`, `DELETE FROM playlist WHERE id = ?`, `SELECT id FROM playlist ORDER BY id`},
 	{"playlist_item", `INSERT INTO playlist_item (playlist_id, position) VALUES (9001, ?1)`, `DELETE FROM playlist_item WHERE id = ?`, `SELECT id FROM playlist_item ORDER BY id`},
-	{"render", `INSERT INTO render (instance_id, width, height, palette, attempted_at, duration_ms) VALUES (9001, ?1, 1, 'bw', 1, 1)`, `DELETE FROM render WHERE id = ?`, `SELECT id FROM render ORDER BY id`},
+	{"render", `INSERT INTO render (instance_id, width, height, palette, time_zone, locale, attempted_at, duration_ms) VALUES (9001, ?1, 1, 'bw', 'UTC', 'en', 1, 1)`, `DELETE FROM render WHERE id = ?`, `SELECT id FROM render ORDER BY id`},
 	{"api_token", `INSERT INTO api_token (name, token_hash, created_at) VALUES ('t' || ?1, CAST(?1 AS BLOB), 1)`, `DELETE FROM api_token WHERE id = ?`, `SELECT id FROM api_token ORDER BY id`},
 	{"admin_session", `INSERT INTO admin_session (token_hash, created_at, last_seen_at, expires_at) VALUES (CAST(?1 AS BLOB), 1, 1, 2)`, `DELETE FROM admin_session WHERE id = ?`, `SELECT id FROM admin_session ORDER BY id`},
 	{"firmware", `INSERT INTO firmware (fw_model, version, sha256, chip, idf_version, bytes, source, uploaded_at) VALUES ('og', 'v' || ?1, 's' || ?1, 'esp32c3', '5', 1, 'upload', 1)`, `DELETE FROM firmware WHERE id = ?`, `SELECT id FROM firmware ORDER BY id`},
@@ -1085,7 +1085,8 @@ var tableNamePrefix = regexp.MustCompile(`^CREATE TABLE (IF NOT EXISTS )?("?)(\w
 // AUTOINCREMENT, as it was before step 7, in a database made from
 // schema.sql that holds no rows yet. It reads each table's SQL, because a
 // test may do that, and uses the same rebuild as step 7. It takes out the
-// tables of the later steps first, with dropBlocklist. A migration test for
+// tables and columns of the later steps first, with dropZoneLocale,
+// dropProfileOverride and dropBlocklist. A migration test for
 // an older version calls it first.
 func dropAutoincrement(t *testing.T, db *sql.DB) {
 	t.Helper()
@@ -1101,7 +1102,7 @@ func dropAutoincrement(t *testing.T, db *sql.DB) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	for _, stmt := range slices.Concat(dropProfileOverride, dropBlocklist) {
+	for _, stmt := range slices.Concat(dropZoneLocale, dropProfileOverride, dropBlocklist) {
 		exec(stmt)
 	}
 	exec(`PRAGMA foreign_keys = OFF`)
@@ -1443,7 +1444,7 @@ func TestMigrateBlocklist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropProfileOverride, dropBlocklist, []string{
+	for _, stmt := range slices.Concat(dropZoneLocale, dropProfileOverride, dropBlocklist, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
 		`PRAGMA user_version = 7`,
 	}) {
@@ -1510,7 +1511,7 @@ func TestMigrateProfileOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range slices.Concat(dropProfileOverride, []string{
+	for _, stmt := range slices.Concat(dropZoneLocale, dropProfileOverride, []string{
 		`INSERT INTO device (id, mac, api_key_hash, friendly_id, fw_model, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 'og', 1)`,
 		`PRAGMA user_version = 8`,
 	}) {
@@ -1536,5 +1537,165 @@ func TestMigrateProfileOverride(t *testing.T) {
 	dev, err := client.Read.GetDevice(ctx, 3)
 	if err != nil || dev.FwModel != "og" || dev.ProfileOverride != "" || dev.PaletteOverride != "" {
 		t.Errorf("device after migration: %+v, %v", dev, err)
+	}
+}
+
+// dropZoneLocale takes the columns of step 10 out of a database made from
+// schema.sql, so that it has the shape from before that step. SQLite cannot
+// drop a column that is in a UNIQUE constraint, so render is made again as it
+// was, as step 10 makes it, and its rows keep their other columns.
+var dropZoneLocale = []string{
+	`PRAGMA foreign_keys = OFF`,
+	`DROP TRIGGER render_device_deleted`,
+	`CREATE TABLE render_old (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id INTEGER NOT NULL REFERENCES plugin_instance (id) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  palette TEXT NOT NULL,
+  rendered_at INTEGER NOT NULL DEFAULT 0,
+  attempted_at INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  log TEXT NOT NULL DEFAULT '',
+  data_at INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  settings_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (instance_id, device_id, width, height, palette)
+)`,
+	`INSERT INTO render_old (id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at)
+  SELECT id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at FROM render`,
+	`DROP TABLE render`,
+	`ALTER TABLE render_old RENAME TO render`,
+	`CREATE TRIGGER render_device_deleted AFTER DELETE ON device
+BEGIN
+  DELETE FROM render WHERE device_id = OLD.id;
+END`,
+	`PRAGMA foreign_keys = ON`,
+	`ALTER TABLE device DROP COLUMN time_zone`,
+	`ALTER TABLE device DROP COLUMN locale`,
+}
+
+// TestMigrateZoneLocale checks step 10: a database at version 9 keeps every
+// render row's other columns and its images, gives the rows an empty time
+// zone and locale, takes two rows that differ only by zone or locale, still
+// removes a deleted device's renders, gives devices an empty zone and
+// locale, and ends with the shape of schema.sql.
+func TestMigrateZoneLocale(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	want := shapeOf(t, openTest(t).Writer)
+
+	path := filepath.Join(t.TempDir(), "v9.db")
+	old, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range slices.Concat(dropZoneLocale, []string{
+		`INSERT INTO device (id, mac, api_key_hash, friendly_id, created_at) VALUES (3, 'D8:3B:DA:12:34:03', x'03', 'ABC003', 1)`,
+		`INSERT INTO recipe (id, name, source, refresh_interval, installed_at) VALUES (1, 'r', 's', 900, 1)`,
+		`INSERT INTO plugin_instance (id, recipe_id, name, created_at) VALUES (1, 1, 'i', 1)`,
+		// Render 4 is the shared one, 5 is device 3's, and 6 has an error.
+		`INSERT INTO render (id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms, error, log, data_at, failures, settings_at) VALUES
+		  (4, 1, 0, 800, 480, 'bw', 50, 60, 700, '', 'log4', 40, 0, 30),
+		  (5, 1, 3, 800, 480, 'bw', 51, 61, 701, '', 'log5', 41, 0, 31),
+		  (6, 1, 0, 480, 800, 'gray-4', 0, 62, 702, 'boom', 'log6', 42, 3, 32)`,
+		`INSERT INTO render_image (render_id, layout, image, bytes) VALUES (4, 'full', 'img4', 4), (4, 'half', 'img4h', 5), (5, 'full', 'img5', 6)`,
+		`PRAGMA user_version = 9`,
+	}) {
+		if _, err := old.Writer.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if v := userVersion(t, client.Writer); v != len(steps) || v < 10 {
+		t.Errorf("version = %d, want %d", v, len(steps))
+	}
+	if got := shapeOf(t, client.Writer); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("migrated shape differs from schema.sql\nmigrated:\n%s\nfresh:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// Every row has its ID and other columns, and an empty zone and locale.
+	rows, err := client.Read.ListRenderRows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRows := []ListRenderRowsRow{
+		{ID: 4, InstanceID: 1, Width: 800, Height: 480, Palette: "bw", RenderedAt: 50, AttemptedAt: 60, DurationMs: 700, DataAt: 40, SettingsAt: 30},
+		{ID: 5, InstanceID: 1, DeviceID: 3, Width: 800, Height: 480, Palette: "bw", RenderedAt: 51, AttemptedAt: 61, DurationMs: 701, DataAt: 41, SettingsAt: 31},
+		{ID: 6, InstanceID: 1, Width: 480, Height: 800, Palette: "gray-4", AttemptedAt: 62, DurationMs: 702, Error: "boom", DataAt: 42, Failures: 3, SettingsAt: 32},
+	}
+	if !slices.Equal(rows, wantRows) {
+		t.Errorf("renders after migration:\n%+v\nwant\n%+v", rows, wantRows)
+	}
+	if st, err := client.Read.GetRenderStatus(ctx, 5); err != nil || st.Log != "log5" {
+		t.Errorf("render 5's log: %+v, %v", st, err)
+	}
+	// Its images are kept, by the render they belong to.
+	var images []string
+	img, err := client.Writer.QueryContext(ctx, `SELECT render_id || ':' || layout || ':' || image || ':' || bytes FROM render_image ORDER BY render_id, layout`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for img.Next() {
+		var row string
+		if err := img.Scan(&row); err != nil {
+			t.Fatal(err)
+		}
+		images = append(images, row)
+	}
+	if err := errors.Join(img.Err(), img.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"4:full:img4:4", "4:half:img4h:5", "5:full:img5:6"}; !slices.Equal(images, want) {
+		t.Errorf("render images = %v, want %v", images, want)
+	}
+	if dev, err := client.Read.GetDevice(ctx, 3); err != nil || dev.TimeZone != "" || dev.Locale != "" {
+		t.Errorf("device after migration: %+v, %v", dev, err)
+	}
+
+	// Two rows that differ only by zone or locale are two targets, and the
+	// same target is one row.
+	save := func(zone, locale string) int64 {
+		t.Helper()
+		id, err := client.Write.SaveRenderSuccess(ctx, SaveRenderSuccessParams{
+			InstanceID: 1, DeviceID: 3, Width: 800, Height: 480, Palette: "bw", TimeZone: zone, Locale: locale, RenderedAt: 70, AttemptedAt: 70,
+		})
+		if err != nil {
+			t.Fatalf("save %q %q: %v", zone, locale, err)
+		}
+		return id
+	}
+	a, b, c := save("UTC", "en"), save("America/Los_Angeles", "en"), save("UTC", "de")
+	if a == b || a == c || b == c || save("UTC", "en") != a {
+		t.Errorf("render IDs %d %d %d: want three targets, and a repeat of the first to be the first", a, b, c)
+	}
+	if _, err := client.Writer.ExecContext(ctx, `INSERT INTO render (instance_id, device_id, width, height, palette, time_zone, locale, attempted_at, duration_ms) VALUES (1, 3, 800, 480, 'bw', 'UTC', 'en', 1, 1)`); err == nil {
+		t.Error("two renders of one target were stored")
+	}
+
+	// The trigger removes a deleted device's renders, with their images.
+	if err := client.Write.SaveRenderImage(ctx, SaveRenderImageParams{RenderID: b, Layout: "full", Image: "imgb", Bytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Writer.ExecContext(ctx, `DELETE FROM device WHERE id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	var left, leftImages int
+	err = client.Writer.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM render WHERE device_id = 3), (SELECT COUNT(*) FROM render_image WHERE render_id IN (5, ?))`, b).Scan(&left, &leftImages)
+	if err != nil || left != 0 || leftImages != 0 {
+		t.Errorf("after deleting the device: %d renders, %d images, %v", left, leftImages, err)
+	}
+	if refs, err := client.Read.ListReferencedImages(ctx); err != nil || !slices.Equal(refs, []string{"img4", "img4h"}) {
+		t.Errorf("referenced images after deleting the device: %v, %v", refs, err)
 	}
 }

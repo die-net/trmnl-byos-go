@@ -52,14 +52,22 @@ func (ts *testServer) saveRender(t *testing.T, instance int64, failure string) s
 }
 
 // saveDeviceRender is saveRender for one device's render, or the shared
-// render when device is 0, with text drawn in the image.
+// render when device is 0, with text drawn in the image. It is made for the
+// server's time zone and the default locale, which a device with no setting
+// of its own is shown.
 func (ts *testServer) saveDeviceRender(t *testing.T, instance, device int64, text, failure string) string {
+	t.Helper()
+	return ts.saveRenderAt(t, instance, device, text, failure, testZone.String(), "en")
+}
+
+// saveRenderAt is saveDeviceRender for the given time zone and locale.
+func (ts *testServer) saveRenderAt(t *testing.T, instance, device int64, text, failure, zone, locale string) string {
 	t.Helper()
 	ctx := t.Context()
 	p := profile.Resolve("xiao_epaper_display", nil, nil, profile.Override{})
 	params := db.SaveRenderFailureParams{
 		InstanceID: instance, DeviceID: device, Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""),
-		AttemptedAt: ts.now.Unix(), Error: failure,
+		TimeZone: zone, Locale: locale, AttemptedAt: ts.now.Unix(), Error: failure,
 	}
 	if failure != "" {
 		if err := ts.db.Write.SaveRenderFailure(ctx, params); err != nil {
@@ -77,7 +85,7 @@ func (ts *testServer) saveDeviceRender(t *testing.T, instance, device int64, tex
 	}
 	id, err := ts.db.Write.SaveRenderSuccess(ctx, db.SaveRenderSuccessParams{
 		InstanceID: instance, DeviceID: device, Width: params.Width, Height: params.Height, Palette: params.Palette,
-		RenderedAt: ts.now.Unix(), AttemptedAt: ts.now.Unix(),
+		TimeZone: zone, Locale: locale, RenderedAt: ts.now.Unix(), AttemptedAt: ts.now.Unix(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -309,11 +317,11 @@ func TestDisplayMissingRenderImage(t *testing.T) {
 	}
 }
 
-// scheduleWindow sets the schedule of the playlist named name to a window
-// every day, in minutes after midnight.
-func (ts *testServer) scheduleWindow(t *testing.T, name string, start, end int64) {
+// scheduleWindow sets the schedule of the playlist p to a window every day,
+// in minutes after midnight.
+func (ts *testServer) scheduleWindow(t *testing.T, start, end int64) {
 	t.Helper()
-	pl, err := ts.db.Read.GetPlaylistByName(t.Context(), name)
+	pl, err := ts.db.Read.GetPlaylistByName(t.Context(), "p")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +365,7 @@ func TestDisplaySchedule(t *testing.T) {
 	img := ts.saveRender(t, first, "")
 	ts.saveRender(t, second, "")
 	// Open from 09:00 to 12:05.
-	ts.scheduleWindow(t, "p", 9*60, 12*60+5)
+	ts.scheduleWindow(t, 9*60, 12*60+5)
 	timer := displayHeaders(testMAC, key)
 	timer["Update-Source"] = "timer"
 
@@ -379,7 +387,7 @@ func TestDisplaySchedule(t *testing.T) {
 	// A wake at 12:05 that finds the window about to open, at 12:08, is cut
 	// to it.
 	ts.now = time.Date(2026, 11, 13, 12, 5, 0, 0, testZone)
-	ts.scheduleWindow(t, "p", 12*60+5+3, 14*60)
+	ts.scheduleWindow(t, 12*60+5+3, 14*60)
 	m = ts.getJSON(t, "/api/display", timer)
 	if m["filename"] != closed || m["refresh_rate"] != float64(180) {
 		t.Fatalf("before the window opens: %v; want the same screen and refresh 180", m)
@@ -454,7 +462,7 @@ func TestDisplayDefaultPlaylist(t *testing.T) {
 		t.Fatal(err)
 	}
 	imgP := ts.saveRender(t, first, "")
-	ts.scheduleWindow(t, "p", 12*60, 13*60)
+	ts.scheduleWindow(t, 12*60, 13*60)
 	timer := displayHeaders(testMAC, key)
 	timer["Update-Source"] = "timer"
 

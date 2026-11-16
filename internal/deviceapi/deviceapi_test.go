@@ -639,7 +639,7 @@ func TestDisplayTooLarge(t *testing.T) {
 		t.Fatalf("noise image is %d bytes, %v; want over %d", size, err, p.ImageSizeLimit)
 	}
 	id, err := ts.db.Write.SaveRenderSuccess(t.Context(), db.SaveRenderSuccessParams{
-		InstanceID: first, Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""),
+		InstanceID: first, Width: int64(p.Width), Height: int64(p.Height), Palette: p.RenderPalette(""), TimeZone: testZone.String(), Locale: "en",
 		RenderedAt: ts.now.Unix(), AttemptedAt: ts.now.Unix(),
 	})
 	if err != nil {

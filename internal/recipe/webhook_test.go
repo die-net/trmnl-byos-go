@@ -83,7 +83,7 @@ func TestProjectData(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeDir(t, dir, map[string]string{"settings.yml": settingsYML, "full.liquid": "x"})
-	shared := NewProject(dir, nil, "UTC", nil)
+	shared := NewProject(dir, nil, "UTC", "", nil)
 	data := `{"title": "{{ env.FIELD_0 }} {% raw %}", "body": "a\nb: c", "n": 3, "big": 12345678901234567890, "f": 1.5,
 		"list": [{"k": "v"}, 7], "t": true, "none": null, "trmnl": {"device": {"friendly_id": "evil"}}}`
 

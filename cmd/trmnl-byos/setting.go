@@ -51,7 +51,7 @@ func settingList(ctx context.Context, args []string, out io.Writer) error {
 		case r.Set:
 			isDefault = "no"
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%d\t%d\t%s%s\n", r.Key, r.Value, r.Default, isDefault, note); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s%s\n", r.Key, r.Text, r.DefaultText, isDefault, note); err != nil {
 			return err
 		}
 	}

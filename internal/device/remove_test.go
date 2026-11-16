@@ -36,7 +36,7 @@ func removeFixture(t *testing.T) *db.Client {
 		`INSERT INTO plugin_instance (id, recipe_id, name, field_values, created_at) VALUES (1, 1, 'i', '{}', 1)`,
 		`INSERT INTO playlist (id, name) VALUES (1, 'p')`,
 		`INSERT INTO playlist_device (device_id, playlist_id, priority) VALUES (1, 1, 0), (2, 1, 0)`,
-		`INSERT INTO render (id, instance_id, device_id, width, height, palette, rendered_at, attempted_at, duration_ms) VALUES (1, 1, 1, 800, 480, 'bw', 5, 5, 1), (2, 1, 0, 800, 480, 'bw', 5, 5, 1)`,
+		`INSERT INTO render (id, instance_id, device_id, width, height, palette, time_zone, locale, rendered_at, attempted_at, duration_ms) VALUES (1, 1, 1, 800, 480, 'bw', 'UTC', 'en', 5, 5, 1), (2, 1, 0, 800, 480, 'bw', 'UTC', 'en', 5, 5, 1)`,
 		`INSERT INTO render_image (render_id, layout, image, bytes) VALUES (1, 'full', 'dev1', 3), (2, 'full', 'shared', 3)`,
 		`INSERT INTO firmware (id, fw_model, version, sha256, chip, idf_version, bytes, source, uploaded_at) VALUES (1, 'og', '1.9.0', 'abc', 'esp32c3', '5.1', 100, 'upload', 3)`,
 		`INSERT INTO firmware_offer (device_id, firmware_id, offers, last_offered_at) VALUES (1, 1, 1, 4), (2, 1, 1, 4)`,

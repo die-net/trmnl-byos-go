@@ -45,8 +45,8 @@ type Config struct {
 	// FirmwareDir is where firmware files are stored. Empty offers and
 	// serves no firmware.
 	FirmwareDir string
-	// Zone is the server's time zone, which schedules are read in. Nil is
-	// UTC.
+	// Zone is the server's time zone, which schedules are read in for a
+	// device with no time zone of its own. Nil is UTC.
 	Zone *time.Location
 }
 

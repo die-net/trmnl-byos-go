@@ -40,6 +40,8 @@ type Device struct {
 	FwPin               string `json:"fw_pin"`
 	ProfileOverride     string `json:"profile_override"`
 	PaletteOverride     string `json:"palette_override"`
+	TimeZone            string `json:"time_zone"`
+	Locale              string `json:"locale"`
 }
 
 type DeviceCursor struct {
@@ -171,6 +173,8 @@ type Render struct {
 	Width       int64  `json:"width"`
 	Height      int64  `json:"height"`
 	Palette     string `json:"palette"`
+	TimeZone    string `json:"time_zone"`
+	Locale      string `json:"locale"`
 	RenderedAt  int64  `json:"rendered_at"`
 	AttemptedAt int64  `json:"attempted_at"`
 	DurationMs  int64  `json:"duration_ms"`

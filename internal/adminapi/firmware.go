@@ -188,6 +188,12 @@ type devicePatch struct {
 	// Palette is the palette the device renders with when an instance asks
 	// for none, or "" for its model's default.
 	Palette *string `json:"palette"`
+	// TimeZone is the IANA time zone the device's schedules are read in and
+	// its renders are made for, or "" for the server's.
+	TimeZone *string `json:"time_zone"`
+	// Locale is the locale the device's renders are made for, one of
+	// trmnlp's, or "" for the server's.
+	Locale *string `json:"locale"`
 	// SettingsState is the settings_state the caller read. When given, a
 	// device whose settings have changed since is refused with 409.
 	SettingsState *string `json:"settings_state"`
@@ -200,7 +206,10 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) (deviceJSON
 	if err := decode(w, r, &req, false); err != nil {
 		return deviceJSON{}, err
 	}
-	c := device.Change{Name: req.Name, UpdatesEnabled: req.UpdatesEnabled, Profile: req.Profile, Palette: req.Palette, Seen: req.SettingsState}
+	c := device.Change{
+		Name: req.Name, UpdatesEnabled: req.UpdatesEnabled, Profile: req.Profile, Palette: req.Palette,
+		TimeZone: req.TimeZone, Locale: req.Locale, Seen: req.SettingsState,
+	}
 	if req.FWPin != nil {
 		pin, err := firmware.CleanPin(*req.FWPin)
 		if err != nil {
@@ -212,5 +221,5 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) (deviceJSON
 	if err != nil {
 		return deviceJSON{}, err
 	}
-	return deviceStatus(r.Context(), s.db.Read, dev.ID)
+	return s.deviceStatus(r.Context(), s.db.Read, dev.ID)
 }

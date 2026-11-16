@@ -3,6 +3,7 @@ package settings
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/errkind"
+	"github.com/die-net/trmnl-byos-go/internal/locale"
 )
 
 var t0 = time.Unix(1_000_000, 0)
@@ -45,7 +47,7 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("MinPasswordLength = %v, %v; want 12", minLen, err)
 	}
 	rows, err := List(t.Context(), client.Read)
-	if err != nil || len(rows) != 2 {
+	if err != nil || len(rows) != 3 {
 		t.Fatalf("List = %v, %v", rows, err)
 	}
 	for _, r := range rows {
@@ -251,7 +253,7 @@ func TestListBadRow(t *testing.T) {
 			check := func(wantBad bool) {
 				t.Helper()
 				rows, err := List(t.Context(), client.Read)
-				if err != nil || len(rows) != 2 {
+				if err != nil || len(rows) != 3 {
 					t.Fatalf("List = %v, %v", rows, err)
 				}
 				for _, r := range rows {
@@ -304,7 +306,7 @@ func TestListOneBadRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := List(t.Context(), client.Read)
-	if err != nil || len(rows) != 2 {
+	if err != nil || len(rows) != 3 {
 		t.Fatalf("List = %v, %v", rows, err)
 	}
 	if r := rows[0]; r.Bad == nil || *r.Bad != "abc" || r.Value != 900 || !r.Set {
@@ -366,5 +368,124 @@ func TestInTx(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// localeRow returns the locale setting of List.
+func localeRow(t *testing.T, client *db.Client) Setting {
+	t.Helper()
+	rows, err := List(t.Context(), client.Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Key == KeyLocale {
+			return r
+		}
+	}
+	t.Fatal("List has no locale")
+	return Setting{}
+}
+
+// TestLocale checks the locale setting, which is one of a fixed set of
+// strings: its default, List's row for it, Set with a good value and with
+// each kind of bad one, and Reset. The number settings keep their rows.
+func TestLocale(t *testing.T) {
+	t.Parallel()
+	client := openTest(t)
+	if got, err := Locale(t.Context(), client.Read); err != nil || got != "en" {
+		t.Errorf("Locale = %q, %v; want en", got, err)
+	}
+	r := localeRow(t, client)
+	if r.Text != "en" || r.DefaultText != "en" || r.Set || r.Bad != nil || !slices.Contains(r.Choices, "pt-BR") || len(r.Choices) != len(locale.Codes()) {
+		t.Errorf("default row %+v", r)
+	}
+	if r.Value != 0 || r.Default != 0 || r.Min != 0 || r.Max != 0 {
+		t.Errorf("the choice setting has numbers: %+v", r)
+	}
+	rows, err := List(t.Context(), client.Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := rows[0]; n.Key != KeyRefreshSeconds || n.Text != "900" || n.DefaultText != "900" || n.Value != 900 || n.Choices != nil || n.Max == 0 {
+		t.Errorf("a number setting changed shape: %+v", n)
+	}
+
+	for _, code := range []string{"de", "pt-BR", "zh-HK", "en"} {
+		if err := Set(t.Context(), client, KeyLocale, code, t0); err != nil {
+			t.Fatalf("Set %s: %v", code, err)
+		}
+		if got, err := Locale(t.Context(), client.Read); err != nil || got != code {
+			t.Errorf("Locale after Set %s = %q, %v", code, got, err)
+		}
+		if r := localeRow(t, client); r.Text != code || !r.Set || r.Bad != nil {
+			t.Errorf("row after Set %s: %+v", code, r)
+		}
+	}
+	if err := Set(t.Context(), client, KeyLocale, "fr", t0); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", "xx", "DE", "de-de", "pt_BR", " de", "en\n", "raw", "1"} {
+		err := Set(t.Context(), client, KeyLocale, bad, t0)
+		if !errors.Is(err, errkind.ErrInvalid) || !strings.Contains(err.Error(), KeyLocale) {
+			t.Errorf("Set %q: %v, want invalid and naming the key", bad, err)
+		}
+		if got, _ := Locale(t.Context(), client.Read); got != "fr" {
+			t.Errorf("Set %q changed the locale to %q", bad, got)
+		}
+	}
+	// A bad value in a set of changes writes none of them.
+	err = SetMany(t.Context(), client, []Change{{KeyRefreshSeconds, "60"}, {KeyLocale, "xx"}}, t0)
+	if !errors.Is(err, errkind.ErrInvalid) {
+		t.Errorf("SetMany: %v", err)
+	}
+	if d, _ := RefreshInterval(t.Context(), client.Read); d != 15*time.Minute {
+		t.Errorf("a refused SetMany wrote the refresh interval: %v", d)
+	}
+	if err := SetMany(t.Context(), client, []Change{{KeyRefreshSeconds, "60"}, {KeyLocale, "it"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := Locale(t.Context(), client.Read); got != "it" {
+		t.Errorf("locale %q after SetMany", got)
+	}
+
+	if err := Reset(t.Context(), client, KeyLocale); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Locale(t.Context(), client.Read); err != nil || got != "en" {
+		t.Errorf("Locale after Reset = %q, %v; want the default", got, err)
+	}
+	if r := localeRow(t, client); r.Set || r.Text != "en" {
+		t.Errorf("row after Reset: %+v", r)
+	}
+}
+
+// TestLocaleBadRow checks that a stored locale that is not one of the
+// locales is reported by List, gives the default in effect, and is repaired
+// by Set and by Reset.
+func TestLocaleBadRow(t *testing.T) {
+	t.Parallel()
+	for _, stored := range []string{"xx", "", "DE"} {
+		client := openTest(t)
+		putRaw(t, client, KeyLocale, stored)
+		if got, err := Locale(t.Context(), client.Read); err != nil || got != "en" {
+			t.Errorf("%q: Locale = %q, %v; want the default and no error", stored, got, err)
+		}
+		if r := localeRow(t, client); r.Bad == nil || *r.Bad != stored || !r.Set || r.Text != "en" {
+			t.Errorf("%q: row %+v", stored, r)
+		}
+		if err := Set(t.Context(), client, KeyLocale, "ja", t0); err != nil {
+			t.Fatal(err)
+		}
+		if r := localeRow(t, client); r.Bad != nil || r.Text != "ja" {
+			t.Errorf("%q: row after Set %+v", stored, r)
+		}
+		putRaw(t, client, KeyLocale, stored)
+		if err := Reset(t.Context(), client, KeyLocale); err != nil {
+			t.Fatal(err)
+		}
+		if r := localeRow(t, client); r.Bad != nil || r.Set {
+			t.Errorf("%q: row after Reset %+v", stored, r)
+		}
 	}
 }
