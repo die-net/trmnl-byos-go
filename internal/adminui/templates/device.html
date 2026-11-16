@@ -46,6 +46,7 @@
 {{end}}</select>
 <p class="hint">A pinned device is offered no firmware.</p>
 </div>
+{{if .Form.Problem}}<p class="note" id="profile-problem">{{.Form.Problem}} A setting that does not apply is ignored until it is changed below.</p>{{end}}
 <div class="field">
 <label for="profile">Panel profile</label>
 <select id="profile" name="profile" aria-describedby="profile-hint">
