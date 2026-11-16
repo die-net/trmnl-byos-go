@@ -20,7 +20,7 @@ func TestBlockedDeviceNotRendered(t *testing.T) {
 	h.wake(t, 1, 15*time.Minute)
 	h.renderDue(t, 2)
 
-	if _, err := device.Block(t.Context(), h.db, "ABC123", h.now); err != nil {
+	if _, err := device.Block(t.Context(), h.db, "ABC123", nil, h.now); err != nil {
 		t.Fatal(err)
 	}
 	// Past every render's refresh interval, so each would be due again.
@@ -31,7 +31,7 @@ func TestBlockedDeviceNotRendered(t *testing.T) {
 		t.Errorf("renders of a blocked device: %+v, %v", keys, err)
 	}
 
-	if _, err := device.Unblock(t.Context(), h.db, "ABC123"); err != nil {
+	if _, err := device.Unblock(t.Context(), h.db, "ABC123", nil); err != nil {
 		t.Fatal(err)
 	}
 	h.renderDue(t, 4)
