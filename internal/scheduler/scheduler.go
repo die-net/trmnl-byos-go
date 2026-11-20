@@ -57,14 +57,30 @@ func retryDelay(failures int64) time.Duration {
 }
 
 // buildTimeout is the longest one build may take, from the request to the
-// last image. The renderer stops a build at its own limit, 2 minutes by
-// default, so this allows for that, a wait for its build slot, and the
-// transfer. Past it the renderer is taken to be stuck, and the build fails
-// like any other, to be retried after a backoff.
+// end of the response. The renderer stops a build at its own limit, 2
+// minutes by default, and then sweeps up after it, for at most 40 seconds,
+// before its response ends (render.Shim.ResponseTimeout), so this allows
+// for that and the transfer. Past it the renderer is taken to be stuck, and
+// the build fails like any other, to be retried after a backoff.
 const buildTimeout = 5 * time.Minute
 
 // checkEvery is how often the scheduler looks for renders that are due.
 const checkEvery = 30 * time.Second
+
+// unavailableWait is how long Run waits after the renderer did not take a
+// build before it scans again, doubling while it stays unavailable, up to
+// checkEvery (see unavailableBackoff).
+const unavailableWait = 2 * time.Second
+
+// unavailableBackoff is how long Run waits after the nth pass in a row, from
+// 1, whose renderer did not take the build.
+func unavailableBackoff(n int) time.Duration {
+	d := unavailableWait
+	for i := 1; i < n && d < checkEvery; i++ {
+		d *= 2
+	}
+	return min(d, checkEvery)
+}
 
 // Config is how a scheduler is set up.
 type Config struct {
@@ -132,11 +148,27 @@ func New(cfg Config) *Scheduler {
 // Run renders what is due until ctx is done. Each pass scans for due
 // targets and builds the most urgent one. If it built one, it scans again
 // at once, since more may be due and one may have become more urgent while
-// it built. Only a pass that built nothing waits, for checkEvery or until
-// Config.Wake.
+// it built. A pass that built nothing waits, for checkEvery or until
+// Config.Wake. A pass that could not reach the renderer waits
+// unavailableWait, doubling while the renderer stays unreachable, up to
+// checkEvery, without a wake cutting it short, so an outage costs one
+// target's build at a time, not every due target's.
 func (s *Scheduler) Run(ctx context.Context) {
+	unavailable := 0
 	for {
 		more, err := s.RenderNext(ctx)
+		if errors.Is(err, render.ErrUnavailable) && ctx.Err() == nil {
+			unavailable++
+			wait := unavailableBackoff(unavailable)
+			slog.Info("scheduler: waiting for the renderer", "seconds", wait.Seconds())
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			continue
+		}
+		unavailable = 0
 		if err != nil && ctx.Err() == nil {
 			slog.Error("scheduler", "err", err)
 		}
@@ -173,11 +205,14 @@ type target struct {
 }
 
 // RenderNext scans for due targets and builds the one wanted soonest. A
-// failed build is recorded and is not an error here. It returns whether it
-// recorded an outcome, success or failure, which is whether another scan
-// may find more to do. It returns false when nothing was due, and when the
-// scan or the write of the outcome failed, so that a persistent failure
-// waits for the next check and does not spin.
+// failed build is recorded and is not an error here, except when the
+// renderer did not take it: that is not recorded, and is returned, an
+// error matching render.ErrUnavailable, so Run waits before it tries
+// another target. It returns whether it recorded an outcome, success or
+// failure, which is whether another scan may find more to do. It returns
+// false when nothing was due, when the renderer could not be reached, and
+// when the scan or the write of the outcome failed, so that a persistent
+// failure waits for the next check and does not spin.
 func (s *Scheduler) RenderNext(ctx context.Context) (built bool, err error) {
 	targets, err := s.dueTargets(ctx)
 	if err != nil || len(targets) == 0 {
@@ -190,6 +225,9 @@ func (s *Scheduler) RenderNext(ctx context.Context) (built bool, err error) {
 			return false, ctx.Err()
 		}
 		slog.Warn("render failed", "instance", t.instance, "device", t.device, "width", t.width, "height", t.height, "palette", t.palette, "zone", t.zone, "locale", t.locale, "err", err)
+		if errors.Is(err, render.ErrUnavailable) {
+			return false, err
+		}
 	}
 	return recorded, nil
 }
@@ -497,7 +535,8 @@ func lead(r *db.Render) time.Duration {
 //   - its last build failed, and retryDelay has passed since it, which
 //     grows with each failure in a row (while a failure is the latest
 //     outcome, nothing else but the settings rule makes it due, so a
-//     failing recipe is not built on every check);
+//     failing recipe is not built on every check). A try the renderer did
+//     not take is not recorded, so it changes none of this;
 //   - its data is newer than what its last build read, by updated_at, which
 //     the push path makes rise with every push. A failed build is retried
 //     after retryDelay by the rule above, so a push waits for that;
@@ -577,11 +616,11 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		// An unreachable renderer says nothing about the recipe, so it is
-		// recorded but does not lengthen the backoff.
-		counted := int64(1)
+		// A renderer that did not take the build says nothing about the
+		// target, so nothing is recorded: the row keeps its last real
+		// outcome, and Run waits before it tries again. It is logged.
 		if errors.Is(err, render.ErrUnavailable) {
-			counted = 0
+			return false, err
 		}
 		serr := s.cfg.DB.Write.SaveRenderFailure(ctx, db.SaveRenderFailureParams{
 			InstanceID:  t.instance,
@@ -597,7 +636,7 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 			Log:         log.stored(),
 			DataAt:      read.data,
 			SettingsAt:  read.settings,
-			Failures:    counted,
+			Failures:    1,
 		})
 		if serr != nil {
 			return false, errors.Join(err, fmt.Errorf("save render failure: %w", serr))

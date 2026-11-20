@@ -34,6 +34,9 @@ type harness struct {
 	failFile string
 	// down, while set, makes the fake renderer answer 503 to every build.
 	down atomic.Bool
+	// lose is how many builds the fake renderer takes, answering 102
+	// Processing, and then drops, as a renderer a recipe killed would.
+	lose atomic.Int32
 	// reject, while set, makes the fake renderer answer 400 to every build,
 	// as the shim does for a job it cannot read.
 	reject atomic.Bool
@@ -151,10 +154,15 @@ func (h *harness) renderOf(t *testing.T, instance int64) db.ListRenderRowsRow {
 }
 
 // drain builds one target per scan until nothing is due, as Run does.
+// drain runs passes until nothing more is built, or the renderer could not
+// be reached, which ends a pass as Run would.
 func (h *harness) drain(t *testing.T) {
 	t.Helper()
 	for range 100 {
 		more, err := h.s.RenderNext(t.Context())
+		if errors.Is(err, render.ErrUnavailable) {
+			return
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1115,31 +1123,26 @@ func TestBackoffDoubles(t *testing.T) {
 	}
 }
 
-// TestOutageDoesNotCountAsFailure checks that a renderer that cannot be
-// reached is recorded but leaves failures as it was, so the retry comes
-// after the delay for the old count, and that a build failure after the
-// outage still counts.
+// TestOutageDoesNotCountAsFailure checks that a renderer that does not take
+// the build records nothing, so a target never built stays due, and one in
+// its backoff keeps its count and its wait, while a build failure after
+// the outage still counts.
 func TestOutageDoesNotCountAsFailure(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	builds := int32(0)
 
-	// With no prior failure, several outages in a row keep failures at 0
-	// and retry after 5 minutes each time.
+	// Never built: an outage leaves no row, so the target is still due.
 	h.down.Store(true)
-	for i := range 4 {
+	for range 2 {
 		builds++
 		h.renderDue(t, builds)
-		r := h.render(t)
-		if r.Failures != 0 || !strings.Contains(r.Error, "renderer unavailable") || r.AttemptedAt != h.now.Unix() {
-			t.Fatalf("outage %d: %+v", i+1, r)
+		if rows, err := h.db.Read.ListRenderRows(t.Context()); err != nil || len(rows) != 0 {
+			t.Fatalf("rows after an outage: %+v, %v; want none", rows, err)
 		}
-		h.now = h.now.Add(db.RenderRetryAfter - time.Second)
-		h.renderDue(t, builds)
-		h.now = h.now.Add(time.Second)
 	}
 
-	// Two real failures raise the count to 2.
+	// Two real failures raise the count to 2, and each waits its backoff.
 	h.down.Store(false)
 	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -1150,28 +1153,82 @@ func TestOutageDoesNotCountAsFailure(t *testing.T) {
 		if got := h.render(t).Failures; got != int64(i+1) {
 			t.Fatalf("failures = %d, want %d", got, i+1)
 		}
-		h.now = h.now.Add(retryDelay(int64(i + 1)))
-	}
-
-	// An outage now keeps 2, and the next try is 10 minutes after it.
-	h.down.Store(true)
-	for range 3 {
-		builds++
-		h.renderDue(t, builds)
-		if got := h.render(t).Failures; got != 2 {
-			t.Fatalf("failures after an outage = %d, want 2", got)
-		}
-		h.now = h.now.Add(10*time.Minute - time.Second)
+		h.now = h.now.Add(retryDelay(int64(i+1)) - time.Second)
 		h.renderDue(t, builds)
 		h.now = h.now.Add(time.Second)
 	}
 
-	// A build that runs and fails again counts.
+	// Its backoff has passed, and an outage now leaves the row as it was,
+	// so the target is still due at the next try.
+	before := h.render(t)
+	h.down.Store(true)
+	for range 2 {
+		builds++
+		h.renderDue(t, builds)
+		if r := h.render(t); r != before {
+			t.Fatalf("after an outage: %+v, want it unchanged from %+v", r, before)
+		}
+	}
+
+	// A build that runs and fails again counts, and waits out its backoff.
 	h.down.Store(false)
 	builds++
 	h.renderDue(t, builds)
 	if r := h.render(t); r.Failures != 3 || strings.Contains(r.Error, "unavailable") {
 		t.Fatalf("after a real failure: %+v", r)
+	}
+	h.now = h.now.Add(retryDelay(3) - time.Second)
+	h.renderDue(t, builds)
+}
+
+// TestLostBuildCounts checks that a build the renderer took and then lost,
+// as when a recipe kills it or makes its own directory unreadable, counts
+// against that target and waits out its backoff, rather than passing for
+// an outage that is due again at once, and that the other due targets
+// still build.
+func TestLostBuildCounts(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	for _, in := range []db.PluginInstance{h.installRecipe(t, "y"), h.installRecipe(t, "z")} {
+		if _, err := addItemTo(t.Context(), h.db, "p", "", in.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.lose.Store(1)
+	h.renderDue(t, 3)
+	rows, err := h.db.Read.ListRenderRows(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lost, built int
+	for _, r := range rows {
+		switch {
+		case r.Error != "" && r.Failures == 1 && !strings.Contains(r.Error, "unavailable"):
+			lost++
+		case r.Error == "" && r.RenderedAt == h.now.Unix():
+			built++
+		}
+	}
+	if lost != 1 || built != 2 {
+		t.Fatalf("%d lost and counted, %d built, of %+v; want 1 and 2", lost, built, rows)
+	}
+	// The lost one waits for its backoff, not for the next try.
+	h.now = h.now.Add(time.Second)
+	h.renderDue(t, 3)
+}
+
+// TestUnavailableBackoff checks Run's wait after passes in a row whose
+// renderer did not take the build: unavailableWait, doubling, up to
+// checkEvery.
+func TestUnavailableBackoff(t *testing.T) {
+	t.Parallel()
+	for n, want := range map[int]time.Duration{
+		1: unavailableWait, 2: 2 * unavailableWait, 3: 4 * unavailableWait, 4: 8 * unavailableWait,
+		5: checkEvery, 50: checkEvery,
+	} {
+		if got := unavailableBackoff(n); got != want {
+			t.Errorf("unavailableBackoff(%d) = %s, want %s", n, got, want)
+		}
 	}
 }
 
@@ -1375,14 +1432,17 @@ func TestRenderTimesOut(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+		// A renderer that does not answer is unavailable, which ends the
+		// pass.
+		if !errors.Is(err, render.ErrUnavailable) {
+			t.Fatalf("RenderNext = %v, want ErrUnavailable", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("RenderNext waited on a renderer that never answers")
 	}
-	if r := h.render(t); !strings.Contains(r.Error, "deadline exceeded") || r.Failures != 0 {
-		t.Fatalf("render after a timeout: %+v", r)
+	// The renderer never took the build, so nothing is recorded.
+	if rows, err := h.db.Read.ListRenderRows(t.Context()); err != nil || len(rows) != 0 {
+		t.Fatalf("render rows after a timeout: %+v, %v; want none", rows, err)
 	}
 }
 

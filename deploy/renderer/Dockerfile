@@ -4,9 +4,14 @@
 #
 #   docker build -f deploy/renderer/Dockerfile -t trmnl-byos-render .
 #
-# Run it with an init process (docker run --init, or init: true in Compose).
-# Firefox leaves helper processes that the shim, as process 1, would never
-# reap.
+# Run it without an init process (no docker run --init, and no init: true in
+# Compose). The shim is process 1 and reaps what Firefox leaves behind. An
+# init would run as the render user, where no sweep could kill it, so the
+# shim refuses to start beside one. Run it with a read-only root file system
+# and a tmpfs on /tmp (docker run --read-only --tmpfs /tmp:mode=1777,size=1g,
+# or read_only and tmpfs in Compose). The shim refuses to start where its
+# user can write anywhere it does not clean after each build, and the image
+# leaves /usr/local/bundle and other directories writable.
 
 FROM golang:1.27 AS build
 WORKDIR /src

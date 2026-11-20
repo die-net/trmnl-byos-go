@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 	"time"
 )
@@ -54,14 +53,15 @@ func TestRenderedSettingsAt(t *testing.T) {
 		t.Errorf("latest counted failure %d %q, want %d %q", counted, countedErr, h.now.Unix(), r.Error)
 	}
 
-	// An unreachable renderer during the build of still newer settings is
-	// recorded, but leaves the latest counted failure as it was.
+	// A renderer that does not take the build of still newer settings
+	// changes nothing: the row and the latest counted failure stay.
+	before := h.render(t)
 	h.down.Store(true)
 	h.now = h.now.Add(time.Minute)
 	h.setToken(t, "salmon-fish")
 	h.renderDue(t, 4)
-	if r := h.render(t); !strings.Contains(r.Error, "unavailable") || r.SettingsAt != h.now.Unix() {
-		t.Errorf("after an outage: %+v, want its error and settings", r)
+	if r := h.render(t); r != before {
+		t.Errorf("after an outage: %+v, want it unchanged from %+v", r, before)
 	}
 	if at, msg := h.failedAt(t); at != counted || msg != countedErr {
 		t.Errorf("latest counted failure %d %q after an outage, want %d %q kept", at, msg, counted, countedErr)

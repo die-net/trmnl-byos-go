@@ -34,6 +34,9 @@ const (
 	maxDimension    = 4096
 	// maxLogBytes bounds the build log a client keeps.
 	maxLogBytes = 64 << 10
+	// maxPNGBytes bounds each PNG the shim sends and the client accepts,
+	// so no build can make the server store an image without limit.
+	maxPNGBytes = 8 << 20
 )
 
 // Job is what to build.
