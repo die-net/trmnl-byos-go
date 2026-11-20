@@ -9,9 +9,12 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/httptrace"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 // Client sends build jobs to a shim.
@@ -27,8 +30,13 @@ type Client struct {
 // matching ErrBuildFailed, and one whose data fetch failed an error matching
 // ErrFetchFailed. A job that is too big to send, or that the shim
 // refuses with a 400, returns an error matching ErrRejected. A renderer that
-// cannot be reached or does not answer with a result returns an error
-// matching ErrUnavailable. A project that writeProject cannot write, such as
+// did not take the job returns an error matching ErrUnavailable: one that
+// cannot be reached, that answers 503, or that fails before it answers 102
+// Processing, which the shim sends once it has read the job and starts the
+// build. A failure after that, such as a connection lost mid-build or a
+// timeout, may be the build's doing, so it returns an error that matches
+// none of these, which counts against the build. A project that writeProject
+// cannot write, such as
 // a recipe whose files are gone, returns writeProject's error, which matches
 // none of these: the fault is in the project, not the renderer.
 func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writer) error,
@@ -51,7 +59,14 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		written <- err
 		pw.CloseWithError(err)
 	}()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.URL, "/")+"/build", pr)
+	var accepted atomic.Bool
+	trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+		if code == http.StatusProcessing {
+			accepted.Store(true)
+		}
+		return nil
+	}}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, strings.TrimRight(c.URL, "/")+"/build", pr)
 	if err != nil {
 		_ = pr.CloseWithError(err)
 		return "", fmt.Errorf("render request: %w", err)
@@ -64,16 +79,35 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		if werr := <-written; werr != nil && !errors.Is(werr, errBody) {
 			return "", fmt.Errorf("write project: %w", werr)
 		}
+		if accepted.Load() {
+			return "", fmt.Errorf("render request: the renderer stopped during the build: %w", err)
+		}
 		return "", fmt.Errorf("render request: %w: %w", ErrUnavailable, err)
 	}
+	// The shim sweeps up after the build before its response starts, so
+	// the next build may come as soon as this returns, whether or not the
+	// body was read to its end. One build every few minutes needs no
+	// connection reuse, so an early close only costs a new connection.
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnprocessableEntity {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		kind := ErrUnavailable
-		if resp.StatusCode == http.StatusBadRequest {
+		var kind error
+		switch {
+		case resp.StatusCode == http.StatusBadRequest:
 			kind = ErrRejected
+		case resp.StatusCode == http.StatusServiceUnavailable || !accepted.Load():
+			kind = ErrUnavailable
+		default:
+			kind = errFailedDuringBuild
 		}
 		return "", fmt.Errorf("render request: %w: %s: %s", kind, resp.Status, strings.TrimSpace(string(msg)))
+	}
+	// The shim answers 102 before every result, so a result without one
+	// came through something that drops 1xx responses, such as an HTTP
+	// proxy, and an outage after it could not be told from one before. It
+	// counts, so the target backs off rather than being tried at once.
+	if !accepted.Load() {
+		return "", fmt.Errorf("render request: the renderer answered %s with no 102 Processing first: whatever is between the server and the renderer drops 1xx responses; reach it directly or through a TCP forward", resp.Status)
 	}
 
 	var log strings.Builder
@@ -102,6 +136,9 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		if !ok {
 			return log.String(), fmt.Errorf("read render result: unexpected %q", h.Name)
 		}
+		if h.Size > maxPNGBytes {
+			return log.String(), fmt.Errorf("read render result: %s is %d bytes, over the limit of %d", h.Name, h.Size, maxPNGBytes)
+		}
 		if err := png(layout, tr); err != nil {
 			return log.String(), err
 		}
@@ -118,6 +155,10 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 	}
 	return log.String(), nil
 }
+
+// errFailedDuringBuild marks an error status the renderer answered after it
+// took the job, which counts against the build.
+var errFailedDuringBuild = errors.New("the renderer failed during the build")
 
 // errBody marks an error writing the request body, which means the
 // renderer stopped reading it, so it can be told from an error reading the

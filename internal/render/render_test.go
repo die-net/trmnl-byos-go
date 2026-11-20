@@ -1,8 +1,11 @@
+//go:build linux
+
 package render
 
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -16,11 +19,14 @@ import (
 	"time"
 )
 
-// fakeTrmnlp stands in for trmnlp: it checks the project, writes each
-// layout's "PNG" as a line naming the layout, size, palette and secret, and
-// fails or hangs when the project asks it to. Asked for a failed data
-// fetch, it does as trmnlp does: warns, marks the failure in its cache, and
-// still draws the screens and exits 0.
+// fakeTrmnlp stands in for trmnlp: it checks the project and its display,
+// writes each layout's "PNG" as a line naming the layout, size, palette and
+// secret, and fails or hangs when the project asks it to. Asked for a failed
+// data fetch, it does as trmnlp does: warns, marks the failure in its cache,
+// and still draws the screens and exits 0. Asked to, it starts a process
+// that outlives it (see TestLeftoverKilled), lingers after drawing, plants
+// files and looks for them (see TestPlantedFilesRemoved), or leaves a FIFO
+// or an oversized PNG where the shim reads its result (see TestBadResult).
 const fakeTrmnlp = `#!/bin/sh
 while [ $# -gt 0 ]; do
   case $1 in
@@ -32,6 +38,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 test -f "$dir/src/settings.yml" || { echo "no settings.yml" >&2; exit 2; }
+test "$DISPLAY" = ":7" || { echo "no display" >&2; exit 5; }
+test -f "$dir/leftover" && TRMNL_TEST_LEFTOVER=spawn "$LEFTOVER_BIN"
 test -f "$dir/fail" && { echo "boom" >&2; exit 3; }
 test -f "$dir/slow" && { sleep 30 & echo $! > "$CHILD_PID_FILE"; wait; }
 test -n "$XDG_CACHE_HOME" && test -d "$TMPDIR" || { echo "no build dirs" >&2; exit 4; }
@@ -44,7 +52,26 @@ mkdir -p "$dir/_build"
 for v in full half_horizontal half_vertical quadrant; do
   printf '%s %sx%s %s %s' "$v" "$w" "$h" "$p" "$FIELD_TOKEN" > "$dir/_build/$v.png"
 done
+test -f "$dir/linger" && sleep 1
+if test -f "$dir/lingerseen"; then
+  for i in $(seq 200); do grep -q "$FIELD_TOKEN" "$LEFTOVER_DIR/out" 2>/dev/null && break; sleep 0.05; done
+fi
+test -f "$dir/fifolog" && rm -f "$dir/../build.log" && mkfifo "$dir/../build.log"
+test -f "$dir/fifopng" && rm -f "$dir/_build/full.png" && mkfifo "$dir/_build/full.png"
+test -f "$dir/bigpng" && dd if=/dev/zero of="$dir/_build/full.png" bs=1048576 count=9 2>/dev/null
+test -f "$dir/biglog" && head -c 70000 /dev/zero | tr '\0' x
+test -f "$dir/chmoddir" && (cd "$dir/.." && pwd) > "$CHMOD_RECORD" && chmod 000 "$dir/.."
+test -f "$dir/plant" && . "$PLANT_SCRIPT"
+test -f "$dir/check" && . "$CHECK_SCRIPT"
 echo built
+`
+
+// fakeXvfb stands in for Xvfb: it names display 7 on the descriptor it is
+// given, then waits to be stopped.
+const fakeXvfb = `#!/bin/sh
+test "$1" = -displayfd && test "$2" = 3 || exit 2
+echo 7 >&3
+exec sleep 600
 `
 
 // ampleTimeout is the build timeout of a shim whose builds are meant to
@@ -54,38 +81,38 @@ echo built
 // timeout, uses a short one.
 const ampleTimeout = 2 * time.Minute
 
+// newShimServer starts a shim with fake trmnlp and Xvfb commands, whose
+// sweep can kill nothing.
 func newShimServer(t *testing.T, timeout time.Duration, env ...string) *Client {
 	t.Helper()
-	script := filepath.Join(t.TempDir(), "trmnlp")
-	if err := os.WriteFile(script, []byte(fakeTrmnlp), 0o700); err != nil { //nolint:gosec // G306: the fake command must be executable.
-		t.Fatal(err)
+	c, _ := newShimServerWith(t, scopedSweeper("no process has this name"), timeout, env...)
+	return c
+}
+
+// newShimServerWith starts a shim whose sweeps use sw. A test must never
+// run the shim's own sweeper, which would kill every process of the user
+// running the tests and remove its files.
+func newShimServerWith(t *testing.T, sw sweeper, timeout time.Duration, env ...string) (*Client, *Shim) {
+	t.Helper()
+	return newShimServerXvfb(t, sw, fakeXvfb, timeout, env...)
+}
+
+// newShimServerXvfb starts a shim whose sweeps use sw, with the Xvfb script
+// xvfbScript.
+func newShimServerXvfb(t *testing.T, sw sweeper, xvfbScript string, timeout time.Duration, env ...string) (*Client, *Shim) {
+	t.Helper()
+	dir := t.TempDir()
+	trmnlp, xvfb := filepath.Join(dir, "trmnlp"), filepath.Join(dir, "Xvfb")
+	for path, script := range map[string]string{trmnlp: fakeTrmnlp, xvfb: xvfbScript} {
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // G306: the fake command must be executable.
+			t.Fatal(err)
+		}
 	}
-	shim := NewShim(script, append([]string{"PATH=" + os.Getenv("PATH")}, env...), timeout, 2)
+	// Never NewShim, whose sweep would start at once.
+	shim := &Shim{Trmnlp: trmnlp, Xvfb: xvfb, Env: append([]string{"PATH=" + os.Getenv("PATH")}, env...), Timeout: timeout, gate: newGate(sw, 2)}
 	srv := httptest.NewServer(shim)
 	t.Cleanup(srv.Close)
-	return &Client{URL: srv.URL, HTTP: srv.Client()}
-}
-
-// project writes a minimal project, plus any extra files.
-func project(extra ...string) func(*tar.Writer) error {
-	return func(tw *tar.Writer) error {
-		files := append([]string{"src/settings.yml", ".trmnlp.yml"}, extra...)
-		for _, name := range files {
-			if err := AddFile(tw, name, 1, strings.NewReader("x")); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-}
-
-// collect gathers the PNGs a build returns, which a test may hold in memory.
-func collect(got map[string]string) func(string, io.Reader) error {
-	return func(layout string, r io.Reader) error {
-		b, err := io.ReadAll(r)
-		got[layout] = string(b)
-		return err
-	}
+	return &Client{URL: srv.URL, HTTP: srv.Client()}, shim
 }
 
 func TestBuild(t *testing.T) {
@@ -212,56 +239,30 @@ func TestShimRejects(t *testing.T) {
 	}
 }
 
-// TestAddDir checks that a recipe's source directory is sent whole, with
-// its files under the prefix.
-func TestAddDir(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	for name, body := range map[string]string{"settings.yml": "s", "full.liquid": "f", "sub/x.txt": "x"} {
-		path := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	if err := AddDir(tw, dir, "src"); err != nil {
-		t.Fatal(err)
-	}
-	_ = tw.Close()
-	got := map[string]string{}
-	tr := tar.NewReader(&buf)
-	for {
-		h, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, _ := io.ReadAll(tr)
-		got[h.Name] = string(b)
-	}
-	if len(got) != 3 || got["src/settings.yml"] != "s" || got["src/sub/x.txt"] != "x" {
-		t.Fatalf("tar holds %v", got)
-	}
-}
-
-// TestUnavailable checks that a renderer that is not listening or that
-// answers 503 returns ErrUnavailable and not ErrBuildFailed, and that the
-// shim's 422 is ErrBuildFailed and not ErrUnavailable.
+// TestUnavailable checks which failures count as the renderer's, an
+// outage the scheduler does not count against the build: a closed port, a
+// 503, and a connection lost or an error status before the shim answers 102
+// Processing. A connection lost or an error status after it may be the
+// build's doing, as when a recipe kills the shim, so it is neither an
+// outage nor a failed build by trmnlp, and counts. The shim's 422 is a
+// failed build.
 func TestUnavailable(t *testing.T) {
 	t.Parallel()
 	closed := httptest.NewServer(http.NotFoundHandler())
 	closedURL := closed.URL
 	closed.Close()
-	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "busy", http.StatusServiceUnavailable)
-	}))
-	t.Cleanup(busy.Close)
+	server := func(t *testing.T, h http.HandlerFunc) *Client {
+		t.Helper()
+		srv := httptest.NewServer(h)
+		t.Cleanup(srv.Close)
+		return &Client{URL: srv.URL, HTTP: srv.Client()}
+	}
+	drop := func(w http.ResponseWriter) {
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}
 	shim := newShimServer(t, ampleTimeout)
 
 	for _, tc := range []struct {
@@ -272,11 +273,34 @@ func TestUnavailable(t *testing.T) {
 		buildFailed bool
 	}{
 		{"closed port", &Client{URL: closedURL, HTTP: http.DefaultClient}, "", true, false},
-		{"503", &Client{URL: busy.URL, HTTP: busy.Client()}, "", true, false},
+		{"503", server(t, func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+		}), "", true, false},
+		{"503 after 102", server(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusProcessing)
+			http.Error(w, "start Xvfb", http.StatusServiceUnavailable)
+		}), "", true, false},
+		{"lost before 102", server(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			drop(w)
+		}), "", true, false},
+		{"500 before 102", server(t, func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "oops", http.StatusInternalServerError)
+		}), "", true, false},
+		{"lost after 102", server(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusProcessing)
+			drop(w)
+		}), "", false, false},
+		{"500 after 102", server(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusProcessing)
+			http.Error(w, "oops", http.StatusInternalServerError)
+		}), "", false, false},
 		{"422", shim, "fail", false, true},
 	} {
 		_, err := tc.c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(tc.marker), collect(map[string]string{}))
-		if errors.Is(err, ErrUnavailable) != tc.unavailable || errors.Is(err, ErrBuildFailed) != tc.buildFailed {
+		if err == nil || errors.Is(err, ErrUnavailable) != tc.unavailable || errors.Is(err, ErrBuildFailed) != tc.buildFailed {
 			t.Errorf("%s: err %v", tc.name, err)
 		}
 	}
@@ -351,16 +375,124 @@ func TestJobSize(t *testing.T) {
 	}
 }
 
-// TestRejected checks that a shim's 400 is ErrRejected, with its message,
-// and not ErrUnavailable.
-func TestRejected(t *testing.T) {
+// TestBadResult checks that a build that leaves a FIFO where the shim reads
+// its log or a PNG, which would block an open forever, or a PNG over the
+// bound, or that makes its own directory unreadable, fails as a build, not
+// an outage, with a plain reason, at once, and that the shim still takes
+// the next build. The reason survives a log longer than a client keeps.
+func TestBadResult(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "read job: unexpected EOF", http.StatusBadRequest)
-	}))
-	t.Cleanup(srv.Close)
-	_, err := (&Client{URL: srv.URL, HTTP: srv.Client()}).Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(), collect(map[string]string{}))
-	if !errors.Is(err, ErrRejected) || errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "read job: unexpected EOF") {
-		t.Errorf("err = %v", err)
+	for _, tc := range []struct {
+		name    string
+		markers []string
+		reason  string
+	}{
+		{"fifo log", []string{"fifolog"}, "build.log is not a regular file"},
+		{"fifo png", []string{"fifopng"}, "full.png is not a regular file"},
+		{"big png", []string{"bigpng"}, "full.png is over"},
+		{"big png, long log", []string{"bigpng", "biglog"}, "full.png is over"},
+		{"unreadable directory", []string{"chmoddir"}, "open the build directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := filepath.Join(t.TempDir(), "chmodded")
+			// The build directory a build made unreadable is left for the
+			// sweep, which this test's does not do.
+			t.Cleanup(func() {
+				b, err := os.ReadFile(record) //nolint:gosec // G304: the test's own file.
+				if err != nil {
+					return
+				}
+				tmp, err := os.OpenRoot(os.TempDir())
+				if err != nil {
+					return
+				}
+				defer tmp.Close()
+				name := filepath.Base(strings.TrimSpace(string(b)))
+				_ = tmp.Chmod(name, 0o700)
+				_ = tmp.RemoveAll(name)
+			})
+			c := newShimServer(t, ampleTimeout, "CHMOD_RECORD="+record)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			job := Job{Width: 800, Height: 480, Palette: "bw"}
+			got := map[string]string{}
+			log, err := c.Build(ctx, job, project(tc.markers...), collect(got))
+			if !errors.Is(err, ErrBuildFailed) || errors.Is(err, ErrUnavailable) || !strings.Contains(log, tc.reason) || len(got) != 0 {
+				t.Errorf("err %v, log %q, %d PNGs; want a failed build saying %q", err, log, len(got), tc.reason)
+			}
+			if log, err := c.Build(ctx, job, project(), collect(map[string]string{})); err != nil {
+				t.Errorf("the next build: %v; log %q", err, log)
+			}
+		})
+	}
+}
+
+// TestResultSizes checks that the shim sends each file at the size it had
+// when it was opened and checked: a PNG a process the build left grows
+// afterwards is sent at its old size, and one that shrinks fails the
+// response rather than sending less than its header said.
+func TestResultSizes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(path string) error
+		ok     bool
+	}{
+		{"grows", func(path string) error {
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // G304: the test's own file.
+			if err != nil {
+				return err
+			}
+			_, err = f.Write(make([]byte, 1<<20))
+			return errors.Join(err, f.Close())
+		}, true},
+		{"shrinks", func(path string) error { return os.Truncate(path, 1) }, false},
+	} {
+		dir := t.TempDir()
+		build := filepath.Join(dir, "project", "_build")
+		if err := os.MkdirAll(build, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, layout := range Layouts {
+			if err := os.WriteFile(filepath.Join(build, layout+".png"), []byte(layout+" image"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := openResult(root, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tc.change(filepath.Join(build, "full.png")); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		werr := writeResult(&out, res, "", false)
+		res.close()
+		_ = root.Close()
+		if (werr == nil) != tc.ok {
+			t.Errorf("%s: writeResult = %v, want ok %v", tc.name, werr, tc.ok)
+			continue
+		}
+		if !tc.ok {
+			continue
+		}
+		tr := tar.NewReader(&out)
+		for {
+			h, err := tr.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h.Name == "full.png" && h.Size != int64(len("full image")) {
+				t.Errorf("%s: full.png sent at %d bytes, want its size when checked", tc.name, h.Size)
+			}
+		}
 	}
 }

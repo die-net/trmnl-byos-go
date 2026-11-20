@@ -36,6 +36,15 @@ func (h *harness) fakeRenderer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 		return
 	}
+	if h.lose.Add(-1) >= 0 {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusProcessing)
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+		return
+	}
+	h.lose.Store(0)
 	if h.reject.Load() {
 		http.Error(w, "read job: unexpected EOF", http.StatusBadRequest)
 		return
@@ -45,6 +54,9 @@ func (h *harness) fakeRenderer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The shim answers 102 Processing once it has the job, before any
+	// result.
+	w.WriteHeader(http.StatusProcessing)
 	if h.fetchFail.Load() {
 		url := "https://api.example/forecast"
 		if h.fetchURL != "" {

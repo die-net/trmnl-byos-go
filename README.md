@@ -69,7 +69,7 @@ docker compose -f deploy/compose.yaml exec renderer python3 -c 'import urllib.re
 docker compose -f deploy/compose.yaml exec renderer python3 -c 'import urllib.request as u; print(u.urlopen("https://example.com/").status)'
 ```
 
-The first fails to resolve `server`, since the renderer isn't on the server's network. The second fails with a 502 from the proxy, which refuses `server` because it isn't a public address. The third prints 200.
+The first fails to resolve `server`, since the renderer isn't on the server's network. The second fails with a 502 from the proxy, which refuses `server` because it isn't a public address. The third prints 200. After each build the renderer kills every other process of its user, so a command run in its container may be killed if a build ends while it runs.
 
 Install a recipe from a directory or a zip, such as one from TRMNL's recipe pages or GitHub, then give it settings and put it on a device's playlist:
 
@@ -81,14 +81,14 @@ trmnl-byos playlist add -device ABC123 -instance 1 -duration 15m
 
 In Compose, run these with `docker compose -f deploy/compose.yaml exec server trmnl-byos ...`, after copying the recipe in with `docker compose ... cp`. Each `playlist add` appends an item to the device's playlist. A timer wake moves to the next item once the current one's time is up, and a button press moves on at once. `-duration 0` keeps an item until a press. `instance add -palette bw` renders in black and white on a panel that also takes grays, which keeps its refreshes partial. `recipe list`, `instance list` and `playlist list` show what is set up. `playlist remove` takes an item out, `playlist move ITEM INDEX` reorders, `playlist set ITEM -hidden` hides an item, and `playlist set ITEM` or `playlist schedule NAME` with `-days mon,tue`, `-window 09:00-17:00`, `-from` and `-until` limit when an item or playlist is shown (a device shows its first playlist that is scheduled now, so an unscheduled one at the end is the default). `instance add -field k=v` sets a custom field of the recipe (repeat the key for each choice of a multi-select, and the recipe's `password` fields are stored encrypted), and `instance set ID -field k=v -clear k` changes them later (a password is better given with `-field-file k=path`, or `-` for stdin, since `-field` shows it in `ps` and the shell history), which renders the instance again. `instance remove` deletes an instance and its renders once no item shows it.
 
-To run the renderer alone, build its image from the repository root and run it with an init process:
+To run the renderer alone, build its image from the repository root and run it without an init process, since the shim is process 1 and reaps its own children:
 
 ```
 docker build -f deploy/renderer/Dockerfile -t trmnl-byos-render .
-docker run --rm --init -p 8081:8081 trmnl-byos-render
+docker run --rm --read-only --tmpfs /tmp:mode=1777,size=1g -p 8081:8081 trmnl-byos-render
 ```
 
-With one running, `TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker ./internal/render/` builds a small recipe in it. `serve -render-url` points the server at a renderer. The renderer needs `HTTP_PROXY` and `HTTPS_PROXY` set to a proxy: `trmnl-byos proxy` on its own, or `serve -proxy-listen :3128` in the server's process.
+The renderer runs only on Linux. It refuses to start without a read-only root file system, since the image leaves directories writable that a build could plant files in for later builds to run. Outside a container, it needs a user account that runs nothing else, since after each build it kills every other process of its user and removes every file its user owns in `/tmp`, `/var/tmp`, `/dev/shm`, `/dev/mqueue` and the account's home. It refuses to start as root, while any other process of its user runs, an init process of its user included, if its user can write anywhere else, or if another user owns anything in those scratch directories, so it needs its own `/tmp`, `/var/tmp`, `/dev/shm` and `/dev/mqueue`, and a shared `/tmp` is refused. Under systemd, `ProtectSystem=strict`, `PrivateTmp=yes`, `TemporaryFileSystem=/dev/shm`, `ProtectHome=read-only`, `PrivateIPC=yes` and `SystemCallFilter=~add_key keyctl request_key` give that (see Renderer network in `docs/design.md`). With one running, `TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker ./internal/render/` builds a small recipe in it. `serve -render-url` points the server at a renderer, directly or through the proxy's TCP forward: the renderer answers `102 Processing` when it starts a build, and anything between that drops 1xx responses, such as an HTTP reverse proxy, makes every build fail with an error that says so. The renderer needs `HTTP_PROXY` and `HTTPS_PROXY` set to a proxy: `trmnl-byos proxy` on its own, or `serve -proxy-listen :3128` in the server's process.
 
 ## Firmware updates
 

@@ -62,8 +62,10 @@ services:
       context: ..
       dockerfile: deploy/renderer/Dockerfile
     restart: unless-stopped
-    # Reaps the helper processes Firefox leaves behind.
-    init: true
+    # No init: the shim is process 1, and reaps what Firefox leaves behind
+    # and what it kills after each build. An init would be a process of the
+    # renderer's user that no sweep could kill, so the shim refuses to start
+    # beside one.
     environment:
       HTTP_PROXY: http://proxy:3128
       HTTPS_PROXY: http://proxy:3128
@@ -72,8 +74,22 @@ services:
     # otherwise.
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    # A build peaks at about 1 GB, Firefox included.
+    # Nothing a build writes may outlive it. The root file system is
+    # read-only, so the build's own directories under /tmp, /dev/shm and
+    # /dev/mqueue are all it can write, and the shim empties them after
+    # each build. The shim refuses to start if its user can write anywhere
+    # else.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=1g
+    # A build peaks at about 1 GB, Firefox included, and what it writes to
+    # /tmp counts toward this too.
     mem_limit: 2g
+    # Processes and threads, which also bounds the exited orphans waiting
+    # for the shim to reap them at the next sweep. A build of a MapLibre
+    # map recipe with a transform peaked at 272. Raise it with
+    # -concurrency.
+    pids_limit: 1024
     networks: [render]
 
 networks:
