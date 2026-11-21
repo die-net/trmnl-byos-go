@@ -20,7 +20,7 @@ func runSetting(t *testing.T, args ...string) (string, error) {
 
 func TestSetting(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := dataDir(t)
 	list := func() map[string][]string {
 		t.Helper()
 		out, err := runSetting(t, "list", "-data", dir)
@@ -73,7 +73,7 @@ func TestSetting(t *testing.T) {
 
 func TestSettingBadRow(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := dataDir(t)
 	client, err := openDB(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestSettingRefused(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dir := t.TempDir()
+			dir := dataDir(t)
 			args := tc.args
 			if len(args) > 0 {
 				args = append([]string{args[0], "-data", dir}, args[1:]...)

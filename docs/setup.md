@@ -58,7 +58,7 @@ trmnl-byos serve -data /var/lib/trmnl-byos -listen :8080
 trmnl-byos password -data /var/lib/trmnl-byos
 ```
 
-Run `serve` under the service manager you use, as a user of its own. Then set the admin password, and go on to [First device](#first-device). You can add a renderer later by giving `serve` a `-render-url`.
+Run `serve` under the service manager you use, as a user of its own. It creates the data directory and the database when it first starts, and every other command needs it to have started once, or fails with "no database". Then set the admin password, and go on to [First device](#first-device). You can add a renderer later by giving `serve` a `-render-url`.
 
 ## Docker Compose
 
@@ -78,7 +78,7 @@ TZ=Europe/Zurich
 TRMNL_SECRET_KEY=...
 ```
 
-Then set the admin password:
+Once the server container has started, set the admin password:
 
 ```bash
 docker compose -f deploy/compose.yaml exec server trmnl-byos password
@@ -198,7 +198,7 @@ The shim refuses to start if its user can write anywhere but its scratch directo
 
 ## First device
 
-A device registers only while the server's join window is open, so open it first, for 10 minutes by default. Give each command here the same `-data` directory as `serve`:
+A device registers only while the server's join window is open, so open it first, for 10 minutes by default. Give each command here the same `-data` directory as `serve`. A command given another one fails with "no database" rather than making an empty one:
 
 ```bash
 trmnl-byos join -data /var/lib/trmnl-byos -for 10m

@@ -50,7 +50,7 @@ func TestPasswordFromStdin(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dir := t.TempDir()
+			dir := dataDir(t)
 			var out bytes.Buffer
 			err := password(t.Context(), []string{"-data", dir}, stdin(t, tc.input), &out)
 			if tc.bad {
@@ -79,7 +79,7 @@ func TestPasswordFromStdin(t *testing.T) {
 
 func TestPasswordTooShortIsInvalid(t *testing.T) {
 	t.Parallel()
-	err := password(t.Context(), []string{"-data", t.TempDir()}, stdin(t, "short\n"), &bytes.Buffer{})
+	err := password(t.Context(), []string{"-data", dataDir(t)}, stdin(t, "short\n"), &bytes.Buffer{})
 	if !errors.Is(err, errkind.ErrInvalid) {
 		t.Fatalf("err = %v, want invalid input", err)
 	}

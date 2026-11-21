@@ -267,7 +267,7 @@ func TestMigrateAddedColumns(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "trmnl.db")
-	old, err := sql.Open(driverName(), writerDSN(path, busyTimeout))
+	old, err := sql.Open(driverName(), writerDSN(path, "rwc", busyTimeout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestMigrateRenderDevice(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "trmnl.db")
-	old, err := sql.Open(driverName(), writerDSN(path, busyTimeout))
+	old, err := sql.Open(driverName(), writerDSN(path, "rwc", busyTimeout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func shapeOf(t *testing.T, db *sql.DB) []string {
 // rawDB opens path without Open, so a test can build an old database.
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	raw, err := sql.Open(driverName(), writerDSN(path, busyTimeout))
+	raw, err := sql.Open(driverName(), writerDSN(path, "rwc", busyTimeout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1362,7 +1362,7 @@ func TestMigrateForeignKeys(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			writer, err := openPool(ctx, path, writerDSN(path, busyTimeout), 1)
+			writer, err := openPool(ctx, path, writerDSN(path, "rwc", busyTimeout), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1977,5 +1977,45 @@ func TestMigrateRenderedSettingsAt(t *testing.T) {
 		if err != nil || rendered != tc.rendered || failed != tc.failed || failedError != tc.failedError {
 			t.Errorf("render %d: %d, %d, %q, %v; want %d, %d, %q", tc.id, rendered, failed, failedError, err, tc.rendered, tc.failed, tc.failedError)
 		}
+	}
+}
+
+// TestOpenExisting checks that OpenExisting refuses a missing database
+// without creating the file or its directory, and opens one that Open made.
+func TestOpenExisting(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	root := t.TempDir()
+
+	for _, path := range []string{
+		filepath.Join(root, "absent", "trmnl.db"),
+		filepath.Join(root, "trmnl.db"),
+	} {
+		if _, err := OpenExisting(ctx, path); !errors.Is(err, ErrNoDatabase) {
+			t.Fatalf("OpenExisting(%s) = %v, want ErrNoDatabase", path, err)
+		}
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("directory holds %v, %v after refused opens; want it empty", entries, err)
+	}
+
+	path := filepath.Join(root, "trmnl.db")
+	created, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Write.SetSetting(ctx, SetSettingParams{Key: "k", Value: "v", UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Close(); err != nil {
+		t.Fatal(err)
+	}
+	existing, err := OpenExisting(ctx, path)
+	if err != nil {
+		t.Fatalf("OpenExisting of an existing database: %v", err)
+	}
+	defer existing.Close()
+	if v, err := existing.Read.GetSetting(ctx, "k"); err != nil || v != "v" {
+		t.Errorf("GetSetting = %q, %v; want v", v, err)
 	}
 }

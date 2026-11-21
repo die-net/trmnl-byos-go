@@ -115,7 +115,6 @@ func run() int {
 	return 0
 }
 
-// dataFlag adds the -data flag every command takes.
 // serverZone returns the server's time zone: TZ, the standard way to give a
 // process its zone, or UTC if TZ is unset. Schedules are read in it, times
 // are shown in it, and recipes render in it. An unknown name is an error,
@@ -128,6 +127,7 @@ func serverZone() (*time.Location, error) {
 	return loc, nil
 }
 
+// dataFlag adds the -data flag every command takes.
 func dataFlag(fs *flag.FlagSet) *string {
 	return fs.String("data", "data", "directory holding the database and images")
 }
@@ -156,8 +156,21 @@ func oneArgCommand(ctx context.Context, args []string, out io.Writer, name, argN
 	return err
 }
 
+// dbPath is the database's path in the data directory.
+func dbPath(data string) string {
+	return filepath.Join(data, "trmnl.db")
+}
+
+// openDB opens the database every command but serve works on. It never
+// creates one: a command run from the wrong directory, or without the
+// server's -data, would otherwise change an empty database the server never
+// reads.
 func openDB(ctx context.Context, data string) (*db.Client, error) {
-	return db.Open(ctx, filepath.Join(data, "trmnl.db"))
+	client, err := db.OpenExisting(ctx, dbPath(data))
+	if errors.Is(err, db.ErrNoDatabase) {
+		return nil, fmt.Errorf("%w: pass the -data directory the server uses", err)
+	}
+	return client, err
 }
 
 func serve(ctx context.Context, args []string) error {
@@ -183,7 +196,7 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 
-	client, err := openDB(ctx, *data)
+	client, err := db.Open(ctx, dbPath(*data))
 	if err != nil {
 		return err
 	}

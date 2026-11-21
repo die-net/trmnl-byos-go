@@ -87,7 +87,7 @@ func TestRecipeReplace(t *testing.T) {
 // the path the recipe was installed from, and records it again.
 func TestRecipeReplaceRecordedSource(t *testing.T) {
 	t.Parallel()
-	dir, src := t.TempDir(), writeRecipe(t, instanceYML)
+	dir, src := dataDir(t), writeRecipe(t, instanceYML)
 	if _, err := runRecipe(t, dir, "add", src); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestRecipeReplaceRecordedSource(t *testing.T) {
 // has no path to replace it from.
 func TestRecipeReplaceUploaded(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := dataDir(t)
 	var z bytes.Buffer
 	zw := zip.NewWriter(&z)
 	for name, body := range map[string]string{"settings.yml": instanceYML, "full.liquid": "x"} {
