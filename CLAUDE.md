@@ -47,7 +47,26 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 - Test-only helpers, flags, and fields live in `_test.go` files, not in production code.
 - A rename or move updates every caller. No wrapper, `type X = other.X` alias, or shim is kept for the old name.
 - A new dependency comes from the standard library first, then `golang.org/x`, before anything else. Before writing a general-purpose piece such as a proxy, cache, or address check, look for one in the standard library, `golang.org/x`, or another die-net repository, and use or copy that.
+
+## Efficiency
+
 - Bodies stream. Pass an `io.Reader` or `io.Writer` through, and copy with `io.Copy`; never read a body, file, upload, or rendered image into a `[]byte`, `string`, or `bytes.Buffer` just to hand it on. Bounded small values, such as a JSON control message read through a size limit, are fine.
+- Don't move or copy data that isn't needed. Hand a parser the stream rather than a string read from it, and keep one copy of large data.
+- Don't do the same work twice. Hoist what doesn't change out of loops, and batch I/O rather than making a call per item, such as a query per row.
+- Know how cost grows with input. No loop, or call inside a loop, makes cost quadratic or worse in something a user or device controls. Test at the largest size the system allows, since small inputs hide it.
+- Measure before claiming a speedup, and don't trade clarity for a gain nobody measured.
+
+## Failure modes
+
+For every entry point a change adds or touches, such as an HTTP handler, a background job, a parser, or a migration, work out what happens in each case below, and handle it on purpose:
+
+- The client goes away, or the request context is canceled or times out. That is not a server error, so it gets no 500 and is not logged as one.
+- Input is empty, truncated, malformed, oversized, duplicated, or arrives out of order. This includes truncated archives and uploads.
+- Stored state is missing, stale, or half-written by an earlier failure, such as a crash between two writes, or an empty database after a restore.
+- Two requests or jobs run at once on the same row or file.
+- A dependency, such as the database, the renderer, the network, or the filesystem, fails or is slow.
+
+A behavior change comes with a test that exercises the failure mode or the integration path, not only the success path.
 
 ## Fixes
 
@@ -56,7 +75,6 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 - A failing check is never made to pass by weakening it: no new `t.Skip`, deleted or loosened assertion, raised timeout or threshold, `t.Log` in place of `t.Fatal`, `_ =` on an error, or `//nolint`, unless the owner agreed to that specific change.
 - A `//nolint` is a last resort for code that is correct as written. It names the linter and says why the code is correct. For a gosec G115 integer conversion, give the value a type that already fits rather than silencing the cast.
 - A new field, flag, config option, or endpoint is added only when no existing one can carry it. Prefer deleting or generalizing code to adding it.
-- A behavior change comes with a test that exercises the failure mode or the integration path, not only the success path.
 
 ## Writing
 
