@@ -247,8 +247,11 @@ func TestServeCreatesDatabase(t *testing.T) {
 	if _, err := os.Stat(dbPath(data)); err != nil {
 		t.Error(err)
 	}
+	// This test is about the database, so it stops serve as soon as one
+	// exists. Serve may still be starting then, and a startup step that
+	// sees the canceled context fails with it, which is not a failure.
 	cancel()
-	if err := <-done; err != nil {
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 		t.Errorf("serve: %v", err)
 	}
 }
