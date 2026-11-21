@@ -45,23 +45,15 @@ Follow these steps. Launch the agents of one step in a single message so they ru
 
    Every agent reads beyond the diff: the whole function and file around each change, the callers of changed functions, the functions changed code calls, and the tests. A defect in unchanged code counts only when the change introduces it, exposes it, or makes it reachable.
 
-   Agent 1, sonnet: CLAUDE.md compliance. Check the change against every rule in the root `CLAUDE.md`. Include the rules on SQL and sqlc, transactions (`Client.InTx`), errors, logging, comments, tests, JSON encoding, commands, file paths, secrets, device protocol, and writing.
+   Each agent owns the sections of the root `CLAUDE.md` that its brief names, and checks the change against every rule in them. No other agent checks those rules. A section that no brief names goes to Agent 1.
 
-   Agent 2, sonnet: efficiency and workarounds. Check the change against CLAUDE.md's rules that bodies stream, that a new field, flag or option is added only when no existing one can carry it, and the "Fixes" rules: no `if`, flag, retry or fallback added to make one failure go away, and no weakened check (`t.Skip`, loosened assertion, raised timeout, `_ =` on an error, `//nolint` without a reason). Also apply these rules:
-   - Don't move or copy data that isn't needed. Hand a parser the stream rather than a string read from it, and keep one copy of large data.
-   - Don't do the same work twice. Hoist what doesn't change out of loops, and batch I/O rather than making a call per item, such as a query per row.
-   - Know how cost grows with input. Flag a loop or a call inside a loop that makes cost quadratic or worse in something a user or device controls, at the largest size the system allows.
-   Flag an efficiency problem only when you can say what grows or what is copied, and by how much.
+   Agent 1, sonnet: conventions. Sections "Checks", "Database", "Go" and "Writing".
 
-   Agent 3, opus: bugs in the changed code. Look for wrong logic, wrong error handling, a missing check, resource leaks (bodies, files, rows, goroutines, transactions), races and unsynchronized shared state, wrong use of an API the code calls, and code that will not compile or fails `go vet`. Read the callee's code or documentation before claiming how it behaves.
+   Agent 2, sonnet: efficiency and workarounds. Sections "Efficiency" and "Fixes". Flag an efficiency problem only when you can say what grows or what is copied, and by how much.
 
-   Agent 4, opus: failure modes and state. For each changed entry point (an HTTP handler, a background job, a parser, a migration), work through what happens when:
-   - the client goes away mid-request or the request context is canceled or times out, and whether the code then writes a misleading status (such as a 500 for a canceled context) or logs it as a server error
-   - input is empty, truncated, malformed, oversized, duplicated, or arrives in an unexpected order, including truncated archives and uploads
-   - stored state is missing, stale, or left half-written by an earlier failure, such as a crash between two writes, or an empty database after a restore
-   - two requests or jobs run at once on the same row or file
-   - a dependency (the database, the renderer, the network, the filesystem) fails or is slow
-   Report a case only when the change handles it wrongly and you can describe the scenario step by step. Security issues in scope: a path that escapes its directory, SQL built from strings, an unauthenticated route, a secret logged or returned, a recipe-controlled URL fetched without the outbound client.
+   Agent 3, opus: bugs and security. Section "Security", plus bugs in the changed code: wrong logic, wrong error handling, a missing check, resource leaks (bodies, files, rows, goroutines, transactions), races and unsynchronized shared state, wrong use of an API the code calls, and code that will not compile or fails `go vet`. Read the callee's code or documentation before claiming how it behaves.
+
+   Agent 4, opus: failure modes and devices. Sections "Failure modes" and "Devices". For each entry point the change adds or touches, work through every case in "Failure modes". Report a case only when the change handles it wrongly and you can describe the scenario step by step.
 
    **Only report findings that matter.** In scope:
    - code that fails to compile, fails `go vet`, or fails a test
@@ -79,7 +71,7 @@ Follow these steps. Launch the agents of one step in a single message so they ru
 
 4. Merge the four lists. Combine findings with the same root cause into one. `threads.json` from "This run" lists the pull request's unresolved review threads: their file, line, whether GitHub marks them outdated, and their comments. It keeps only comments from people who can write to the repository and from this workflow's bot (`github-actions`). Drop any finding that one of those threads already raises, and count it as still open if the head commit still has the problem. A resolved thread is not listed, so a problem that comes back after its thread was resolved is posted again.
 
-5. For each remaining finding, launch a validating agent in parallel: opus for a bug, efficiency or failure-mode finding, sonnet for a CLAUDE.md finding. Give it the title and description, the finding, its scenario, and the base and head commits. Its job is to decide whether the finding is real, with high confidence, and to return "valid" or "invalid", the evidence, and how it was checked:
+5. For each remaining finding, launch a validating agent in parallel: sonnet for a finding that only Agent 1 raised, opus for any other. Give it the title and description, the finding, its scenario, and the base and head commits. Its job is to decide whether the finding is real, with high confidence, and to return "valid" or "invalid", the evidence, and how it was checked:
 
    - **Found by reading only**: the default. When the exact lines show the defect, report it from them and run nothing.
    - **Confirmed by running code**: only when all three of these hold.
