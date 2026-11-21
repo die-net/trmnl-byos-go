@@ -22,7 +22,7 @@ func runDevice(t *testing.T, dir string, args ...string) (string, error) {
 // deviceDir returns a data directory with devices ABC001 and ABC002.
 func deviceDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := dataDir(t)
 	client, err := openDB(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestDeviceBlock(t *testing.T) {
 
 func TestDeviceUsage(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := dataDir(t)
 	for _, args := range [][]string{{"nope"}, {"delete"}, {"block", "a", "b"}, {"blocked", "x"}} {
 		if _, err := runDevice(t, dir, args...); err == nil {
 			t.Errorf("device %v: no error", args)

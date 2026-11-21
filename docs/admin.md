@@ -16,7 +16,7 @@ Setting the admin password and managing API tokens are only on the command line.
 
 ### Running commands
 
-Every command but `proxy` takes `-data DIR`, the server's data directory, which is `data` unless you give another. Give the same directory the server uses. The examples here use `/var/lib/trmnl-byos`, as [setup](setup.md#server-only) does. A command given another directory does not fail: it creates an empty database there and changes that one.
+Every command but `proxy` takes `-data DIR`, the server's data directory, which is `data` unless you give another. Give the same directory the server uses. The examples here use `/var/lib/trmnl-byos`, as [setup](setup.md#server-only) does. A command given a directory with no database fails with "no database at PATH: pass the -data directory the server uses", and creates nothing. Only `serve` creates the database, so start it once before you run any other command. In Compose, wait for the server container to start first.
 
 In the Compose setup, run each command inside the server's container, where the default data directory is the server's:
 

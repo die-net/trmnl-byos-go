@@ -125,7 +125,7 @@ func TestServeWithoutProxy(t *testing.T) {
 	defer renderer.Close()
 
 	// A recipe on a device's playlist, so the scheduler has a build to send.
-	dir := t.TempDir()
+	dir := dataDir(t)
 	client, err := openDB(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)

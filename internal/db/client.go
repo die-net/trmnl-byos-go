@@ -66,17 +66,40 @@ func (c *Client) ChangeTx(ctx context.Context, fn func(q *Queries) error) error 
 	return nil
 }
 
-// Open opens or creates the SQLite database at path.
+// ErrNoDatabase is returned by OpenExisting when there is no database file
+// at the path.
+var ErrNoDatabase = errors.New("no database")
+
+// Open opens the SQLite database at path, creating it, and its parent
+// directory, if there is none. Only the server should create a database.
 // The parent directory is created mode 0750. The database file is mode 0600.
 func Open(ctx context.Context, path string) (*Client, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
+	return openMode(ctx, path, "rwc")
+}
 
-	// The writer opens first: it creates the file and switches it to WAL,
-	// which the readers then inherit.
-	writer, err := openPool(ctx, path, writerDSN(path, busyTimeout), 1)
+// OpenExisting opens the SQLite database at path, and returns an error
+// wrapping ErrNoDatabase if there is none. It creates no file or directory,
+// so a command pointed at the wrong directory cannot make an empty database
+// there and change that.
+func OpenExisting(ctx context.Context, path string) (*Client, error) {
+	return openMode(ctx, path, "rw")
+}
+
+// openMode opens the database in the given SQLite mode: "rwc" creates the file
+// if it is missing, and "rw" fails if it is.
+func openMode(ctx context.Context, path, mode string) (*Client, error) {
+	// The writer opens first: in "rwc" mode it creates the file and switches
+	// it to WAL, which the readers then inherit.
+	writer, err := openPool(ctx, path, writerDSN(path, mode, busyTimeout), 1)
 	if err != nil {
+		// SQLite reports a missing file as a generic "unable to open"
+		// error, so ask the file system what it was.
+		if _, statErr := os.Stat(path); mode == "rw" && errors.Is(statErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w at %s", ErrNoDatabase, path)
+		}
 		return nil, err
 	}
 	client := &Client{Writer: writer, Write: New(writer)}

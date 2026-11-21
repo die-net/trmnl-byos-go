@@ -47,7 +47,7 @@ func runInstance(t *testing.T, dir string, args ...string) (string, error) {
 // installed as recipe 1.
 func instanceDir(t *testing.T) string {
 	t.Helper()
-	dir, src := t.TempDir(), t.TempDir()
+	dir, src := dataDir(t), t.TempDir()
 	for name, body := range map[string]string{"settings.yml": instanceYML, "full.liquid": "x"} {
 		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)

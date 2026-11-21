@@ -29,7 +29,7 @@ func runPlaylist(t *testing.T, dir string, args ...string) (string, error) {
 // and an instance.
 func playlistFixture(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := dataDir(t)
 	client, err := openDB(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
