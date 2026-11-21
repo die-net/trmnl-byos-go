@@ -1,6 +1,6 @@
 # trmnl-byos-go
 
-trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLite. It speaks the TRMNL firmware protocol, schedules and pre-renders each device's screens around its wake times, and renders TRMNL recipes through a trmnlp sidecar. The design is `docs/design.md`. Read the sections a change touches before making it. A change to behavior it describes updates it in the same PR. The README has the build and test commands.
+trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLite. It speaks the TRMNL firmware protocol, schedules and pre-renders each device's screens around its wake times, and renders TRMNL recipes through a trmnlp sidecar. How it works is `docs/architecture.md`, which covers only what is built. What is designed and not built is `docs/roadmap.md`. Read the sections a change touches in both before making it. A change to behavior architecture describes updates it in the same PR, and building a roadmap item moves its text from the roadmap into architecture. A change to a command, flag, setting or route also updates `docs/admin.md` or `docs/setup.md`. `docs/development.md` has the build and test commands, and a change to them updates it. A change to the supported device models updates the model list in `README.md`.
 
 ## Checks
 

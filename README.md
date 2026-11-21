@@ -1,170 +1,81 @@
 # trmnl-byos-go
 
-A self-hosted server for TRMNL e-ink displays, in Go with SQLite. The design is in [docs/design.md](docs/design.md).
+A self-hosted server for [TRMNL](https://trmnl.com) e-ink displays, in Go with SQLite. It runs TRMNL recipes through trmnlp, TRMNL's own plugin tool, and renders each screen ahead of the device's wake. The server is one binary and one database file, plus an optional renderer for recipes.
 
-## Build
+## Why I built it
 
-Go 1.26 or newer. CGO builds use `github.com/mattn/go-sqlite3`. `CGO_ENABLED=0` uses `modernc.org/sqlite`, which needs no C toolchain and makes a static binary. CI tests both. The tests run the web UI's script in Node.js, so `node` must be on the path.
+I liked the TRMNL idea from the start: a quiet e-ink screen on the wall that shows what you care about and lasts months on a charge. I wanted to build my own, though. I bought a couple of Seeed Studio's 7.5" OG DIY kits and 3D-printed cases for them.
 
-```
-go test ./...
-CGO_ENABLED=0 go test ./...
-golangci-lint run
-```
+TRMNL makes that easy. Its firmware is open source, and any device can point at a server you run yourself. I tried several of the community's self-hosted servers, and learned a lot from each. Then I wanted to try a different set of trade-offs:
 
-`internal/profile/registry/` is a copy of TRMNL's model and palette registry. Refresh it with:
+- **Recipes should look the way they do on TRMNL.** This server never parses Liquid. It hands each recipe to [trmnlp](https://github.com/usetrmnl/trmnlp), TRMNL's own plugin development tool, which uses TRMNL's Liquid gem, its page wrapper and its framework versions, and runs transforms in Ruby, Python, JavaScript and PHP.
+- **Recipes are untrusted code.** They come from the internet and run code of their own. So the renderer runs apart from the server, with no access to its database or secrets, and its only way out is a proxy that refuses private addresses.
+- **A device's wake should be short.** Recipe screens are rendered ahead of each wake, so a screen that hasn't changed costs one small request and no download or repaint.
+- **Firmware updates should never brick a board.** A build is offered only to devices of the exact firmware model it was made for, one canary device first.
+- **Running it should be boring.** The server is one Go binary and one SQLite file, with no database or queue server.
 
-```
-go generate ./internal/profile/
-```
+## TRMNL's own service
 
-SQL is in `internal/db/schema.sql` and `internal/db/queries/`. Regenerate with sqlc 1.30.0:
+TRMNL sells ready-made devices, starting at $139 for the OG, with a cloud service that has over 1,000 plugins and needs no setup. If you want a screen that just works, buy one. It is a good product, and its makers support the open-source side generously: the firmware is GPLv3, the design framework is open, and TRMNL lists the self-hosted servers in its own docs.
 
-```
-go generate ./internal/db/
-```
+A self-hosted server is for people who want to run everything themselves, keep their data on their own network, or build their own hardware. With this one, you give up TRMNL's native plugins and anything that needs its cloud, such as OAuth plugins. You keep TRMNL recipes, the community plugins written in Liquid.
 
-## Run
+## Other self-hosted servers
 
-```
-go build -o trmnl-byos ./cmd/trmnl-byos
-./trmnl-byos serve -data data -listen :8080
-```
+TRMNL's [BYOS page](https://docs.trmnl.com/go/diy/byos) lists the community's servers. Each one is a good fit for someone, and this one borrows ideas from several of them:
 
-`serve` keeps its database and images under `-data`. Point a device at `http://<server>:8080` in its Wi-Fi setup portal, then let it register:
+- Terminus: per-device button commands and sleep windows.
+- Inker: drift-free playlist timing, encrypted plugin secrets and the device blocklist.
+- LaraPaper: the time-limited join window and scheduled playlists.
 
-```
-./trmnl-byos join -data data -for 10m
-```
+The trade-offs are in [Alternatives considered](docs/architecture.md#alternatives-considered).
 
-The join window admits devices until it closes. A device that tries while it is closed shows "Not registered" with its MAC and tries again every 5 minutes. A device that lost its credentials, after a Wi-Fi reset for example, needs the window open again to re-pair. It keeps its friendly ID. `./trmnl-byos device list -data data` lists registered devices with their battery, signal and wake time. `serve -debug` logs each device request's headers, without its token.
+This is how they compare, as of November 2026, from each project's own docs:
 
-`device delete ABC123` (a friendly ID or a MAC) removes a device with its state and renders. Its next request resets it into setup, where it needs the join window to re-pair. `device block ABC123` blocks a MAC, registered or not, and keeps the device's row. A blocked device shows a "Blocked" screen and sleeps a day between requests. `device unblock` lifts the block, and `device blocked` lists the blocked MACs. The admin API has `DELETE /api/v1/devices/{id}`, `GET /api/v1/blocklist`, and `PUT` and `DELETE /api/v1/blocklist/{id}`, where `{id}` is a MAC or a friendly ID. `GET /api/v1/devices` shows `blocked` for each device.
+| Server | Built with | How it draws recipes and screens | What it runs | Stands out for |
+| --- | --- | --- | --- | --- |
+| trmnl-byos-go | Go, SQLite | trmnlp in an isolated renderer | One binary, plus a renderer and proxy for recipes (3 containers in Compose) | Recipe fidelity, renderer isolation, per-model firmware rollouts |
+| [Terminus](https://github.com/usetrmnl/terminus) | Ruby, Hanami, PostgreSQL | Its own Liquid in a headless browser | Web, worker, PostgreSQL and Valkey | The flagship: multi-user accounts, sensors, official firmware and model syncing |
+| [LaraPaper](https://github.com/usetrmnl/larapaper) | PHP, Laravel, SQLite | Liquid or Blade in headless Chrome | One container | Recipe catalogs, a proxy to TRMNL's cloud, an MCP server, wide device support |
+| [Kuroshiro](https://github.com/usetrmnl/kuroshiro) | TypeScript, NestJS, PostgreSQL | TRMNL's framework in headless Chromium | App and PostgreSQL | Recipe import with transforms, mashups, firmware tied to compatible models, a guard against private addresses |
+| [Inker](https://github.com/usetrmnl/inker) | TypeScript, NestJS, React, SQLite | Headless Chromium | One container | A drag-and-drop screen designer for homelab dashboards |
+| [BYOS Next.js](https://github.com/usetrmnl/byos_next) | Next.js, React, PostgreSQL | Satori-style components, or a headless browser | App and PostgreSQL, or serverless | Easy deployment, including on Vercel |
+| [BYOS FastAPI](https://github.com/usetrmnl/byos_fastapi) | Python, FastAPI, SQLite | Python plugins drawn with Pillow | One process | Careful dithering and tone curves for e-ink |
+| [BYOS Phoenix](https://github.com/usetrmnl/byos_phoenix) | Elixir, Phoenix, SQLite | Phoenix pages in a headless browser | One app | A small, readable reference implementation |
 
-`device set ABC123 -name Kitchen` names a device. `-profile og_bwry` tells the server what panel a device has when its firmware reports another, as a 4-color OG on firmware 1.8.10 or older reports `og`, and `-palette gray-4` picks the palette it renders with when a plugin instance asks for none. `-zone America/Los_Angeles` sets the time zone a device's schedules are read in and its renders are made for, and `-locale de` the locale its renders are made for. Without them a device uses the server's `TZ` and its `locale` setting, which is `en` until `setting set locale CODE` changes it. `-sleep 23:00-06:30` sets a window, read in the device's time zone, in which the device is shown a "Sleeping" screen and no playlist item, and wakes at the window's end. A button press in the window shows the device's usual screen until its next timer wake. `-button next|previous|first|refresh` sets what a single press does, and `-double-click none|identify|restart_playlist|rewind|sleep|add_wifi` what a double-click does. The default is `next` and `rewind`. `none` clears any of the others, and `default` clears these two, since `none` is a double-click function. The same settings are in `PATCH /api/v1/devices/{id}`.
+If you want multi-user accounts, Terminus is a mature choice. For a large recipe catalog, look at LaraPaper. For a screen designer, look at Inker.
 
-A device with nothing scheduled shows a "Connected" screen with its friendly ID and a row of gray swatches. A panel in its gray mode shows each swatch as a different shade.
+## Devices
 
-```
-./trmnl-byos calibrate -data data -for 30m ABC123
-```
+TRMNL's [DIY device page](https://docs.trmnl.com/go/diy/byod) lists the hardware that runs TRMNL's firmware or a TRMNL client. This server knows these firmware models by name, with their panel size, palettes and image size limit:
 
-`calibrate` shows a device a gray calibration screen from its next wake, for 30 minutes by default; press the device's button to wake it now. Each row is one of the panel's grays over strips of black-and-white dither. The box in each row whose halves match from arm's length says how dark that gray really looks, in sixteenths. `-dot 2` draws the dither with 2x2-pixel dots, which checks whether the panel blurs single pixels. Measured levels go in the firmware model table in `internal/profile`.
+- TRMNL OG, OG 4-color and OG second generation (`og`, `og_4clr`, `og_gen2`, `og_gen2_4clr`)
+- TRMNL X (`x`)
+- Seeed Studio's 7.5" OG DIY kit (`xiao_epaper_display`), with its larger image limit and its grays measured
+- Seeed reTerminal E1001, E1002, E1003 and E1004
+- M5PaperS3 (`m5_papers3`)
+- Waveshare 7.5" black and white (`waveshare`)
 
-## Recipes and playlists
+A device whose firmware reports a model name from TRMNL's registry, such as `xteink_x3` or `seeed_sticky`, needs no mapping. Other clients that speak the same protocol, such as the KOReader, Kindle and Kobo clients, work at the size they report, in black and white, unless they report a registry model. Any device can be told what panel it has.
 
-Recipes are rendered by trmnlp in a separate, isolated renderer, which reaches the internet only through a proxy that refuses private addresses. Compose is the way that ships today, with the server, the proxy and the renderer in three containers:
+Firmware updates are offered for 19 firmware models, each checked against its chip. The list is in [architecture](docs/architecture.md#firmware-updates).
 
-```
-docker compose -f deploy/compose.yaml up -d --build
-```
+## Status
 
-`deploy/compose.yaml` lists its settings: `PUBLIC_URL`, `TZ`, and `TRMNL_SECRET_KEY` for secret recipe fields. Put them in `deploy/.env`, which git ignores. Never publish the proxy's ports, 3128 and 8081.
+The server runs devices, recipes, playlists with schedules, firmware rollouts, a web UI and a JSON API today. The first release, v0.1.0, is coming, with prebuilt binaries on the [Releases page](https://github.com/die-net/trmnl-byos-go/releases). Mashups, an MCP server and more are on the [roadmap](docs/roadmap.md).
 
-The renderer's network holds only the renderer and the proxy. To check that from inside the renderer, whose image has Python and whose requests go through the proxy:
+## Docs
 
-```
-docker compose -f deploy/compose.yaml exec renderer python3 -c 'import socket; socket.getaddrinfo("server", 8080)'
-docker compose -f deploy/compose.yaml exec renderer python3 -c 'import urllib.request as u; u.urlopen("http://server:8080/")'
-docker compose -f deploy/compose.yaml exec renderer python3 -c 'import urllib.request as u; print(u.urlopen("https://example.com/").status)'
-```
+- [Setup](docs/setup.md): install the server and the renderer, and set up a first device.
+- [Admin guide](docs/admin.md): the web UI, the command line, playlists and recipes, firmware updates, settings and the JSON API.
+- [Architecture](docs/architecture.md): how it works.
+- [Roadmap](docs/roadmap.md): what is designed and not built yet.
+- [Development](docs/development.md): building, testing and linting.
 
-The first fails to resolve `server`, since the renderer isn't on the server's network. The second fails with a 502 from the proxy, which refuses `server` because it isn't a public address. The third prints 200. After each build the renderer kills every other process of its user, so a command run in its container may be killed if a build ends while it runs.
+## AI Disclosure
 
-Install a recipe from a directory or a zip, such as one from TRMNL's recipe pages or GitHub, then give it settings and put it on a device's playlist:
-
-```
-trmnl-byos recipe add path/to/recipe.zip
-trmnl-byos instance add -recipe 1 -field city=Zurich -field api_key=...
-trmnl-byos playlist add -device ABC123 -instance 1 -duration 15m
-```
-
-In Compose, run these with `docker compose -f deploy/compose.yaml exec server trmnl-byos ...`, after copying the recipe in with `docker compose ... cp`. Each `playlist add` appends an item to the device's playlist. A timer wake moves to the next item once the current one's time is up, and a button press moves on at once. `-duration 0` keeps an item until a press. `instance add -palette bw` renders in black and white on a panel that also takes grays, which keeps its refreshes partial. `recipe list`, `instance list` and `playlist list` show what is set up. `playlist remove` takes an item out, `playlist move ITEM INDEX` reorders, `playlist set ITEM -hidden` hides an item, and `playlist set ITEM` or `playlist schedule NAME` with `-days mon,tue`, `-window 09:00-17:00`, `-from` and `-until` limit when an item or playlist is shown (a device shows its first playlist that is scheduled now, so an unscheduled one at the end is the default). `instance add -field k=v` sets a custom field of the recipe (repeat the key for each choice of a multi-select, and the recipe's `password` fields are stored encrypted), and `instance set ID -field k=v -clear k` changes them later (a password is better given with `-field-file k=path`, or `-` for stdin, since `-field` shows it in `ps` and the shell history), which renders the instance again. `instance remove` deletes an instance and its renders once no item shows it.
-
-To run the renderer alone, build its image from the repository root and run it without an init process, since the shim is process 1 and reaps its own children:
-
-```
-docker build -f deploy/renderer/Dockerfile -t trmnl-byos-render .
-docker run --rm --read-only --tmpfs /tmp:mode=1777,size=1g -p 8081:8081 trmnl-byos-render
-```
-
-The renderer runs only on Linux. It refuses to start without a read-only root file system, since the image leaves directories writable that a build could plant files in for later builds to run. Outside a container, it needs a user account that runs nothing else, since after each build it kills every other process of its user and removes every file its user owns in `/tmp`, `/var/tmp`, `/dev/shm`, `/dev/mqueue` and the account's home. It refuses to start as root, while any other process of its user runs, an init process of its user included, if its user can write anywhere else, or if another user owns anything in those scratch directories, so it needs its own `/tmp`, `/var/tmp`, `/dev/shm` and `/dev/mqueue`, and a shared `/tmp` is refused. Under systemd, `ProtectSystem=strict`, `PrivateTmp=yes`, `TemporaryFileSystem=/dev/shm`, `ProtectHome=read-only`, `PrivateIPC=yes` and `SystemCallFilter=~add_key keyctl request_key` give that (see Renderer network in `docs/design.md`). With one running, `TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker ./internal/render/` builds a small recipe in it. `serve -render-url` points the server at a renderer, directly or through the proxy's TCP forward: the renderer answers `102 Processing` when it starts a build, and anything between that drops 1xx responses, such as an HTTP reverse proxy, makes every build fail with an error that says so. The renderer needs `HTTP_PROXY` and `HTTPS_PROXY` set to a proxy: `trmnl-byos proxy` on its own, or `serve -proxy-listen :3128` in the server's process.
-
-## Firmware updates
-
-A device installs firmware only when you ask. Only add a build made for the device's exact firmware model, the `Model` header it sends (`firmware list` and `device list` show it). The firmware does not check the board it installs onto, so a build for another board on the same chip installs and can leave the device needing a USB cable. The server checks the chip and the file's structure, not the board.
-
-```
-trmnl-byos firmware add -model xiao_epaper_display -version 1.8.19 FW1.8.19.bin
-trmnl-byos firmware device -updates on ABC123
-trmnl-byos firmware rollout 1 -canary ABC123
-trmnl-byos firmware list
-```
-
-`firmware add` takes the app image TRMNL publishes for OTA (the `firmware.bin` of a build, not the merged flash image). It accepts only models in the table in `docs/design.md`, and `-version` is the dotted version from the release's file name. Nothing is offered after `add`. `firmware rollout` offers the build to the canary device, and to every device of that model after the canary reports the new version. `firmware cancel 1` stops offering it. A build is offered to a device at most 3 times. If the canary is offered it 3 times and still does not report the version, `firmware list` shows the rollout as `stalled` and nothing is offered to anyone. The `LAST OFFERED` column is when the canary was last told to install the build. Run `firmware rollout` again, with the same canary to retry or another one, or cancel. `firmware device -updates on|off` and `-pin VERSION` or `-pin none` set which devices may be offered firmware, which is none until you turn it on. A device on firmware older than 1.8.17 is never offered an update, since its `Model` may not name its board. The same operations are in the admin API, under `/api/v1/firmware` and `PATCH /api/v1/devices/{id}`:
-
-```
-curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/octet-stream" --data-binary @FW1.8.19.bin "http://localhost:8080/api/v1/firmware?model=xiao_epaper_display&version=1.8.19"
-curl -H "Authorization: Bearer $TOKEN" -d '{"canary": "ABC123"}' http://localhost:8080/api/v1/firmware/1/rollout
-```
-
-## Admin API
-
-Everything the commands above do to a running server's data, a script can do over HTTP at `/api/v1`. It is on the same port as the device API, so keep that port on a trusted network. Create a token, which is shown once:
-
-```
-trmnl-byos token add -name my-script
-```
-
-`token list` shows each token's name and when it was last used, and `token remove my-script` revokes one. Send the token as a bearer token:
-
-```
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/devices
-curl -H "Authorization: Bearer $TOKEN" -X PUT -d '{"for_seconds": 600}' http://localhost:8080/api/v1/join
-curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/zip" --data-binary @recipe.zip http://localhost:8080/api/v1/recipes
-curl -H "Authorization: Bearer $TOKEN" -d '{"recipe_id": 1, "fields": {"city": "Zurich", "api_key": "..."}}' http://localhost:8080/api/v1/instances
-curl -H "Authorization: Bearer $TOKEN" -d '{"name": "Kitchen"}' http://localhost:8080/api/v1/playlists
-curl -H "Authorization: Bearer $TOKEN" -d '{"playlist": "Kitchen", "device": "ABC123", "instance_id": 1, "duration_seconds": 900}' http://localhost:8080/api/v1/playlists/items
-```
-
-Bodies and responses are JSON, with times in Unix seconds and durations in seconds. Errors are `{"error": "..."}` with the HTTP status that fits, and a bad custom field value adds `"fields"`, the message for each bad field by name. `PATCH /api/v1/instances/ID` changes `name`, `palette`, `fields` and `mark_secret`, where `""` or `[]` clears a field and `mark_secret` maps a keyname to `true` to store its value encrypted or `false` to unmark it, which needs a new value or a `clear` in the same request, since a secret is never shown back. The routes are listed in `docs/design.md`. Secret fields are never returned, only the names of the ones that are set, in `secret_fields`, and the names marked secret, set or not, in `secret_keys`. `secret_fields` is `null`, not a list, when the server has no `TRMNL_SECRET_KEY` and the instance has secrets, because the names cannot be read without the key.
-
-### Admin password
-
-The web UI signs in with one admin password. Set it, or change it, on the server:
-
-```
-trmnl-byos password
-```
-
-It asks twice without echo. From a script, pipe the password in as one line: `printf '%s\n' "$PW" | trmnl-byos password`. It must be `min_password_length` to 1024 bytes, and that setting is 12 unless you change it (see Settings). The minimum applies only when a password is set, so a shorter one set earlier still works. If the server can be reached from the internet, use a long one, such as four or more random words: nothing but its length slows someone guessing it. Setting it signs out every browser. A signed-in session also works for `/api/v1`.
-
-### Settings
-
-A few values can change while the server runs, with no restart:
-
-- `refresh_seconds`: how long devices sleep between wakes. Default 900, from 1 to 31536000. A device picks up a change at its next wake.
-- `min_password_length`: the shortest new admin password. Default 12, from 1 to 1024.
-
-```
-trmnl-byos setting list
-trmnl-byos setting set refresh_seconds 600
-trmnl-byos setting reset refresh_seconds
-```
-
-`list` shows each value, its default, and whether it is the default. A stored value that is not usable shows as `bad`, with a note, and the default is used until you set or reset it. `reset` goes back to the default. The API has `GET` and `PATCH /api/v1/settings`: `curl -H "Authorization: Bearer $TOKEN" -X PATCH -d '{"refresh_seconds": 600}' http://localhost:8080/api/v1/settings`. A field left out of a `PATCH` is kept, and a bad one changes nothing.
-
-### Pushing data to a recipe
-
-A script can push data to a plugin instance, at the path TRMNL uses. The ID is the instance ID, and the token is the secret. The instance's recipe sees the data as top-level variables, and a push makes the instance render again at the next 30 second check.
-
-```
-curl -H "Authorization: Bearer $TOKEN" -d '{"merge_variables": {"stories": ["a", "b"]}}' http://localhost:8080/api/custom_plugins/1
-curl -H "Authorization: Bearer $TOKEN" -d '{"merge_strategy": "stream", "stream_limit": 20, "merge_variables": {"stories": ["c"]}}' http://localhost:8080/api/custom_plugins/1
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/custom_plugins/1
-```
-
-`merge_strategy` is `replace` (the default), `deep_merge` or `stream`, as on TRMNL. A body and the stored data are each limited to 64 KB, a `trmnl` key is refused, and an instance takes a burst of 10 pushes and then 60 an hour.
+Though the design, architecture, some of the code, reviews, and testing were
+done by a human, most of the code was written by Opus 5.5 and Fable 5.2.
 
 ## License
 
