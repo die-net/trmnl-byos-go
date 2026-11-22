@@ -154,6 +154,36 @@ func TestInTxCanceledBeforeCommit(t *testing.T) {
 	}
 }
 
+// TestTxDoneAfterCancel checks that a statement inside a transaction that a
+// cancel rolled back, which fails with sql.ErrTxDone, makes InTx and ReadTx
+// return the cancellation too, and that the same error with a live context
+// is not changed.
+func TestTxDoneAfterCancel(t *testing.T) {
+	t.Parallel()
+	client := openTest(t)
+	for name, run := range map[string]func(context.Context, func(*Queries) error) error{
+		"InTx": client.InTx, "ReadTx": client.ReadTx,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := fmt.Errorf("query: %w", sql.ErrTxDone)
+			err := run(ctx, func(*Queries) error {
+				cancel()
+				return done
+			})
+			if !errors.Is(err, context.Canceled) || !errors.Is(err, sql.ErrTxDone) {
+				t.Errorf("after a cancel: %v, want both context.Canceled and sql.ErrTxDone", err)
+			}
+			err = run(t.Context(), func(*Queries) error { return done })
+			if errors.Is(err, context.Canceled) {
+				t.Errorf("with a live context: %v, want no cancellation", err)
+			}
+		})
+	}
+}
+
 // TestWriterSerializes checks that concurrent InTx calls queue for the one
 // writer connection rather than failing with SQLITE_BUSY.
 func TestWriterSerializes(t *testing.T) {

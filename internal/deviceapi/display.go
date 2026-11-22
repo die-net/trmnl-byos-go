@@ -14,6 +14,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
 	"github.com/die-net/trmnl-byos-go/internal/playlist"
 	"github.com/die-net/trmnl-byos-go/internal/profile"
@@ -55,10 +56,15 @@ type displayResponse struct {
 // sent, since it erases the device's credentials. special is the special
 // function to send, which the firmware saves: a known device's configured
 // one, so a failure does not turn its double-click off, and none for a
-// request that came from no known device, which reads nothing.
-func displayFailed(w http.ResponseWriter, mac, step, special string, err error) {
-	slog.Error("display: "+step, "mac", mac, "err", err)
-	writeJSON(w, displayResponse{Status: statusOK, RefreshRate: retryRefresh, SpecialFunction: special})
+// request that came from no known device, which reads nothing. A request
+// whose context ended has no one to answer, so it is not logged as an error
+// and gets no answer.
+func displayFailed(w http.ResponseWriter, r *http.Request, mac, step, special string, err error) {
+	if requestEnded(r, "display: "+step, err) {
+		return
+	}
+	slog.ErrorContext(r.Context(), "display: "+step, "mac", mac, "err", err)
+	writeJSON(w, r, displayResponse{Status: statusOK, RefreshRate: retryRefresh, SpecialFunction: special})
 }
 
 // refreshRate returns the seconds a device sleeps between wakes, from the
@@ -67,8 +73,8 @@ func displayFailed(w http.ResponseWriter, mac, step, special string, err error) 
 // device still needs an answer.
 func (s *Server) refreshRate(ctx context.Context) int64 {
 	d, err := settings.RefreshInterval(ctx, s.db.Read)
-	if err != nil {
-		slog.Error("display: read the refresh interval; using the default", "err", err)
+	if err != nil && !errkind.Ended(ctx, err) {
+		slog.ErrorContext(ctx, "display: read the refresh interval; using the default", "err", err)
 	}
 	return int64(d / time.Second)
 }
@@ -78,7 +84,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	debugRequest(r)
 	c, err := s.identify(ctx, r)
 	if err != nil {
-		displayFailed(w, r.Header.Get("ID"), "authenticate", device.FuncNone, err)
+		displayFailed(w, r, r.Header.Get("ID"), "authenticate", device.FuncNone, err)
 		return
 	}
 	switch {
@@ -90,18 +96,18 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		}
 		name, err := systemScreen(r, o, func(sp screen.Profile) (string, error) { return s.blockedScreen(sp, c.mac, true) })
 		if err != nil {
-			displayFailed(w, c.mac, "render screen", device.FuncNone, err)
+			displayFailed(w, r, c.mac, "render screen", device.FuncNone, err)
 			return
 		}
-		writeJSON(w, displayResponse{Status: statusOK, ImageURL: s.imageURL(r, name), Filename: name, RefreshRate: blockedRefresh, SpecialFunction: device.FuncNone})
+		writeJSON(w, r, displayResponse{Status: statusOK, ImageURL: s.imageURL(r, name), Filename: name, RefreshRate: blockedRefresh, SpecialFunction: device.FuncNone})
 		return
 	case c.reset(r):
 		slog.Warn("display: MAC deleted or paired again; resetting the device", "mac", c.mac, "deleted", c.standing.Deleted != 0)
-		writeJSON(w, displayResponse{Status: statusOK, ResetFirmware: true, RefreshRate: s.refreshRate(ctx)})
+		writeJSON(w, r, displayResponse{Status: statusOK, ResetFirmware: true, RefreshRate: s.refreshRate(ctx)})
 		return
 	case !c.ok:
 		slog.Warn("display: unknown device or bad token", "mac", r.Header.Get("ID"))
-		writeJSON(w, displayResponse{Status: statusNotRegistered})
+		writeJSON(w, r, displayResponse{Status: statusNotRegistered})
 		return
 	}
 	dev := c.dev
@@ -134,7 +140,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		// What the device saved is not known, so this sends none, which
 		// the next normal answer replaces, rather than a function the
 		// record may not match.
-		displayFailed(w, dev.Mac, "get device state", device.FuncNone, err)
+		displayFailed(w, r, dev.Mac, "get device state", device.FuncNone, err)
 		return
 	}
 	sent := special
@@ -203,7 +209,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 	// sends the function recorded as sent, which this request does not
 	// change, and the record stays what the device holds.
 	if err != nil {
-		displayFailed(w, dev.Mac, "render screen", sent, err)
+		displayFailed(w, r, dev.Mac, "render screen", sent, err)
 		return
 	}
 
@@ -252,7 +258,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		displayFailed(w, dev.Mac, "save state", sent, err)
+		displayFailed(w, r, dev.Mac, "save state", sent, err)
 		return
 	}
 	// A device's first wake, or one that reports another size or model,
@@ -281,7 +287,7 @@ func (s *Server) display(w http.ResponseWriter, r *http.Request) {
 			resp.UpdateFirmware, resp.FirmwareURL = true, s.baseURL(r)+"/firmware/"+firmware.FileName(fw.Sha256)
 		}
 	}
-	writeJSON(w, resp)
+	writeJSON(w, r, resp)
 }
 
 // The special functions that are TRMNL cloud features, which only the TRMNL

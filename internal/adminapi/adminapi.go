@@ -118,8 +118,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"POST /api/custom_plugins/{id}", handle(http.StatusOK, s.pushData)},
 		{"GET /api/v1/renders", handle(http.StatusOK, s.listRenders)},
 		{"GET /api/v1/renders/{id}", handle(http.StatusOK, s.getRender)},
-		{"/api/v1/", func(w http.ResponseWriter, _ *http.Request) {
-			writeError(w, http.StatusNotFound, "no such route")
+		{"/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, r, http.StatusNotFound, "no such route")
 		}},
 	}
 	for _, r := range routes {
@@ -138,15 +138,17 @@ type errorBody struct {
 	Instances map[string]map[string]string `json:"instances,omitempty"`
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, errorBody{Error: msg})
+func writeError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	writeJSON(w, r, status, errorBody{Error: msg})
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// writeJSON sends v as JSON. A write that failed because the client hung up
+// is not logged as an error.
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("write response", "err", err)
+	if err := json.NewEncoder(w).Encode(v); err != nil && r.Context().Err() == nil {
+		slog.ErrorContext(r.Context(), "write response", "err", err)
 	}
 }
 
@@ -160,7 +162,7 @@ func handle[T any](status int, f func(w http.ResponseWriter, r *http.Request) (T
 			fail(w, r, err)
 			return
 		}
-		writeJSON(w, status, v)
+		writeJSON(w, r, status, v)
 	}
 }
 
@@ -190,38 +192,42 @@ func (e *statusError) Error() string { return e.msg }
 
 // fail answers a request that failed with err. An error of an errkind kind
 // has a safe message and a 4xx status: the mapping is here, so an error that
-// wraps a kind needs no change. Any other error is logged, and the caller
-// gets a generic message.
+// wraps a kind needs no change. A request whose context ended, because the
+// client hung up, has no one to answer and has not failed on the server's
+// side, so it is logged for debugging and nothing is written. Any other error
+// is logged, and the caller gets a generic message.
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	var tooBig *http.MaxBytesError
 	var status *statusError
 	var fieldErrs recipe.FieldErrors
 	var refused *recipe.ReplaceRefused
 	switch {
+	case errkind.Ended(r.Context(), err):
+		slog.DebugContext(r.Context(), "admin api: request ended", "method", r.Method, "path", r.URL.Path, "err", err)
 	case errors.As(err, &status):
 		maps.Copy(w.Header(), status.header)
-		writeError(w, status.status, status.msg)
+		writeError(w, r, status.status, status.msg)
 	case errors.As(err, &tooBig):
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body is over %d bytes", tooBig.Limit))
+		writeError(w, r, http.StatusRequestEntityTooLarge, fmt.Sprintf("body is over %d bytes", tooBig.Limit))
 	case errors.Is(err, errkind.ErrTooBig):
-		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+		writeError(w, r, http.StatusRequestEntityTooLarge, err.Error())
 	case errors.As(err, &fieldErrs):
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error(), Fields: fieldErrs})
+		writeJSON(w, r, http.StatusBadRequest, errorBody{Error: err.Error(), Fields: fieldErrs})
 	case errors.As(err, &refused):
 		body := errorBody{Error: err.Error(), Instances: make(map[string]map[string]string, len(refused.Instances))}
 		for id, errs := range refused.Instances {
 			body.Instances[strconv.FormatInt(id, 10)] = errs
 		}
-		writeJSON(w, http.StatusBadRequest, body)
+		writeJSON(w, r, http.StatusBadRequest, body)
 	case errors.Is(err, errkind.ErrInvalid):
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, r, http.StatusBadRequest, err.Error())
 	case errors.Is(err, errkind.ErrNotFound):
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, r, http.StatusNotFound, err.Error())
 	case errors.Is(err, errkind.ErrConflict):
-		writeError(w, http.StatusConflict, err.Error())
+		writeError(w, r, http.StatusConflict, err.Error())
 	default:
-		slog.Error("admin api", "method", r.Method, "path", r.URL.Path, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		slog.ErrorContext(r.Context(), "admin api", "method", r.Method, "path", r.URL.Path, "err", err)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
 	}
 }
 
@@ -298,7 +304,7 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 		}
 		tok, err := s.db.Read.GetTokenByHash(ctx, apitoken.Hash(bearer))
 		if errors.Is(err, sql.ErrNoRows) {
-			unauthorized(w)
+			unauthorized(w, r)
 			return
 		}
 		if err != nil {
@@ -307,7 +313,7 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 		}
 		if now := s.now(); now.Sub(time.Unix(tok.LastUsedAt, 0)) >= touchEvery {
 			err := s.db.Write.TouchToken(ctx, db.TouchTokenParams{LastUsedAt: now.Unix(), ID: tok.ID})
-			if err != nil {
+			if err != nil && !errkind.Ended(ctx, err) {
 				slog.Warn("update token last used", "token", tok.Name, "err", err)
 			}
 		}
@@ -323,18 +329,18 @@ func (s *Server) authCookie(w http.ResponseWriter, r *http.Request, next http.Ha
 		return
 	}
 	if !signed {
-		unauthorized(w)
+		unauthorized(w, r)
 		return
 	}
 	if err := s.cop.Check(r); err != nil {
-		writeError(w, http.StatusForbidden, "cross-origin request refused")
+		writeError(w, r, http.StatusForbidden, "cross-origin request refused")
 		return
 	}
 	next(w, r)
 }
 
 // unauthorized answers a request that has no valid credentials.
-func unauthorized(w http.ResponseWriter) {
+func unauthorized(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	writeError(w, http.StatusUnauthorized, "a valid bearer token is required")
+	writeError(w, r, http.StatusUnauthorized, "a valid bearer token is required")
 }

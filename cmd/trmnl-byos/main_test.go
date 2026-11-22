@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
+	"github.com/die-net/trmnl-byos-go/internal/testutil/testlog"
 )
 
 // dataDir returns a data directory holding an empty database, as one the
@@ -288,4 +291,70 @@ func TestServeFailureIsNotShutdown(t *testing.T) {
 	if err == nil {
 		t.Fatal("serve on a taken address returned nil")
 	}
+}
+
+// TestExpireLoopCanceledIsNotAnError checks that the expiry loop, stopped
+// by a shutdown while it reads, returns without logging an error.
+func TestExpireLoopCanceledIsNotAnError(t *testing.T) {
+	t.Parallel()
+	client, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "trmnl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	images, err := imagestore.New(filepath.Join(t.TempDir(), "images"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, logged := testlog.Capture(t.Context(), t)
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	expireLoop(ctx, client, images)
+	if recs := logged(); testlog.HasLevel(recs, slog.LevelError) || testlog.HasLevel(recs, slog.LevelWarn) {
+		t.Errorf("a canceled expiry loop logged %v", recs)
+	}
+}
+
+// TestExitCode checks that a command stopped by a signal exits 1 and logs
+// at info level, and that a failure with the context still live is an error.
+func TestExitCode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		cancel bool
+		err    error
+		code   int
+		level  slog.Level
+		none   bool
+	}{
+		{"success", false, nil, 0, 0, true},
+		{"canceled", true, fmt.Errorf("list devices: %w", context.Canceled), 1, slog.LevelInfo, false},
+		{"failed", false, errors.New("disk full"), 1, slog.LevelError, false},
+		{"canceled context, other failure", true, errors.New("disk full"), 1, slog.LevelError, false},
+		{"live context, cancel error", false, context.Canceled, 1, slog.LevelError, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, logged := testlog.Capture(t.Context(), t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			if tc.cancel {
+				cancel()
+			}
+			if code := exitCode(ctx, tc.err); code != tc.code {
+				t.Errorf("exit code = %d, want %d", code, tc.code)
+			}
+			recs := logged()
+			switch {
+			case tc.none && len(recs) != 0:
+				t.Errorf("logged %v, want nothing", recs)
+			case !tc.none && (!testlog.HasLevel(recs, tc.level) || (tc.level != slog.LevelError && testlog.HasLevel(recs, slog.LevelError))):
+				t.Errorf("logged %v, want %v and no error unless that is the level", recs, tc.level)
+			}
+		})
+	}
+}
+
+func TestMain(m *testing.M) {
+	os.Exit(testlog.Run(m))
 }

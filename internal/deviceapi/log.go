@@ -28,8 +28,11 @@ func (s *Server) log(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	debugRequest(r)
 	c, err := s.identify(ctx, r)
+	if requestEnded(r, "log: authenticate", err) {
+		return
+	}
 	if err != nil {
-		slog.Error("log: authenticate", "err", err)
+		slog.ErrorContext(ctx, "log: authenticate", "err", err)
 		http.Error(w, "lookup failed", http.StatusInternalServerError)
 		return
 	}
@@ -73,8 +76,11 @@ func (s *Server) log(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	if requestEnded(r, "log", err) {
+		return
+	}
 	if err != nil {
-		slog.Error("log", "mac", dev.Mac, "err", err)
+		slog.ErrorContext(ctx, "log", "mac", dev.Mac, "err", err)
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}

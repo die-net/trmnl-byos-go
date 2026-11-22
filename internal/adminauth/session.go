@@ -11,6 +11,7 @@ import (
 
 	"github.com/die-net/trmnl-byos-go/internal/apitoken"
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 )
 
 const (
@@ -86,7 +87,7 @@ func ValidSession(ctx context.Context, client *db.Client, token string, now time
 		err := client.Write.TouchAdminSession(ctx, db.TouchAdminSessionParams{
 			LastSeenAt: now.Unix(), ExpiresAt: now.Add(Lifetime).Unix(), ID: s.ID,
 		})
-		if err != nil {
+		if err != nil && !errkind.Ended(ctx, err) {
 			slog.Warn("update session last seen", "err", err)
 		}
 	}

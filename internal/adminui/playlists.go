@@ -317,16 +317,24 @@ var (
 	noItem     = notFoundView{Nav: "playlists", What: "No such playlist item", BackHref: "/playlists", BackName: "Playlists"}
 )
 
-// serverError logs err and sends a generic 500. A request whose context has
-// ended, because the client hung up or its deadline passed, has no one to
-// answer and has not failed on the server's side: the error is the
-// context's, so it is logged for debugging only and nothing is written.
+// requestEnded reports whether err is the end of r's context, because the
+// client hung up. That request has no one to answer and has not failed on the
+// server's side, so it is logged for debugging only, and the caller writes
+// nothing.
+func requestEnded(r *http.Request, what string, err error) bool {
+	if !errkind.Ended(r.Context(), err) {
+		return false
+	}
+	slog.DebugContext(r.Context(), "admin ui: "+what+": request ended", "err", err)
+	return true
+}
+
+// serverError logs err and sends a generic 500, unless the request ended.
 func serverError(w http.ResponseWriter, r *http.Request, what string, err error) {
-	if r.Context().Err() != nil {
-		slog.Debug("admin ui: "+what+": request ended", "err", err)
+	if requestEnded(r, what, err) {
 		return
 	}
-	slog.Error("admin ui: "+what, "err", err)
+	slog.ErrorContext(r.Context(), "admin ui: "+what, "err", err)
 	http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
 }
 

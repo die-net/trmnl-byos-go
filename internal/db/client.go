@@ -159,27 +159,33 @@ func (c *Client) InTx(ctx context.Context, fn func(q *Queries) error) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := fn(c.Write.WithTx(tx)); err != nil {
-		return err
+		return markEnded(ctx, err)
 	}
 	return commitTx(ctx, tx)
 }
 
-// commitTx commits tx, which was begun with ctx. When ctx is canceled,
-// database/sql rolls the transaction back in a goroutine of its own, and a
-// Commit that comes after that returns sql.ErrTxDone, not the cancellation.
-// That error says only that the transaction is over, so it is returned
-// wrapping ctx.Err() too, and a caller that checks for the cancellation, as
-// serve does to tell a shutdown from a failure, sees it. Any other commit
-// error is returned as it is.
+// commitTx commits tx, which was begun with ctx. A commit error is returned
+// as markEnded leaves it.
 func commitTx(ctx context.Context, tx *sql.Tx) error {
 	err := tx.Commit()
 	if err == nil {
 		return nil
 	}
-	if cerr := ctx.Err(); cerr != nil && errors.Is(err, sql.ErrTxDone) {
-		err = errors.Join(cerr, err)
+	return fmt.Errorf("commit: %w", markEnded(ctx, err))
+}
+
+// markEnded returns err, which came from a transaction begun with ctx. When
+// ctx is canceled, database/sql rolls the transaction back in a goroutine of
+// its own, and a statement or Commit that comes after that returns
+// sql.ErrTxDone, not the cancellation. That error says only that the
+// transaction is over, so it is returned wrapping ctx.Err() too, and a
+// caller that checks for the cancellation, as serve does to tell a shutdown
+// from a failure, sees it. Any other error is returned as it is.
+func markEnded(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil && errors.Is(err, sql.ErrTxDone) && !errors.Is(err, cerr) {
+		return errors.Join(cerr, err)
 	}
-	return fmt.Errorf("commit: %w", err)
+	return err
 }
 
 // ReadTx runs fn in a read-only transaction on Reader, so every read through
@@ -193,7 +199,7 @@ func (c *Client) ReadTx(ctx context.Context, fn func(q *Queries) error) error {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	return fn(c.Read.WithTx(tx))
+	return markEnded(ctx, fn(c.Read.WithTx(tx)))
 }
 
 // Close closes the database.

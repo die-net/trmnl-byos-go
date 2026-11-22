@@ -37,6 +37,7 @@ import (
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/device"
 	"github.com/die-net/trmnl-byos-go/internal/deviceapi"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/guard"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
 	"github.com/die-net/trmnl-byos-go/internal/recipe"
@@ -108,11 +109,22 @@ func run() int {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
-	if err != nil {
-		slog.Error("command failed", "err", err)
-		return 1
+	return exitCode(ctx, err)
+}
+
+// exitCode returns the exit code for a command that returned err, and logs
+// err. A command that a signal stopped did not finish, so its code is 1, but
+// that is not a failure to log as an error.
+func exitCode(ctx context.Context, err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case errkind.Ended(ctx, err):
+		slog.InfoContext(ctx, "command stopped", "err", err)
+	default:
+		slog.ErrorContext(ctx, "command failed", "err", err)
 	}
-	return 0
+	return 1
 }
 
 // serverZone returns the server's time zone: TZ, the standard way to give a
@@ -179,7 +191,7 @@ func openDB(ctx context.Context, data string) (*db.Client, error) {
 // not returned: a service stop during startup would otherwise exit with an
 // error. Any other error is returned.
 func serve(ctx context.Context, args []string) error {
-	if err := runServer(ctx, args); ctx.Err() == nil || !errors.Is(err, ctx.Err()) {
+	if err := runServer(ctx, args); !errkind.Ended(ctx, err) {
 		return err
 	}
 	return nil
@@ -397,8 +409,10 @@ func expireLoop(ctx context.Context, client *db.Client, images *imagestore.Store
 	defer tick.Stop()
 	for {
 		n, err := expireImages(ctx, client, images, time.Now())
-		if err != nil {
-			slog.Error("expire images", "err", err)
+		if errkind.Ended(ctx, err) {
+			return
+		} else if err != nil {
+			slog.ErrorContext(ctx, "expire images", "err", err)
 		} else if n > 0 {
 			slog.Info("expired images", "deleted", n)
 		}

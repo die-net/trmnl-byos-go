@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -400,8 +399,7 @@ func (s *Server) joinWindowForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := device.SetJoinWindow(r.Context(), s.db, until); err != nil {
-		slog.Error("admin ui: set join window", "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+		serverError(w, r, "set join window", err)
 		return
 	}
 	http.Redirect(w, r, "/devices", http.StatusSeeOther)
@@ -556,8 +554,7 @@ func (s *Server) deviceFromPath(w http.ResponseWriter, r *http.Request) (db.Devi
 	case errors.Is(err, device.ErrNoDevice):
 		s.renderNotFound(w, r, noDevice)
 	default:
-		slog.Error("admin ui: find device", "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+		serverError(w, r, "find device", err)
 	}
 	return db.Device{}, false
 }
@@ -643,8 +640,7 @@ func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		msg := strings.TrimPrefix(err.Error(), errkind.ErrInvalid.Error()+": ")
 		s.renderDevice(w, r, http.StatusBadRequest, dev.FriendlyID, &form, capitalize(msg)+".", "", "")
 	default:
-		slog.Error("admin ui: save device", "device", dev.FriendlyID, "err", err)
-		http.Error(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+		serverError(w, r, "save device "+dev.FriendlyID, err)
 	}
 }
 
