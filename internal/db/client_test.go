@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -123,6 +124,33 @@ func TestInTx(t *testing.T) {
 	}
 	if n := count(); n != 1 {
 		t.Fatalf("%d rows after a commit, want 1", n)
+	}
+}
+
+// TestInTxCanceledBeforeCommit checks that a cancel that database/sql has
+// already rolled the transaction back for, before fn returns, makes InTx
+// return the cancellation, so a caller can tell a shutdown from a failure.
+// The writer pool has one connection, and it is free again only after the
+// rollback, so fn waiting for it makes the rollback happen first, with no
+// timing involved.
+func TestInTxCanceledBeforeCommit(t *testing.T) {
+	t.Parallel()
+	client := openTest(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	err := client.InTx(ctx, func(_ *Queries) error {
+		cancel()
+		conn, err := client.Writer.Conn(t.Context())
+		if err != nil {
+			return err
+		}
+		return conn.Close()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("InTx = %v, want a wrapped context.Canceled", err)
+	}
+	if !errors.Is(err, sql.ErrTxDone) {
+		t.Errorf("InTx = %v, want the original sql.ErrTxDone kept", err)
 	}
 }
 
