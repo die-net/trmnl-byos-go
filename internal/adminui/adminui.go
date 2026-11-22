@@ -202,7 +202,10 @@ func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
 	return s.cop.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		signed, err := adminauth.SignedIn(r.Context(), s.db, r, s.now())
 		if err != nil {
-			slog.Error("admin ui: check session", "err", err)
+			if requestEnded(r, "check session", err) {
+				return
+			}
+			slog.ErrorContext(r.Context(), "admin ui: check session", "err", err)
 			s.render(w, r, http.StatusInternalServerError, "login", &pageData{Error: "Something went wrong. Try again."})
 			return
 		}
@@ -280,8 +283,9 @@ type pageData struct {
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, data *pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := s.pages[name].ExecuteTemplate(w, "base", data); err != nil {
-		slog.Error("admin ui: render page", "page", name, "path", r.URL.Path, "err", err)
+	if err := s.pages[name].ExecuteTemplate(w, "base", data); err != nil && r.Context().Err() == nil {
+		// A client that hung up mid-page is not a failure of the server.
+		slog.ErrorContext(r.Context(), "admin ui: render page", "page", name, "path", r.URL.Path, "err", err)
 	}
 }
 
@@ -333,16 +337,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusUnauthorized, "login", &pageData{Error: "No admin password is set. Run trmnl-byos password on the server."})
 	case errors.Is(err, adminauth.ErrWrongPassword):
 		s.render(w, r, http.StatusUnauthorized, "login", &pageData{Error: "Wrong password."})
+	case requestEnded(r, "sign in", err):
 	default:
-		slog.Error("admin ui: sign in", "err", err)
+		slog.ErrorContext(r.Context(), "admin ui: sign in", "err", err)
 		s.render(w, r, http.StatusInternalServerError, "login", &pageData{Error: "Something went wrong. Try again."})
 	}
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if err := adminauth.Logout(r.Context(), s.db, adminauth.Token(r)); err != nil {
-		slog.Error("admin ui: sign out", "err", err)
-		s.render(w, r, http.StatusInternalServerError, "login", &pageData{Error: "Something went wrong. Try again."})
+		if !requestEnded(r, "sign out", err) {
+			slog.ErrorContext(r.Context(), "admin ui: sign out", "err", err)
+			s.render(w, r, http.StatusInternalServerError, "login", &pageData{Error: "Something went wrong. Try again."})
+		}
 		return
 	}
 	http.SetCookie(w, adminauth.ClearCookie(s.secure(r)))

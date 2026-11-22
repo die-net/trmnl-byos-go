@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/firmware"
 )
 
@@ -21,7 +22,9 @@ func (s *Server) offerFirmware(ctx context.Context, dev *db.Device, model, versi
 	}
 	fw, err := firmware.OfferAndRecord(ctx, s.db, s.cfg.FirmwareDir, dev, model, version, s.now())
 	if err != nil {
-		slog.Error("display: choose firmware", "mac", dev.Mac, "err", err)
+		if !errkind.Ended(ctx, err) {
+			slog.ErrorContext(ctx, "display: choose firmware", "mac", dev.Mac, "err", err)
+		}
 		return nil
 	}
 	return fw
@@ -48,8 +51,11 @@ func (s *Server) firmware(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if requestEnded(r, "firmware download", err) {
+		return
+	}
 	if err != nil {
-		slog.Error("firmware download", "sha256", sha, "err", err)
+		slog.ErrorContext(r.Context(), "firmware download", "sha256", sha, "err", err)
 		http.Error(w, "lookup failed", http.StatusInternalServerError)
 		return
 	}

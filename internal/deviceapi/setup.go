@@ -85,8 +85,11 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		registered = true
 		return nil
 	})
+	if requestEnded(r, "setup", err) {
+		return
+	}
 	if err != nil {
-		slog.Error("setup", "mac", mac, "err", err)
+		slog.ErrorContext(r.Context(), "setup", "mac", mac, "err", err)
 		http.Error(w, "setup failed", http.StatusInternalServerError)
 		return
 	}
@@ -115,15 +118,15 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			// The firmware shows its own message when there is no image.
-			slog.Error("setup: render screen", "mac", mac, "err", err)
+			slog.ErrorContext(ctx, "setup: render screen", "mac", mac, "err", err)
 		} else {
 			resp.ImageURL = s.imageURL(r, name)
 		}
-		writeJSON(w, resp)
+		writeJSON(w, r, resp)
 		return
 	}
 	slog.Info("setup", "mac", mac, "friendly_id", dev.FriendlyID, "model", dev.FwModel)
-	writeJSON(w, setupResponse{Status: statusSetupOK, APIKey: key, FriendlyID: dev.FriendlyID})
+	writeJSON(w, r, setupResponse{Status: statusSetupOK, APIKey: key, FriendlyID: dev.FriendlyID})
 }
 
 // createDevice registers a device with a new friendly ID and the hash of its

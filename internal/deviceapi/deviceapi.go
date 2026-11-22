@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
+	"github.com/die-net/trmnl-byos-go/internal/errkind"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
 )
 
@@ -132,11 +133,25 @@ func headerFloat(r *http.Request, name string) *float64 {
 	return &v
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
+// writeJSON sends v as JSON. A write that failed because the device hung up
+// is not logged as an error.
+func writeJSON(w http.ResponseWriter, r *http.Request, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("write response", "err", err)
+	if err := json.NewEncoder(w).Encode(v); err != nil && r.Context().Err() == nil {
+		slog.ErrorContext(r.Context(), "write response", "err", err)
 	}
+}
+
+// requestEnded reports whether err is the end of r's context, because the
+// device hung up. That request has no one to answer and has not failed on the
+// server's side, so it is logged for debugging only, and the caller writes
+// nothing.
+func requestEnded(r *http.Request, what string, err error) bool {
+	if !errkind.Ended(r.Context(), err) {
+		return false
+	}
+	slog.DebugContext(r.Context(), what+": request ended", "err", err)
+	return true
 }
 
 // debugRequest logs a device request's headers at debug level, without its

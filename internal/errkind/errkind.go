@@ -4,7 +4,10 @@
 // kind and a new error needs no change in the caller.
 package errkind
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // The kinds. Each is wrapped with detail, so compare with errors.Is.
 var (
@@ -48,4 +51,14 @@ func New(kind error, msg string) error {
 // reader. errors.Is and errors.As still find the cause.
 func Wrap(kind error, msg string, cause error) error {
 	return &kindError{kind: kind, msg: msg, cause: cause}
+}
+
+// Ended reports whether err is ctx's own end, a cancel or a deadline, which
+// is not a failure of the server. A request whose client hung up, and a job
+// stopped by a shutdown, fail this way, and a caller that sees it logs no
+// error and answers with no 500. An error that is not ctx's own, such as a
+// timeout from a dependency while ctx is still live, is not Ended.
+func Ended(ctx context.Context, err error) bool {
+	cerr := ctx.Err()
+	return cerr != nil && errors.Is(err, cerr)
 }
