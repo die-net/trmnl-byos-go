@@ -247,11 +247,45 @@ func TestServeCreatesDatabase(t *testing.T) {
 	if _, err := os.Stat(dbPath(data)); err != nil {
 		t.Error(err)
 	}
-	// This test is about the database, so it stops serve as soon as one
-	// exists. Serve may still be starting then, and a startup step that
-	// sees the canceled context fails with it, which is not a failure.
 	cancel()
-	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+	if err := <-done; err != nil {
 		t.Errorf("serve: %v", err)
+	}
+}
+
+// TestServeCanceledDuringStartup checks that a shutdown that arrives while
+// serve is still starting, as a service stop or Ctrl-C can, is a normal
+// exit: serve returns nil, whichever startup step the cancel lands in.
+func TestServeCanceledDuringStartup(t *testing.T) {
+	t.Parallel()
+	for _, delay := range []time.Duration{0, time.Millisecond, 5 * time.Millisecond, 20 * time.Millisecond, 50 * time.Millisecond} {
+		t.Run(delay.String(), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			data := filepath.Join(t.TempDir(), "data")
+			done := make(chan error, 1)
+			go func() { done <- serve(ctx, []string{"-data", data, "-listen", "127.0.0.1:0"}) }()
+			time.Sleep(delay)
+			cancel()
+			if err := <-done; err != nil {
+				t.Errorf("serve canceled after %v: %v", delay, err)
+			}
+		})
+	}
+}
+
+// TestServeFailureIsNotShutdown checks that serve still returns an error
+// that the shutdown did not cause, such as a listen address that is taken.
+func TestServeFailureIsNotShutdown(t *testing.T) {
+	t.Parallel()
+	busy, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	err = serve(t.Context(), []string{"-data", filepath.Join(t.TempDir(), "data"), "-listen", busy.Addr().String()})
+	if err == nil {
+		t.Fatal("serve on a taken address returned nil")
 	}
 }

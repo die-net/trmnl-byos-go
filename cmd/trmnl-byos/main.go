@@ -173,7 +173,20 @@ func openDB(ctx context.Context, data string) (*db.Client, error) {
 	return client, err
 }
 
+// serve runs the server until ctx is done, which is a normal shutdown and
+// returns nil, whichever step it was in. A step that fails with the canceled
+// context while ctx is done failed because of the shutdown, so that error is
+// not returned: a service stop during startup would otherwise exit with an
+// error. Any other error is returned.
 func serve(ctx context.Context, args []string) error {
+	if err := runServer(ctx, args); ctx.Err() == nil || !errors.Is(err, ctx.Err()) {
+		return err
+	}
+	return nil
+}
+
+// runServer is serve without the shutdown handling.
+func runServer(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	data := dataFlag(fs)
 	listen := fs.String("listen", ":8080", "address to listen on")
