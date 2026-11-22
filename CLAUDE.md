@@ -44,7 +44,7 @@ trmnl-byos-go is a self-hosted server for TRMNL e-ink displays, in Go with SQLit
 - Tests use the standard `testing` package, not testify. Several cases go in a table: `for _, tc := range []struct{...}{...}`.
 - Every exported identifier has a doc comment. A field whose meaning or zero value is not obvious has one too. Comments say what a thing is for and why, in full sentences.
 - Encode JSON from a struct with `json` tags, not from `map[string]any`. An anonymous struct is fine for a one-off payload. Decoding into `map[string]any` to inspect unknown JSON is fine.
-- Test-only helpers, flags, and fields live in `_test.go` files, not in production code.
+- Test-only helpers, flags, and fields live in `_test.go` files, not in production code. A helper that several packages' tests share may live in a package under `internal/testutil/`. Only `_test.go` files may import it, and the `depguard` rule in `.golangci.yml` fails lint if any other file does.
 - A rename or move updates every caller. No wrapper, `type X = other.X` alias, or shim is kept for the old name.
 - A new dependency comes from the standard library first, then `golang.org/x`, before anything else. Before writing a general-purpose piece such as a proxy, cache, or address check, look for one in the standard library, `golang.org/x`, or another die-net repository, and use or copy that.
 
