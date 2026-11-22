@@ -161,10 +161,25 @@ func (c *Client) InTx(ctx context.Context, fn func(q *Queries) error) error {
 	if err := fn(c.Write.WithTx(tx)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+	return commitTx(ctx, tx)
+}
+
+// commitTx commits tx, which was begun with ctx. When ctx is canceled,
+// database/sql rolls the transaction back in a goroutine of its own, and a
+// Commit that comes after that returns sql.ErrTxDone, not the cancellation.
+// That error says only that the transaction is over, so it is returned
+// wrapping ctx.Err() too, and a caller that checks for the cancellation, as
+// serve does to tell a shutdown from a failure, sees it. Any other commit
+// error is returned as it is.
+func commitTx(ctx context.Context, tx *sql.Tx) error {
+	err := tx.Commit()
+	if err == nil {
+		return nil
 	}
-	return nil
+	if cerr := ctx.Err(); cerr != nil && errors.Is(err, sql.ErrTxDone) {
+		err = errors.Join(cerr, err)
+	}
+	return fmt.Errorf("commit: %w", err)
 }
 
 // ReadTx runs fn in a read-only transaction on Reader, so every read through

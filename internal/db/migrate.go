@@ -89,10 +89,7 @@ func (c *Client) migrate(ctx context.Context) (err error) {
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-	return nil
+	return commitTx(ctx, tx)
 }
 
 // migrateTx applies schema.sql to a new database, or the steps after its
