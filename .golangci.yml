@@ -6,6 +6,7 @@ linters:
     - asciicheck
     - bodyclose
     - copyloopvar
+    - depguard
     - dogsled
     - dupl
     - errcheck
@@ -39,6 +40,16 @@ linters:
     - whitespace
 
   settings:
+    depguard:
+      rules:
+        testutil:
+          # Only _test.go files may import the test helper packages.
+          files:
+            - "!$test"
+            - "!**/internal/testutil/**"
+          deny:
+            - pkg: github.com/die-net/trmnl-byos-go/internal/testutil
+              desc: internal/testutil is for tests only, so only _test.go files may import it
     dupl:
       threshold: 100
     exhaustive:
