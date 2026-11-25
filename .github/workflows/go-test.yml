@@ -146,3 +146,14 @@ jobs:
           skipped=$(cat "$RUNNER_TEMP/render.log" "$RUNNER_TEMP/trmnl-byos.log" | grep -cE '^ *--- SKIP: Test(Sandbox|DoctorSandbox)' || true)
           echo "sandboxed tests and subtests passed: $ran, skipped: $skipped"
           test "$ran" -gt 0 && test "$skipped" -eq 0
+      # What the kernel said about a first stage that died: AppArmor's
+      # denials and seccomp's kills are in its log.
+      - name: Show the kernel's AppArmor and seccomp messages
+        if: failure()
+        run: |
+          uname -a
+          bwrap --version || true
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.apparmor_restrict_unprivileged_unconfined || true
+          grep -lE 'bwrap|userns' /etc/apparmor.d/* 2>/dev/null || true
+          sudo aa-status 2>/dev/null | grep -iE 'bwrap|userns|test|profiles are' || true
+          sudo dmesg | grep -iE 'apparmor|audit|seccomp' | tail -60 || true
