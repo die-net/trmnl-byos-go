@@ -50,6 +50,10 @@ type Tools struct {
 	// GemErr is why the server's Ruby could not say its gem path, nil if it
 	// did or Ruby was not found. trmnlp cannot load its gems without it.
 	GemErr error
+	// HiddenGems are the directories of Ruby's gem path that the sandbox
+	// does not show, since each is, or holds, a person's home. trmnlp
+	// fails in every build if its gems are in one.
+	HiddenGems []string
 }
 
 // Find returns the path of the tool called name, or "" if it was not
@@ -145,12 +149,16 @@ func FindTools(ctx context.Context, pathEnv string) Tools {
 	if ruby := t.Find("ruby"); ruby != "" {
 		gems, err := gemPath(ctx, ruby)
 		t.GemErr = err
+		home, _ := os.UserHomeDir()
 		for _, dir := range gems {
-			// A gem directory is named by Ruby's version, such as 3.4.0. A
-			// wider one, such as a GEM_HOME of a whole home, is not shown.
-			if base := filepath.Base(dir); versionLike(base) && strings.Contains(base, ".") || underAny(dir, systemDirs) {
-				t.Read = append(t.Read, dir)
+			// A gem directory that is, or holds, a person's home is not
+			// shown, since it would show their credentials. trmnlp's gems
+			// may be in it, so it is reported.
+			if holdsHome(dir, home) {
+				t.HiddenGems = append(t.HiddenGems, dir)
+				continue
 			}
+			t.Read = append(t.Read, dir)
 		}
 		t.GemPath = strings.Join(gems, string(filepath.ListSeparator))
 	}
@@ -223,6 +231,19 @@ func readEntry(rp string) string {
 		}
 	}
 	return rp
+}
+
+// holdsHome reports whether dir is a person's home or holds one: /, /home,
+// /root, a directory right below /home, or home, the server's own home, or a
+// directory above it. A gem path entry like that is not shown to builds.
+func holdsHome(dir, home string) bool {
+	switch {
+	case dir == "/" || dir == "/home" || dir == "/root" || filepath.Dir(dir) == "/home":
+		return true
+	case home != "" && filepath.IsAbs(home):
+		return within(home, dir)
+	}
+	return false
 }
 
 // linuxbrew is Homebrew's prefix on Linux. Its var directory, which

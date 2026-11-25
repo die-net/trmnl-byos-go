@@ -171,13 +171,16 @@ func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 	if tools.GemErr != nil {
 		r.line("fail", "tool.gems", tools.GemErr.Error()+"; trmnlp cannot load its gems without Ruby's gem path")
 	}
+	for _, dir := range tools.HiddenGems {
+		r.line("fail", "tool.gems", "Ruby's gem path has "+dir+", which is or holds a person's home, so builds cannot see it. Install trmnlp's gems in a directory of their own, such as system-wide")
+	}
 	for _, p := range tools.Read {
 		r.line("pass", "sandbox.read", "shown read-only to builds, though under a path the sandbox covers: "+p)
 	}
 	for _, p := range tools.Cover {
 		r.line("pass", "sandbox.cover", "hidden from builds, though inside a path shown to them: "+p)
 	}
-	if len(tools.Missing()) > 0 || tools.GemErr != nil {
+	if len(tools.Missing()) > 0 || tools.GemErr != nil || len(tools.HiddenGems) > 0 {
 		return nil
 	}
 	// doctor makes nothing in the data directory, which need not exist

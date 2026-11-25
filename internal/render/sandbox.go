@@ -489,6 +489,9 @@ func (s *Sandbox) setup(ctx context.Context) (*Tools, error) {
 		if tools.GemErr != nil {
 			return nil, tools.GemErr
 		}
+		if len(tools.HiddenGems) > 0 {
+			return nil, fmt.Errorf("a directory of Ruby's gem path, %s, is or holds a person's home, so builds cannot see it; install trmnlp's gems in a directory of their own, such as system-wide", tools.HiddenGems[0])
+		}
 		s.tools = &tools
 	}
 	if s.cfg.Cgroup != "" && !s.cgroupReady {

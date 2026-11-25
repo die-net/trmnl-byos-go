@@ -165,7 +165,7 @@ func TestFindTools(t *testing.T) {
 	wantRead := []string{
 		filepath.Join(bin, "trmnlp"), filepath.Join(bin, "ruby"), filepath.Join(bin, "firefox-esr"),
 		filepath.Join(realDir, "convert"), filepath.Join(bin, "Xvfb"),
-		filepath.Join(gems, "3.4.1"), "/var/cache/fontconfig",
+		filepath.Join(gems, "3.4.1"), filepath.Join(gems, "plain"), "/var/cache/fontconfig",
 	}
 	if !slices.Equal(tools.Read, wantRead) {
 		t.Errorf("Read = %v, want %v", tools.Read, wantRead)
@@ -297,11 +297,10 @@ func mustGetwd(t *testing.T) string {
 	return wd
 }
 
-// TestFindToolsGemDirs checks which gem directories a sandbox is told to
-// show: only one named like a Ruby version, with a dot, such as 3.4.0. One
-// named "22" or "2fa", or a plain name, could be a whole directory of
-// someone's, so it stays out of Read, though ruby still needs it, so it stays
-// in GemPath.
+// TestFindToolsGemDirs checks that a sandbox is told to show every gem
+// directory that neither is nor holds a person's home, whatever its name,
+// such as a GEM_HOME of ~/gems, since trmnlp fails in every build without
+// its gems. Each stays in GemPath.
 func TestFindToolsGemDirs(t *testing.T) {
 	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -339,10 +338,44 @@ func TestFindToolsGemDirs(t *testing.T) {
 	}
 	for _, name := range names {
 		dir := filepath.Join(root, "gems", name)
-		wantShown := name == "3.4.0" || name == "3.5.0-preview1"
-		if shown := slices.Contains(tools.Read, dir); shown != wantShown {
-			t.Errorf("gem dir %q in Read = %v, want %v (Read = %v)", name, shown, wantShown, tools.Read)
+		if !slices.Contains(tools.Read, dir) {
+			t.Errorf("gem dir %q is not in Read = %v", name, tools.Read)
 		}
+	}
+	if len(tools.HiddenGems) != 0 {
+		t.Errorf("HiddenGems = %v, want none", tools.HiddenGems)
+	}
+}
+
+// TestHoldsHome checks which gem directories are kept from builds because
+// they are, or hold, a person's home, where credentials are: / and the
+// directories of homes, each home, and the server's own home and what
+// holds it, but not a directory inside a home.
+func TestHoldsHome(t *testing.T) {
+	t.Parallel()
+	const home = "/srv/trmnl"
+	for _, tc := range []struct {
+		dir  string
+		want bool
+	}{
+		{"/", true},
+		{"/home", true},
+		{"/root", true},
+		{"/home/pat", true},
+		{"/srv", true},
+		{"/srv/trmnl", true},
+		{"/home/pat/gems", false},
+		{"/home/pat/.local/share/gem/ruby/3.4.0", false},
+		{"/srv/trmnl/gems", false},
+		{"/var/lib/gems/3.3.0", false},
+		{"/usr/local/bundle", false},
+	} {
+		if got := holdsHome(tc.dir, home); got != tc.want {
+			t.Errorf("holdsHome(%q, %q) = %v, want %v", tc.dir, home, got, tc.want)
+		}
+	}
+	if holdsHome("/srv", "") || holdsHome("/srv", "relative") {
+		t.Error("holdsHome counted a home that is unknown or relative")
 	}
 }
 
@@ -409,5 +442,32 @@ func TestToolsPresent(t *testing.T) {
 	}
 	if tools.present() {
 		t.Error("present() = true after a tool was removed")
+	}
+}
+
+// TestFindToolsHiddenGems checks that a gem directory that is the server's
+// own home is kept from builds, and reported in HiddenGems, rather than
+// shown, which would show the home's credentials.
+func TestFindToolsHiddenGems(t *testing.T) {
+	t.Parallel()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("this process has no home to put in a gem path: %v", err)
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Skipf("this process's home cannot be resolved: %v", err)
+	}
+	bin := t.TempDir()
+	//nolint:gosec // G306: a fake ruby must be executable.
+	if err := os.WriteFile(filepath.Join(bin, "ruby"), []byte("#!/bin/sh\nprintf '%s\\n' '"+home+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tools := FindTools(t.Context(), bin)
+	if !slices.Equal(tools.HiddenGems, []string{home}) {
+		t.Errorf("HiddenGems = %v, want [%s]", tools.HiddenGems, home)
+	}
+	if slices.Contains(tools.Read, home) {
+		t.Errorf("Read = %v shows the home", tools.Read)
 	}
 }

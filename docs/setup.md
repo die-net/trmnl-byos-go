@@ -99,7 +99,7 @@ At startup `serve` logs `render: each build runs in a sandbox` with the backend,
 - Linuxbrew: the whole `/home/linuxbrew/.linuxbrew`, but for its `var`, where its services keep their data.
 - Anything else: only the tool's own file, never the directory around it, since that could be a person's home with their credentials.
 
-Ruby's gem path is shown too, and `/var/cache/fontconfig`. Prefer system-wide installs. rbenv's shims do not work, since they run rbenv from `~/.rbenv`: put the version's `bin` directory on `PATH` instead. A snap-packaged Firefox cannot run in the sandbox.
+Ruby's gem path is shown too, and `/var/cache/fontconfig`, unless a directory of the gem path is, or holds, a person's home, such as a `GEM_HOME` of `~`. Builds then cannot start, and `trmnl-byos doctor` says which. Prefer system-wide installs. rbenv's shims do not work, since they run rbenv from `~/.rbenv`: put the version's `bin` directory on `PATH` instead. A snap-packaged Firefox cannot run in the sandbox.
 
 **What can go wrong.** If the sandbox cannot start, because bubblewrap is missing, the AppArmor restriction above is in the way, user namespaces are off, a required tool is missing or `-render-cgroup` is unusable, `serve` still starts and keeps serving the last good screens. Each build fails as a renderer outage, retried after 2 seconds doubling to 30, and nothing is recorded against the instance. The error and the instance's page in the web UI say "Builds cannot start", with the reason. A host that gets fixed needs no restart.
 
