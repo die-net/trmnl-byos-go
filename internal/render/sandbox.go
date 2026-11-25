@@ -567,18 +567,34 @@ func apparmorHint() string {
 	if err == nil {
 		self, err = filepath.EvalSymlinks(self)
 	}
-	if err != nil || strings.ContainsAny(self, "\"\\\n{}[]?*^,;@$ ") {
+	var name, profile string
+	if err == nil {
+		name, profile, err = apparmorProfile(self)
+	}
+	if err != nil {
 		return ". kernel.apparmor_restrict_unprivileged_userns is 1: give this binary an AppArmor profile with a userns rule"
 	}
-	name := "trmnl-byos-" + strings.Map(func(r rune) rune {
+	return fmt.Sprintf(". kernel.apparmor_restrict_unprivileged_userns is 1, so this binary needs an AppArmor profile of its own that lets it make user namespaces. "+
+		"Save\n\n%[2]s\nas /etc/apparmor.d/%[1]s, then run: sudo apparmor_parser -r /etc/apparmor.d/%[1]s", name, profile)
+}
+
+// apparmorProfile returns the AppArmor profile that lets the binary at self,
+// and bubblewrap when it runs it, make user namespaces, and the name to
+// save it under, as sandbox.Probe prints it where bubblewrap fails at once.
+// It is flags=(unconfined), so it confines nothing else, and no other
+// program gets user namespaces. A path a profile would need escaped is
+// refused.
+func apparmorProfile(self string) (name, profile string, err error) {
+	if !filepath.IsAbs(self) || strings.ContainsAny(self, "\"\\\n{}[]?*^,;@$ ") {
+		return "", "", fmt.Errorf("the path %q is relative, or has a character a profile would need escaped", self)
+	}
+	name = "trmnl-byos-" + strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
 			return r
 		}
 		return '-'
 	}, strings.Trim(self, "/"))
-	return fmt.Sprintf(". kernel.apparmor_restrict_unprivileged_userns is 1, and bubblewrap's own profile takes the capabilities a sandbox's first stage needs. "+
-		"Give this binary a profile of its own: save\n\nabi <abi/4.0>,\ninclude <tunables/global>\n\nprofile %[1]s %[2]s flags=(unconfined) {\n  userns,\n}\n\n"+
-		"as /etc/apparmor.d/%[1]s, then run: sudo apparmor_parser -r /etc/apparmor.d/%[1]s", name, self)
+	return name, fmt.Sprintf("abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile %s %s flags=(unconfined) {\n  userns,\n}\n", name, self), nil
 }
 
 // CheckCgroup makes and removes a build's cgroup in Config.Cgroup, as a

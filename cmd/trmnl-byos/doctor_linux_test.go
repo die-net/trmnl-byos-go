@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/die-net/trmnl-byos-go/internal/render"
+	"github.com/die-net/trmnl-byos-go/internal/testutil/sandboxtest"
 )
 
 // TestDoctorSandbox runs doctor on the sandbox path, with stand-ins for the
@@ -21,7 +22,7 @@ import (
 // trmnl.com, which a test host may not reach.
 func TestDoctorSandbox(t *testing.T) {
 	if _, err := render.ProbeSandbox(t.Context()); err != nil {
-		t.Skipf("no sandbox can start on this host, so doctor's sandbox checks cannot run here: %v", err)
+		sandboxtest.Unavailable(t, err)
 	}
 	bin := t.TempDir()
 	for _, name := range []string{"trmnlp", "ruby", "firefox", "geckodriver", "magick", "Xvfb"} {

@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/die-net/sandbox"
+
+	"github.com/die-net/trmnl-byos-go/internal/testutil/sandboxtest"
 )
 
 // sandboxedCommand runs the build or self-test command when a sandbox
@@ -103,11 +105,12 @@ var probed = sync.OnceValue(func() error {
 	return err
 })
 
-// requireSandbox skips a test where no sandbox can start, saying why.
+// requireSandbox skips a test where no sandbox can start, saying why, or
+// fails it where the run requires sandboxes (see sandboxtest).
 func requireSandbox(t *testing.T) {
 	t.Helper()
 	if err := probed(); err != nil {
-		t.Skipf("no sandbox can start on this host, so this test cannot run here: %v", err)
+		sandboxtest.Unavailable(t, err)
 	}
 }
 
@@ -563,5 +566,46 @@ func TestSandboxStageDies(t *testing.T) {
 	}
 	if p := sb.Problem(); p != "" {
 		t.Errorf("Problem() = %q after a build that started", p)
+	}
+}
+
+// TestAppArmorProfile checks the profile the hint prints for a binary, and
+// refuses a path the profile would need escaped. With
+// TRMNL_TEST_APPARMOR_DIR set, it also writes the profile for each binary in
+// TRMNL_TEST_APPARMOR_FOR, a list of paths, into that directory under the
+// profile's name, which CI's sandbox job loads before it runs the test
+// binaries, so CI proves the printed profile works.
+func TestAppArmorProfile(t *testing.T) {
+	t.Parallel()
+	name, profile, err := apparmorProfile("/usr/local/bin/trmnl-byos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile trmnl-byos-usr-local-bin-trmnl-byos /usr/local/bin/trmnl-byos flags=(unconfined) {\n  userns,\n}\n"
+	if name != "trmnl-byos-usr-local-bin-trmnl-byos" || profile != want {
+		t.Errorf("apparmorProfile = %q, %q, want %q", name, profile, want)
+	}
+	for _, bad := range []string{"relative/trmnl-byos", "/opt/my bin/trmnl-byos", "/opt/x{y}/trmnl-byos", "/opt/x\ny"} {
+		if _, _, err := apparmorProfile(bad); err == nil {
+			t.Errorf("apparmorProfile(%q) made a profile", bad)
+		}
+	}
+	dir := os.Getenv("TRMNL_TEST_APPARMOR_DIR")
+	if dir == "" {
+		return
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, bin := range filepath.SplitList(os.Getenv("TRMNL_TEST_APPARMOR_FOR")) {
+		name, profile, err := apparmorProfile(bin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := root.WriteFile(name, []byte(profile), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
