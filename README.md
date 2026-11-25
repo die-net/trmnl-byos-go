@@ -1,6 +1,6 @@
 # trmnl-byos-go
 
-A self-hosted server for [TRMNL](https://trmnl.com) e-ink displays, in Go with SQLite. It runs TRMNL recipes through trmnlp, TRMNL's own plugin tool, and renders each screen ahead of the device's wake. The server is one binary and one database file, plus an optional renderer for recipes.
+A self-hosted server for [TRMNL](https://trmnl.com) e-ink displays, in Go with SQLite. It runs TRMNL recipes through trmnlp, TRMNL's own plugin tool, and renders each screen ahead of the device's wake. The server is one binary and one database file. Recipes run in a sandbox on the same host, or in a separate renderer.
 
 ## Why I built it
 
@@ -9,7 +9,7 @@ I liked the TRMNL idea from the start: a quiet e-ink screen on the wall that sho
 TRMNL makes that easy. Its firmware is open source, and any device can point at a server you run yourself. I tried several of the community's self-hosted servers, and learned a lot from each. Then I wanted to try a different set of trade-offs:
 
 - **Recipes should look the way they do on TRMNL.** This server never parses Liquid. It hands each recipe to [trmnlp](https://github.com/usetrmnl/trmnlp), TRMNL's own plugin development tool, which uses TRMNL's Liquid gem, its page wrapper and its framework versions, and runs transforms in Ruby, Python, JavaScript and PHP.
-- **Recipes are untrusted code.** They come from the internet and run code of their own. So the renderer runs apart from the server, with no access to its database or secrets, and its only way out is a proxy that refuses private addresses.
+- **Recipes are untrusted code.** They come from the internet and run code of their own. So each build runs in a sandbox, or in a renderer run apart from the server, with no access to the server's database or secrets. Its only way out is a proxy that refuses private addresses.
 - **A device's wake should be short.** Recipe screens are rendered ahead of each wake, so a screen that hasn't changed costs one small request and no download or repaint.
 - **Firmware updates should never brick a board.** A build is offered only to devices of the exact firmware model it was made for, one canary device first.
 - **Running it should be boring.** The server is one Go binary and one SQLite file, with no database or queue server.
@@ -34,7 +34,7 @@ This is how they compare, as of November 2026, from each project's own docs:
 
 | Server | Built with | How it draws recipes and screens | What it runs | Stands out for |
 | --- | --- | --- | --- | --- |
-| trmnl-byos-go | Go, SQLite | trmnlp in an isolated renderer | One binary, plus a renderer and proxy for recipes (3 containers in Compose) | Recipe fidelity, renderer isolation, per-model firmware rollouts |
+| trmnl-byos-go | Go, SQLite | trmnlp, in a sandbox on the host or in an isolated renderer | One binary plus trmnlp's packages, or 3 containers in Compose | Recipe fidelity, build isolation, per-model firmware rollouts |
 | [Terminus](https://github.com/usetrmnl/terminus) | Ruby, Hanami, PostgreSQL | Its own Liquid in a headless browser | Web, worker, PostgreSQL and Valkey | The flagship: multi-user accounts, sensors, official firmware and model syncing |
 | [LaraPaper](https://github.com/usetrmnl/larapaper) | PHP, Laravel, SQLite | Liquid or Blade in headless Chrome | One container | Recipe catalogs, a proxy to TRMNL's cloud, an MCP server, wide device support |
 | [Kuroshiro](https://github.com/usetrmnl/kuroshiro) | TypeScript, NestJS, PostgreSQL | TRMNL's framework in headless Chromium | App and PostgreSQL | Recipe import with transforms, mashups, firmware tied to compatible models, a guard against private addresses |
@@ -66,7 +66,7 @@ The server runs devices, recipes, playlists with schedules, firmware rollouts, a
 
 ## Docs
 
-- [Setup](docs/setup.md): install the server and the renderer, and set up a first device.
+- [Setup](docs/setup.md): install the server and its recipe tools, choose how builds are isolated, and set up a first device.
 - [Admin guide](docs/admin.md): the web UI, the command line, playlists and recipes, firmware updates, settings and the JSON API.
 - [Architecture](docs/architecture.md): how it works.
 - [Roadmap](docs/roadmap.md): what is designed and not built yet.

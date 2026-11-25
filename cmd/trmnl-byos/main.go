@@ -1,6 +1,7 @@
 // Command trmnl-byos is a self-hosted server for TRMNL e-ink displays.
 //
 //	trmnl-byos serve      run the server
+//	trmnl-byos doctor     check that builds can run, and how they are kept apart
 //	trmnl-byos proxy      run the renderer's proxy apart from the server
 //	trmnl-byos join       let new devices register for a while
 //	trmnl-byos device     list, delete and block devices
@@ -53,6 +54,7 @@ const usage = `usage: trmnl-byos <command> [flags]
 
 commands:
   serve      run the server
+  doctor     check that builds can run, and how they are kept apart
   proxy      run the renderer's proxy apart from the server
   join       let new devices register for a while
   device     list, delete and block devices: list, delete, block, unblock, blocked
@@ -92,6 +94,8 @@ func run() int {
 		return sandboxedCommand(ctx, os.Args[1], args)
 	case "serve":
 		err = serve(ctx, args)
+	case "doctor":
+		err = doctor(ctx, args, os.Stdout)
 	case "proxy":
 		err = proxy(ctx, args)
 	case "join":

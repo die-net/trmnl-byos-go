@@ -4,11 +4,12 @@ This guide installs a trmnl-byos server and sets up a first device. Day-to-day u
 
 ## The parts
 
-- **The server**, `trmnl-byos serve`. One binary with an embedded SQLite database. It answers devices, schedules renders, and serves the web UI and the JSON API. It needs nothing else to run.
-- **The renderer**, `trmnl-render`. It runs TRMNL recipes through trmnlp, TRMNL's own plugin tool, which drives Firefox. It is optional: without it the server still registers devices, shows its own screens and updates firmware, but renders no recipes. It runs only on Linux.
-- **The proxy**, `trmnl-byos proxy`. The renderer's only way to the internet. It refuses private addresses, and caches the TRMNL framework's assets, Google Fonts and Highcharts. It is the same binary as the server.
+- **The server**, `trmnl-byos serve`. One binary with an embedded SQLite database. It answers devices, schedules renders, and serves the web UI and the JSON API. It needs nothing else to show its own screens and update firmware.
+- **The build tools**: trmnlp, TRMNL's own plugin tool, which drives Firefox, and what trmnlp runs. They render recipes. By default `serve` runs each build in a sandbox of its own on the same host, so they must be installed there. Builds in a sandbox run only on Linux so far.
+- **The renderer**, `trmnl-render`. The other way to run builds: the tools behind a small HTTP shim, in its own container or under its own user account. `serve -render-url` sends builds to it. It runs only on Linux.
+- **The proxy**, `trmnl-byos proxy`. A renderer's only way to the internet. It refuses private addresses, and caches the TRMNL framework's assets, Google Fonts and Highcharts. It is the same binary as the server. Sandboxed builds get the same proxy inside `serve`, so they need no separate one.
 
-Recipes are untrusted code from the internet, so the renderer is kept apart from everything else. It never gets the database, the secrets key or the data directory, and it can reach nothing but the proxy. Compose gives it those properties. Any other way must give them too (see [What every deployment must give it](#what-every-deployment-must-give-it)). Docker is one way, not the only one. The standalone `docker run` below does not give them, and is for development only.
+Recipes are untrusted code from the internet, so builds are kept apart from everything else. A build never gets the database, the secrets key or the data directory, and it can reach nothing but the proxy. A sandbox, Compose and a separate user account each give it those properties, and differ in how strongly (see [Choosing how builds run](#choosing-how-builds-run)). Any other way must give them too (see [What every deployment must give it](#what-every-deployment-must-give-it)). Docker is one way, not the only one. The standalone `docker run` below does not give them, and is for development only.
 
 ## Getting the server
 
@@ -16,15 +17,32 @@ Prebuilt server binaries will be on the project's GitHub Releases page, starting
 
 The server binary has no runtime dependencies. Put it anywhere on the machine that will run it, and give it a data directory.
 
-The renderer cannot be a single binary. It needs trmnlp and everything trmnlp runs (see [The renderer](#the-renderer)).
+Recipes need trmnlp and everything trmnlp runs. That is not part of the binary: install it from the host's packages for sandboxed builds (see [Builds in a sandbox on the host](#builds-in-a-sandbox-on-the-host)), or use the renderer's image (see [The renderer](#the-renderer)).
 
 ## Ways to run it
 
 | Shape | Recipes | What it takes |
 | --- | --- | --- |
+| [Sandbox on the host](#builds-in-a-sandbox-on-the-host) | Yes | A Linux host, the server binary, bubblewrap, and trmnlp with its tools from the host's packages. The simplest way. |
 | [Server only](#server-only) | No | The server binary. |
-| [Docker Compose](#docker-compose) | Yes | Docker with Compose, and a clone of the repository. Ships today in `deploy/`. |
-| [Renderer under its own user account](#renderer-under-its-own-user-account) | Yes | A Linux host, trmnlp and its dependencies, and a service manager such as systemd. No unit file ships yet. |
+| [Docker Compose](#docker-compose) | Yes | Docker with Compose, and a clone of the repository. Ships today in `deploy/`. A stronger boundary. |
+| [Renderer under its own user account](#renderer-under-its-own-user-account) | Yes | A Linux host, trmnlp and its dependencies, and a service manager such as systemd. No unit file ships yet. A stronger boundary. |
+
+### Choosing how builds run
+
+All of these keep the secrets key, the database and the data directory from a build, and let it reach the internet only through the filtering proxy. They differ in what else they enforce:
+
+| | Sandbox on the host | Compose | Renderer under its own user |
+| --- | --- | --- | --- |
+| Separate user from the server | No. Builds run as the server's user. | Yes, the image's user, in its own container | Yes, an account that runs nothing else |
+| Files a build sees | The host's files read-only, minus the data directory, the cache, people's homes, `/run`, `/tmp` and `/var`. Writes go to its own home and its private `/tmp`, `/var/tmp` and `/dev/shm`. | Its image, read-only, and a 1 GB `/tmp` | What the operator leaves readable to the user. Writes only to scratch places the shim empties. |
+| Network | A network namespace with only a loopback and the build's proxy listener | An internal network whose only other member is the proxy | The operator's network setup. Not enforced by the shim. |
+| Memory limit | `-render-memory`, set by the kernel with `-render-cgroup`, otherwise by a soft watchdog | 2 GB, set by Docker | `MemoryMax=` or similar, set by the operator |
+| Process limit | 1024 with `-render-cgroup`, otherwise none until the 2-minute timeout | 1024, set by Docker | `TasksMax=` or similar, set by the operator |
+| What outlives a build | Nothing. Its processes die with its PID namespace and its files go with its tmpfs and home. | Nothing the shim's sweep can find | Nothing the shim's sweep can find |
+| Runs where | Linux only | Anywhere Docker runs Linux containers | Linux only |
+
+Pick Compose or a separate user when the server holds anything you would not want a kernel or sandbox flaw to reach. A sandbox has no user boundary (see [What the sandbox does not give](#what-the-sandbox-does-not-give)).
 
 ## Settings and secrets
 
@@ -35,21 +53,74 @@ The renderer cannot be a single binary. It needs trmnlp and everything trmnlp ru
 | `-data DIR` | `data` | The directory holding the database, images, recipes and firmware. |
 | `-listen ADDR` | `:8080` | The address for devices, the web UI and the API. |
 | `-public-url URL` | from each request | The base URL devices reach the server at, such as `http://192.168.1.10:8080`. |
-| `-render-url URL` | none | The renderer's URL, such as `http://renderer:8081`. Without it, recipes are not rendered. |
-| `-proxy-listen ADDR` | none | Run the renderer's proxy in the server's process, on this address, such as `:3128`. Never publish it. |
-| `-cache DIR` | `cache` | The proxy's asset cache, with `-proxy-listen`. |
+| `-render-url URL` | none | The URL of a renderer run apart, such as `http://renderer:8081`. Without it, each build runs in a sandbox on this host. |
+| `-render-memory MiB` | 2048 | The most memory one sandboxed build may use. At least 256, or `serve` refuses to start. |
+| `-render-cgroup DIR` | none | A cgroup v2 directory delegated to the server, as an absolute path. Each sandboxed build gets a child cgroup of its own in it (see [Limits with a cgroup](#limits-with-a-cgroup)). |
+| `-proxy-listen ADDR` | none | Run a proxy for a renderer run apart in the server's process, on this address, such as `:3128`. Never publish it. Sandboxed builds do not use it. |
+| `-cache DIR` | `cache` in the data directory | The asset cache. Sandboxed builds' proxy uses it, and so does `-proxy-listen`. |
 | `-debug` | off | Log at debug level, including each device request's headers, without its token. |
+
+A sandboxed build gets at most 2 minutes, the same as `trmnl-render`'s default `-timeout`. There is no flag for it. [`trmnl-byos doctor`](admin.md#checking-the-server-with-doctor) takes the same flags.
 
 And these environment variables:
 
 | Variable | Meaning |
 | --- | --- |
 | `TZ` | The server's time zone, such as `Europe/Zurich`. Recipes render in it and schedules are read in it, unless a device sets its own. UTC when unset. The server refuses to start on a name it does not know. |
-| `TRMNL_SECRET_KEY` | The key that encrypts secret recipe fields: 32 random bytes in base64, from `openssl rand -base64 32`. The server runs without it, but refuses to store a secret value until it is set. If you lose or change it, the stored secrets cannot be read, and each instance that has them must be created again. |
+| `TRMNL_SECRET_KEY` | The key that encrypts secret recipe fields: 32 random bytes in base64, from `openssl rand -base64 32`. The server runs without it, but refuses to store a secret value until it is set. If you lose or change it, the stored secrets cannot be read, and each instance that has them must be created again. Keep it out of any file a sandboxed build could read: a file that holds it, such as a systemd `EnvironmentFile=`, must be readable only by root, which is how systemd reads it. |
 
-Back up the data directory. The cache directory can be deleted at any time, and costs only fetching the assets again.
+Back up the data directory. Its `cache` directory, the asset cache, may be left out of a backup, and can be deleted at any time: it costs only fetching the assets again. It can grow to 2 GB.
 
 The device API, the web UI and the JSON API share one port, over plain HTTP. Keep that port on a trusted network. HTTPS through a reverse proxy is an option. If the server can be reached from the internet, give it a long admin password (see the [admin guide](admin.md#admin-password-and-signing-in)).
+
+## Builds in a sandbox on the host
+
+This is the simplest way to run recipes. `serve` with no `-render-url` runs each build in a sandbox of its own, on the host that runs the server. It uses [bubblewrap](https://github.com/containers/bubblewrap), Linux namespaces and a seccomp filter, through the `github.com/die-net/sandbox` library. It runs only on Linux so far. Elsewhere, including macOS, every build fails as an outage that says so and says to use `-render-url`.
+
+1. Get the server binary (see [Getting the server](#getting-the-server)).
+2. Install these from the system's packages, or from a version manager (see below):
+   - bubblewrap.
+   - trmnlp v0.34.1, the pinned version that is tested. Its own Dockerfile at that tag, in the usetrmnl/trmnlp repository, lists what it needs.
+   - Ruby, Firefox (or Firefox ESR) and geckodriver, which trmnlp drives to draw each page.
+   - ImageMagick 7, which turns the page into a PNG.
+   - Xvfb. Each build starts its own display, since a page that draws with WebGL, as map recipes do, came out blank without one.
+   - Node, Python and PHP, only for recipes whose transforms are in those languages.
+   - Fonts, such as DejaVu, Inter and Noto.
+3. Check the host: `trmnl-byos doctor -data /var/lib/trmnl-byos`. It names each missing tool or restriction and how to fix it.
+4. Run it: `trmnl-byos serve -data /var/lib/trmnl-byos`, as a user of its own, under the service manager you use. Then set the admin password: `trmnl-byos password -data /var/lib/trmnl-byos`.
+
+At startup `serve` logs `render: each build runs in a sandbox` with the backend, or a warning that builds cannot start until the host is fixed, which says to run `trmnl-byos doctor`.
+
+**Ubuntu 24.04 and later.** They restrict unprivileged user namespaces with AppArmor, so bubblewrap fails for the `trmnl-byos` binary until it has an AppArmor profile with a `userns` rule. `trmnl-byos doctor` prints the profile for the binary's own path, and the commands that load it.
+
+**Where the tools can be.** `serve` looks for each tool on its own `PATH`, at its first build, and again at each build until it finds all the required ones, so installing a tool later needs no restart. A tool under `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt` or `/nix` is already visible to a build. For one anywhere else, the sandbox shows it read-only:
+
+- A version manager's install (rbenv, pyenv, nodenv, nvm, asdf and mise): that version's directory.
+- Linuxbrew: the whole `/home/linuxbrew/.linuxbrew`, but for its `var`, where its services keep their data.
+- Anything else: only the tool's own file, never the directory around it, since that could be a person's home with their credentials.
+
+Ruby's gem path is shown too, and `/var/cache/fontconfig`. Prefer system-wide installs. rbenv's shims do not work, since they run rbenv from `~/.rbenv`: put the version's `bin` directory on `PATH` instead. A snap-packaged Firefox cannot run in the sandbox.
+
+**What can go wrong.** If the sandbox cannot start, because bubblewrap is missing, the AppArmor restriction above is in the way, user namespaces are off, a required tool is missing or `-render-cgroup` is unusable, `serve` still starts and keeps serving the last good screens. Each build fails as a renderer outage, retried after 2 seconds doubling to 30, and nothing is recorded against the instance. The error and the instance's page in the web UI say "Builds cannot start", with the reason. A host that gets fixed needs no restart.
+
+The sandbox cannot run inside default Docker or Podman, or inside a hardened systemd unit (`RestrictNamespaces=`, or `SystemCallFilter=` without `@mount`), since they refuse the namespace and mount calls bubblewrap makes. `trmnl-byos doctor` names the fix.
+
+Builds in a sandbox share nothing, so two at once are safe. The scheduler still sends one at a time.
+
+### What the sandbox does not give
+
+Compose and a separate user account enforce more than the sandbox does:
+
+- Builds run as the server's own user. Namespaces and the seccomp filter keep them from the server's files and processes, but there is no user boundary. A flaw in the kernel, bubblewrap or the library goes straight to the server's data. Compose and a separate user add a different uid.
+- The secrets key lives only in the server's environment, which a build never gets, and the build's PID namespace hides the server's `/proc`. But a build sees the host's files read-only outside the paths the sandbox covers, so a file that holds the key must be readable only by root.
+- Writes to the build's home, on the data directory's disk, are bounded per file (256 MiB) but not in total, until the build ends and the home is removed.
+- Without `-render-cgroup`, memory is bounded only by a soft watchdog that reads the build's memory every 250 ms. A spike between reads is missed, and the tmpfs a build writes is not counted. Nothing bounds how many processes a build starts until its 2-minute timeout ends it. They count against the same limits as the server's, so a build that forks without end can stop the server, until the service manager starts it again. Use `-render-cgroup` where that matters.
+
+### Limits with a cgroup
+
+With `-render-cgroup DIR`, each build gets a child cgroup with a hard memory limit of `-render-memory` and no swap, 1024 processes and a kill of the whole group on an out-of-memory. After the build the server kills whatever is left in it and removes it. A build the kernel kills for memory fails with "the build used over N MiB of memory".
+
+`DIR` must be a cgroup v2 directory the server may write to, as an absolute path. Under systemd, give the unit `Delegate=yes`, and `DelegateSubgroup=` too, such as `DelegateSubgroup=server`, so the server runs in a subgroup and not in the delegated cgroup itself. The kernel refuses to enable controllers in a cgroup that has processes. Then `-render-cgroup` is the unit's own cgroup path under `/sys/fs/cgroup`, such as `/sys/fs/cgroup/system.slice/trmnl-byos.service`. No unit file ships yet. `trmnl-byos doctor` makes and removes a child cgroup to show that it works.
 
 ## Server only
 
@@ -58,7 +129,9 @@ trmnl-byos serve -data /var/lib/trmnl-byos -listen :8080
 trmnl-byos password -data /var/lib/trmnl-byos
 ```
 
-Run `serve` under the service manager you use, as a user of its own. It creates the data directory and the database when it first starts, and every other command needs it to have started once, or fails with "no database". Then set the admin password, and go on to [First device](#first-device). You can add a renderer later by giving `serve` a `-render-url`.
+Run `serve` under the service manager you use, as a user of its own. It creates the data directory and the database when it first starts, and every other command needs it to have started once, or fails with "no database". Then set the admin password, and go on to [First device](#first-device).
+
+Without bubblewrap and the build tools, `serve` still runs, and every recipe build fails as an outage that the web UI shows ("Builds cannot start"). Devices keep the screens they have. Install the tools to build recipes in a sandbox (see above), or give `serve` a `-render-url`.
 
 ## Docker Compose
 
@@ -110,7 +183,7 @@ The first fails to resolve `server`, since the renderer isn't on the server's ne
 
 ### What it needs
 
-The renderer is the `trmnl-render` shim, from `cmd/trmnl-render`, next to trmnlp. `deploy/renderer/Dockerfile` builds it on the `trmnl/trmnlp:v0.34.1` image, and that image's Dockerfile, in the usetrmnl/trmnlp repository at tag v0.34.1, is the reference list of what trmnlp needs:
+The renderer is the `trmnl-render` shim, from `cmd/trmnl-render`, next to trmnlp. It is the stronger option, with a deployment that gives its isolation. `serve -render-url` sends builds to it instead of to a sandbox. `deploy/renderer/Dockerfile` builds it on the `trmnl/trmnlp:v0.34.1` image, and that image's Dockerfile, in the usetrmnl/trmnlp repository at tag v0.34.1, is the reference list of what trmnlp needs:
 
 - Ruby 4.0, with trmnlp v0.34.1 and its gems.
 - Firefox ESR and geckodriver, which trmnlp drives to draw each page.
@@ -140,7 +213,7 @@ Run the proxy on its own:
 trmnl-byos proxy -listen :3128 -cache /var/cache/trmnl-byos
 ```
 
-Or run it inside the server's process with `serve -proxy-listen :3128`. A server with `-render-url` and no `-proxy-listen` says at startup that the proxy must run apart. It never starts one on its own.
+Or run it inside the server's process with `serve -proxy-listen :3128`. Sandboxed builds need neither. A server with `-render-url` and no `-proxy-listen` says at startup that the proxy must run apart. It never starts one on its own.
 
 `proxy -forward-listen :8081 -forward-to renderer:8081` also forwards each TCP connection on port 8081 to the renderer, for a server that shares no network with it, as in Compose. The target is fixed by the flag.
 
@@ -156,6 +229,8 @@ These properties keep a recipe from reaching anything it should not. Compose giv
 - Nothing a build writes or starts outlives it. Its user can write nowhere but scratch places that are the renderer's own, which the shim empties after each build.
 - Its only network path is the proxy's address. It cannot reach the internet, the LAN, services on the host's loopback, or the server's listeners. The server's `/api/setup` gives a key to any MAC while the join window is open, so the renderer must not be able to reach it.
 - Its process count, memory and privileges are limited.
+
+The sandbox on the host gives the first three, except that it has no user of its own. It limits memory and privileges, but limits processes only with `-render-cgroup` (see [What the sandbox does not give](#what-the-sandbox-does-not-give)).
 
 The shim checks its own user and where it can write, and refuses to start if they are wrong. It cannot check the network, its limits, or what it can read, so those are up to the deployment.
 
