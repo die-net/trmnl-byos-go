@@ -60,6 +60,11 @@ type Config struct {
 	// recipe instances. Nil means there is none, and then a form that sets a
 	// secret value is refused by the domain.
 	Secrets *secrets.Key
+	// RenderProblem returns why builds cannot start, such as a sandbox
+	// that bubblewrap cannot make, or "" when the last one did. An
+	// instance's page shows it, since such an outage records nothing
+	// against the instance. Nil means builds never report one.
+	RenderProblem func() string
 }
 
 // Server handles admin UI requests.
@@ -72,6 +77,8 @@ type Server struct {
 	recipesDir string
 	// firmwareDir is Config.FirmwareDir.
 	firmwareDir string
+	// renderProblem is Config.RenderProblem.
+	renderProblem func() string
 	// secrets is Config.Secrets.
 	secrets *secrets.Key
 	// secureURL is whether PublicURL is https.
@@ -84,14 +91,15 @@ type Server struct {
 // New returns a Server that keeps state in client.
 func New(client *db.Client, cfg Config) *Server {
 	s := &Server{
-		db:          client,
-		now:         time.Now,
-		zone:        cmp.Or(cfg.Zone, time.UTC),
-		recipesDir:  cfg.RecipesDir,
-		firmwareDir: cfg.FirmwareDir,
-		secrets:     cfg.Secrets,
-		cop:         http.NewCrossOriginProtection(),
-		pages:       map[string]*template.Template{},
+		db:            client,
+		now:           time.Now,
+		zone:          cmp.Or(cfg.Zone, time.UTC),
+		recipesDir:    cfg.RecipesDir,
+		firmwareDir:   cfg.FirmwareDir,
+		secrets:       cfg.Secrets,
+		renderProblem: cfg.RenderProblem,
+		cop:           http.NewCrossOriginProtection(),
+		pages:         map[string]*template.Template{},
 	}
 	if u, err := url.Parse(cfg.PublicURL); err == nil {
 		s.secureURL = strings.EqualFold(u.Scheme, "https")

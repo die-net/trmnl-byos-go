@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/die-net/trmnl-byos-go/internal/cache"
 	"github.com/die-net/trmnl-byos-go/internal/renderproxy"
 )
 
@@ -58,13 +59,20 @@ func proxy(ctx context.Context, args []string) error {
 // cacheDir, and, if fln is not nil, forwards each connection on fln to
 // target, until ctx is done or one of them fails.
 func runProxy(ctx context.Context, pln net.Listener, cacheDir string, fln net.Listener, target string) error {
-	g, ctx := errgroup.WithContext(ctx)
-	if err := startProxy(ctx, g, pln, cacheDir); err != nil {
+	assets, err := cache.New(cacheDir)
+	if err != nil {
+		_ = pln.Close()
 		if fln != nil {
 			_ = fln.Close()
 		}
 		return err
 	}
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
+		return nil
+	})
+	startProxy(ctx, g, pln, assets)
 	if fln != nil {
 		g.Go(func() error { return renderproxy.Forward(ctx, fln, target, &net.Dialer{Timeout: 10 * time.Second}) })
 	}

@@ -22,13 +22,27 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/die-net/sandbox"
 )
 
-// TestMain runs the test binary as a leftover process when the fake trmnlp
-// asks it to, and runs the tests otherwise. A leftover's files are in the
-// directory LEFTOVER_DIR: it writes its PID to pid, and what it reads to
-// out.
+// TestMain runs the sandbox's first stage when a sandboxed test starts the
+// test binary as one, the build or self-test command when the sandbox runs
+// it as its command, and a leftover process or a memory hog when the fake
+// trmnlp asks for one. It runs the tests otherwise. A leftover's files are
+// in the directory LEFTOVER_DIR: it writes its PID to pid, and what it
+// reads to out.
 func TestMain(m *testing.M) {
+	if code, ok := sandbox.Stage(); ok {
+		os.Exit(code)
+	}
+	if code, ok := sandboxedCommand(); ok {
+		os.Exit(code)
+	}
+	if mib, err := strconv.Atoi(os.Getenv("TRMNL_TEST_HOG_MIB")); err == nil {
+		hogMemory(mib)
+		os.Exit(1)
+	}
 	switch os.Getenv("TRMNL_TEST_LEFTOVER") {
 	case "spawn":
 		os.Exit(spawnLeftover())

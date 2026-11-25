@@ -7,6 +7,7 @@
 <h2 id="render-title">Rendering</h2>
 <p class="rel render-when">{{template "rendered" .Render}}</p>
 {{if .Render.Error}}<p class="error">A build failed: {{.Render.Error}}</p>
+{{end}}{{if .Render.Outage}}<p class="error">Builds cannot start: {{.Render.Outage}}</p>
 {{end}}</section>
 {{if $.Error}}<p class="error" role="alert">{{$.Error}}</p>{{end}}
 <section class="panel form-panel" aria-labelledby="edit-title">

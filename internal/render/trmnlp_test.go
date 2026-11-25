@@ -1,32 +1,99 @@
-//go:build docker
+//go:build trmnlp
 
 package render
 
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"image/png"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/die-net/trmnl-byos-go/internal/cache"
+	"github.com/die-net/trmnl-byos-go/internal/guard"
+	"github.com/die-net/trmnl-byos-go/internal/renderproxy"
 )
 
-// buildRecipe builds a recipe of the given files in the renderer at
-// TRMNL_RENDER_URL, and returns its log and PNGs. The renderer refuses a
-// build while another runs, so the tests in this file do not run in
-// parallel.
+// The tests in this file run real trmnlp builds, which load the framework
+// from trmnl.com, so they need the internet. They run in the renderer at
+// TRMNL_RENDER_URL when it is set, which refuses a build while another
+// runs, so they do not run in parallel. Without it they run each build in
+// a sandbox on this host, with the trmnlp and runtimes on its PATH:
+//
+//	go test -tags trmnlp ./internal/render/
+//	TRMNL_RENDER_URL=http://localhost:8081 go test -tags trmnlp ./internal/render/
+
+// recipeBuilder is what runs the tests' builds: a *Client or a *Sandbox.
+type recipeBuilder interface {
+	Build(ctx context.Context, job Job, writeProject func(*tar.Writer) error, layout func(string, io.Reader) error) (string, error)
+}
+
+// shimUnderTest reports whether the builds go to a renderer at
+// TRMNL_RENDER_URL.
+func shimUnderTest() bool {
+	return os.Getenv("TRMNL_RENDER_URL") != ""
+}
+
+// hostSandbox returns a Sandbox that runs builds on this host with the tools
+// on its PATH, through a proxy with a cache of its own.
+func hostSandbox(t *testing.T) *Sandbox {
+	t.Helper()
+	// These tests run only when asked for, with the trmnlp tag, so a host
+	// that cannot run them fails them rather than skipping.
+	if _, err := ProbeSandbox(); err != nil {
+		t.Fatalf("no sandbox can start on this host; set TRMNL_RENDER_URL to test a renderer instead: %v", err)
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets, err := cache.New(filepath.Join(dir, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := NewSandbox(SandboxConfig{
+		TempDir: filepath.Join(dir, "data", "tmp"),
+		Cover:   []string{filepath.Join(dir, "data"), filepath.Join(dir, "cache")},
+		Proxy: renderproxy.New(renderproxy.Config{
+			Dialer: guard.NewDialer(10 * time.Second), Cache: assets, CachedHosts: renderproxy.AssetHosts,
+		}),
+		PathEnv: os.Getenv("PATH"),
+		Memory:  2 << 30,
+		Timeout: 2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sb.setup(t.Context()); err != nil {
+		t.Fatalf("the tools a build needs are not on this host's PATH: %v", err)
+	}
+	return sb
+}
+
+// buildRecipe builds a recipe of the given files, and returns its log and
+// PNGs.
 func buildRecipe(t *testing.T, files map[string]string) (string, map[string][]byte) {
 	t.Helper()
-	url := os.Getenv("TRMNL_RENDER_URL")
-	if url == "" {
-		t.Fatal("set TRMNL_RENDER_URL to a running renderer")
+	var b recipeBuilder
+	if url := os.Getenv("TRMNL_RENDER_URL"); url != "" {
+		b = &Client{URL: url, HTTP: &http.Client{Timeout: 3 * time.Minute}}
+	} else {
+		b = hostSandbox(t)
 	}
-	c := &Client{URL: url, HTTP: &http.Client{Timeout: 3 * time.Minute}}
+	return buildWith(t, b, files)
+}
+
+// buildWith builds a recipe of the given files with b.
+func buildWith(t *testing.T, b recipeBuilder, files map[string]string) (string, map[string][]byte) {
+	t.Helper()
 	got := map[string][]byte{}
-	log, err := c.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "gray-4"},
+	log, err := b.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "gray-4"},
 		func(tw *tar.Writer) error {
 			for name, body := range files {
 				if err := AddFile(tw, name, int64(len(body)), strings.NewReader(body)); err != nil {
@@ -47,13 +114,11 @@ func buildRecipe(t *testing.T, files map[string]string) (string, map[string][]by
 	return log, got
 }
 
-// TestRendererImage builds a small recipe in a running renderer container.
-// Start one, then run:
+// TestRendererImage builds a small recipe. To build it in a renderer
+// container, start one, then run:
 //
 //	docker run --rm --read-only --tmpfs /tmp:mode=1777,size=1g -p 8081:8081 trmnl-byos-render
-//	TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker -run TestRendererImage ./internal/render/
-//
-// The build loads the framework from trmnl.com, so it needs the internet.
+//	TRMNL_RENDER_URL=http://localhost:8081 go test -tags trmnlp -run TestRendererImage ./internal/render/
 func TestRendererImage(t *testing.T) {
 	const settings = "strategy: static\nstatic_data: '{\"name\": \"renderer\"}'\nframework_version: latest\nrefresh_interval: 15\ncustom_fields: []\n"
 	const view = `<div class="layout layout--col"><span class="title">Hello, {{ name }}</span><span class="description">{{ trmnl.user.time_zone_iana }}</span></div>`
@@ -122,13 +187,13 @@ for top, dirs, files in os.walk("/"):
             print("FOUND", os.path.join(top, f))
 `
 
-// TestRendererLeavesNothing checks, in a running renderer container, that
-// what a recipe's transform plants wherever it can write is gone before the
-// next build, which neither runs nor finds it. Start the renderer as the
-// Compose file does, with a read-only root file system:
+// TestRendererLeavesNothing checks that what a recipe's transform plants
+// wherever it can write is gone before the next build, which neither runs
+// nor finds it. To check a renderer container, start it as the Compose file
+// does, with a read-only root file system:
 //
 //	docker run --rm --read-only --tmpfs /tmp:mode=1777,size=1g -p 8081:8081 trmnl-byos-render
-//	TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker -run TestRendererLeavesNothing ./internal/render/
+//	TRMNL_RENDER_URL=http://localhost:8081 go test -tags trmnlp -run TestRendererLeavesNothing ./internal/render/
 func TestRendererLeavesNothing(t *testing.T) {
 	const settings = "strategy: static\nstatic_data: '{\"name\": \"renderer\"}'\nframework_version: latest\nrefresh_interval: 15\ncustom_fields: []\n"
 	recipe := func(transform string) map[string]string {
@@ -184,10 +249,10 @@ for pid in os.listdir("/proc"):
 print("GHOST ALIVE" if alive else "NO GHOST", alive)
 `
 
-// TestRendererKillsGhosts checks, in a running renderer container, that the
-// sweep kills a process whose main thread exited, which looks like a
-// zombie, so it cannot see the next build. Start the renderer as for
-// TestRendererLeavesNothing.
+// TestRendererKillsGhosts checks that a process whose main thread exited,
+// which looks like a zombie, is killed, by the shim's sweep or with the
+// build's sandbox, so it cannot see the next build. Start a renderer as for
+// TestRendererLeavesNothing, or run it in a sandbox.
 func TestRendererKillsGhosts(t *testing.T) {
 	const settings = "strategy: static\nstatic_data: '{\"name\": \"renderer\"}'\nframework_version: latest\nrefresh_interval: 15\ncustom_fields: []\n"
 	recipe := func(transform string) map[string]string {
@@ -230,6 +295,9 @@ print("SELF POST", status)
 // it cannot wait out the build's sweep and run after it. Start the renderer
 // as for TestRendererLeavesNothing.
 func TestRendererRefusesOwnBuilds(t *testing.T) {
+	if !shimUnderTest() {
+		t.Skip("only the shim takes builds over HTTP; a sandboxed build has no listener to send one to")
+	}
 	const settings = "strategy: static\nstatic_data: '{\"name\": \"renderer\"}'\nframework_version: latest\nrefresh_interval: 15\ncustom_fields: []\n"
 	files := map[string]string{"src/settings.yml": settings, "src/transform.py": selfPostTransform, ".trmnlp.yml": "time_zone: UTC\n"}
 	for _, layout := range Layouts {
@@ -239,5 +307,47 @@ func TestRendererRefusesOwnBuilds(t *testing.T) {
 	t.Logf("build:\n%s", log)
 	if !strings.Contains(log, "SELF POST 503") || strings.Contains(log, "SELF POST 200") {
 		t.Error("the shim did not refuse a build's own request")
+	}
+}
+
+// webGLView fills the page with black through WebGL, and leaves it white
+// when the page gets no WebGL context.
+const webGLView = `<canvas id="c" width="800" height="480" style="position:fixed;top:0;left:0"></canvas>
+<script>
+var gl = document.getElementById("c").getContext("webgl");
+if (gl) { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+</script>`
+
+// darkness returns the share of the PNG's pixels that are dark.
+func darkness(t *testing.T, b []byte) float64 {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := img.Bounds()
+	dark := 0
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			if g, _, _, _ := img.At(x, y).RGBA(); g < 0x8000 {
+				dark++
+			}
+		}
+	}
+	return float64(dark) / float64(r.Dx()*r.Dy())
+}
+
+// TestRendererWebGL checks that a page draws with WebGL, as map recipes do.
+// trmnlp runs Firefox headless, which draws nothing with WebGL without
+// Xvfb, which every build starts.
+func TestRendererWebGL(t *testing.T) {
+	const settings = "strategy: static\nstatic_data: '{}'\nframework_version: latest\nrefresh_interval: 15\ncustom_fields: []\n"
+	files := map[string]string{"src/settings.yml": settings, ".trmnlp.yml": "time_zone: UTC\n"}
+	for _, layout := range Layouts {
+		files["src/"+layout+".liquid"] = webGLView
+	}
+	_, got := buildRecipe(t, files)
+	if d := darkness(t, got["full"]); d < 0.5 {
+		t.Errorf("full.png is %.0f%% dark, want most of it: the page got no WebGL", d*100)
 	}
 }

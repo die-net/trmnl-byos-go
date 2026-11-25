@@ -11,6 +11,7 @@
 package scheduler
 
 import (
+	"archive/tar"
 	"cmp"
 	"context"
 	"database/sql"
@@ -86,7 +87,7 @@ func unavailableBackoff(n int) time.Duration {
 type Config struct {
 	DB       *db.Client
 	Images   *imagestore.Store
-	Renderer *render.Client
+	Renderer Renderer
 	// RecipesDir holds the installed recipes.
 	RecipesDir string
 	// Secrets opens instances' secret field values.
@@ -101,6 +102,14 @@ type Config struct {
 	// that builds read, such as an instance's settings, is sent on it by
 	// Waker.Wake. Nil never wakes it.
 	Wake Waker
+}
+
+// Renderer runs builds: a *render.Client, which sends them to a shim, or
+// a *render.Sandbox, which runs each in a sandbox on this host. Build's
+// errors are as render.Client.Build documents them.
+type Renderer interface {
+	Build(ctx context.Context, job render.Job, writeProject func(*tar.Writer) error,
+		png func(layout string, r io.Reader) error) (string, error)
 }
 
 // Waker carries wake-ups to a scheduler. It holds at most one, since a
