@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // BuildCommand is the trmnl-byos subcommand that runs one build inside a
@@ -36,10 +37,13 @@ const (
 	exitUnavailable = 5
 	// exitUsage means the command was started wrongly.
 	exitUsage = 2
-	// exitStageFailed is what the sandbox's first stage exits with when it
-	// could not start the command, so nothing of the recipe ran.
-	exitStageFailed = 125
 )
+
+// StartedFD is the descriptor of the pipe on which the build command says it
+// has started, before anything of the recipe runs. A sandbox that ends
+// before the command says so failed for the renderer's reasons, not the
+// recipe's, such as a first stage killed by an AppArmor profile.
+const StartedFD = 3
 
 // RunBuildCommand runs BuildCommand: it reads a request tar from stdin,
 // the job and its project, builds it in a fresh directory under TMPDIR,
@@ -47,10 +51,12 @@ const (
 // the result tar to stdout. args are its flags: -trmnlp, the path to
 // trmnlp, and -xvfb, the path to Xvfb. The
 // environment is the build's, which the server made, and every tool the
-// build runs inherits it. It returns the exit status, and an error that
-// says why for any status but exitBuilt and exitBuildFailed, which the
-// caller writes to stderr for the server to read.
-func RunBuildCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) (int, error) {
+// build runs inherits it. It writes one byte to started, then closes it,
+// once it has protected itself and before it reads the job. It returns
+// the exit status, and an error that says why, which the caller writes to
+// stderr for the server to read. A failed build has the reason in its log,
+// and an error only when the result could not be written.
+func RunBuildCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, started io.WriteCloser) (int, error) {
 	fs := flag.NewFlagSet(BuildCommand, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	trmnlp := fs.String("trmnlp", "", "path to the trmnlp command")
@@ -64,6 +70,14 @@ func RunBuildCommand(ctx context.Context, args []string, stdin io.Reader, stdout
 	if err := ProtectSelf(); err != nil {
 		return exitUnavailable, fmt.Errorf("protect the build command: %w", err)
 	}
+	// Closed at once, so nothing the build runs inherits it.
+	_, err := started.Write([]byte{1})
+	if cerr := started.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return exitUnavailable, fmt.Errorf("say the build command started: %w", err)
+	}
 	dir, err := os.MkdirTemp("", "build-")
 	if err != nil {
 		return exitUnavailable, fmt.Errorf("create build dir: %w", err)
@@ -75,19 +89,32 @@ func RunBuildCommand(ctx context.Context, args []string, stdin io.Reader, stdout
 		}
 		return exitUnavailable, err
 	}
-	b := builder{trmnlp: *trmnlp, xvfb: *xvfb, env: os.Environ()}
+	// Xvfb's output is kept apart, so stderr holds only this command's own
+	// reasons, and shown when Xvfb did not start.
+	xvfbOut := &capped{}
+	b := builder{trmnlp: *trmnlp, xvfb: *xvfb, env: os.Environ(), xvfbOut: xvfbOut}
 	buildErr := b.build(ctx, dir, job)
 	// Xvfb starts, and trmnlp is started, before anything of the recipe
 	// runs, so a failure of either is the renderer's.
-	if errors.Is(buildErr, errNoDisplay) || errors.Is(buildErr, errStartTrmnlp) {
+	if errors.Is(buildErr, errNoDisplay) {
+		if out := strings.TrimSpace(xvfbOut.String()); out != "" {
+			buildErr = fmt.Errorf("%w: %s", buildErr, out)
+		}
 		return exitUnavailable, buildErr
 	}
+	if errors.Is(buildErr, errStartTrmnlp) {
+		return exitUnavailable, buildErr
+	}
+	// A directory the build made unreadable, or replaced, fails the
+	// build, with the reason after its log, as the shim does.
+	var res *result
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return exitBuildFailed, fmt.Errorf("open the build directory: %w", err)
+		res, err = &result{}, fmt.Errorf("open the build directory: %w", err)
+	} else {
+		defer root.Close()
+		res, err = openResult(root, buildErr == nil)
 	}
-	defer root.Close()
-	res, err := openResult(root, buildErr == nil)
 	defer res.close()
 	note := ""
 	if err != nil {

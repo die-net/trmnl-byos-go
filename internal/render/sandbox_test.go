@@ -168,8 +168,8 @@ func TestExitErr(t *testing.T) {
 		ok bool
 		// is are the kinds the error matches, and every other is not.
 		is []error
-		// contains are in the error's text, and lacks are not.
-		contains, lacks []string
+		// contains are in the error's text.
+		contains []string
 		// outage is that Problem is set to the error's reason.
 		outage bool
 	}{
@@ -177,23 +177,26 @@ func TestExitErr(t *testing.T) {
 		{name: "built with too few layouts", res: received{layouts: 3}, contains: []string{"3 of 4 layouts"}},
 		{name: "build failed", script: "3", res: full, is: []error{ErrBuildFailed}},
 		{name: "fetch failed", script: "3", res: received{fetchFailed: true}, is: []error{ErrFetchFailed}},
-		// The log says why a build failed. Stderr then holds what Xvfb
-		// printed, which would crowd out the reason.
+		// Stderr has only the build command's own reasons, such as a
+		// result it could not write. Xvfb's output goes elsewhere.
 		{
-			name: "build failed with stderr", script: "3", stderr: "xkbcomp: warning\n", res: full,
-			is: []error{ErrBuildFailed}, lacks: []string{"xkbcomp"},
+			name: "build failed with a reason", script: "3", stderr: "write result: broken pipe\n", res: full,
+			is: []error{ErrBuildFailed}, contains: []string{"write result: broken pipe"},
 		},
 		{
-			name: "fetch failed with stderr", script: "3", stderr: "note", res: received{fetchFailed: true},
-			is: []error{ErrFetchFailed}, lacks: []string{"note"},
+			name: "fetch failed with a reason", script: "3", stderr: "note", res: received{fetchFailed: true},
+			is: []error{ErrFetchFailed}, contains: []string{"note"},
 		},
 		{
 			name: "unavailable with no reason", script: "5", res: full, outage: true,
 			is: []error{ErrUnavailable}, contains: []string{"status 5", "trmnl-byos doctor"},
 		},
+		// Once the command has said it started, any other end may be the
+		// recipe's doing, so it counts against the build. One before that
+		// is an outage, which Build decides (see TestSandboxStageDies).
 		{
-			name: "stage could not start the command", script: "125", stderr: "sandbox: exec: no such file", res: full, outage: true,
-			is: []error{ErrUnavailable}, contains: []string{"no such file"},
+			name: "first stage status after the command started", script: "125", stderr: "sandbox: reaper", res: full,
+			contains: []string{"reaper"},
 		},
 		{
 			name: "rejected", script: "4", stderr: "bad job: no palette", res: full,
@@ -240,11 +243,6 @@ func TestExitErr(t *testing.T) {
 			for _, s := range tc.contains {
 				if !strings.Contains(err.Error(), s) {
 					t.Errorf("error %q lacks %q", err, s)
-				}
-			}
-			for _, s := range tc.lacks {
-				if strings.Contains(err.Error(), s) {
-					t.Errorf("error %q has %q", err, s)
 				}
 			}
 			if tc.waitErr != nil && !errors.Is(err, tc.waitErr) {

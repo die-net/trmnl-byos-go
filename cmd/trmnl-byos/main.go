@@ -437,13 +437,13 @@ func sandboxedCommand(ctx context.Context, cmd string, args []string) int {
 		fmt.Fprintf(os.Stderr, "%s runs only inside a build's sandbox, which trmnl-byos starts\n", cmd)
 		return 2
 	}
-	run := render.RunBuildCommand
+	var code int
+	var err error
 	if cmd == render.SelfTestCommand {
-		run = func(ctx context.Context, args []string, _ io.Reader, stdout io.Writer) (int, error) {
-			return render.RunSelfTest(ctx, args, stdout)
-		}
+		code, err = render.RunSelfTest(ctx, args, os.Stdout)
+	} else {
+		code, err = render.RunBuildCommand(ctx, args, os.Stdin, os.Stdout, os.NewFile(render.StartedFD, "started"))
 	}
-	code, err := run(ctx, args, os.Stdin, os.Stdout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}

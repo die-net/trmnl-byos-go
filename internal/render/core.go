@@ -209,6 +209,9 @@ type builder struct {
 	// env is the environment every build starts from. The build adds its
 	// own directories, its display and the job's field values.
 	env []string
+	// xvfbOut is where Xvfb's own output goes. Nil is the process's
+	// stderr, the shim's log.
+	xvfbOut io.Writer
 }
 
 // build runs trmnlp on the project in dir, writing its output to the build
@@ -229,7 +232,11 @@ func (b builder) build(ctx context.Context, dir string, job Job) error {
 	}
 	defer logFile.Close()
 
-	disp, err := startDisplay(b.xvfb, slices.Concat(b.env, env))
+	xvfbOut := b.xvfbOut
+	if xvfbOut == nil {
+		xvfbOut = os.Stderr
+	}
+	disp, err := startDisplay(b.xvfb, slices.Concat(b.env, env), xvfbOut)
 	if err != nil {
 		return err
 	}

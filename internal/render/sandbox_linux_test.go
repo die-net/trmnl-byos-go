@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ func sandboxedCommand() (int, bool) {
 	var err error
 	switch os.Args[1] {
 	case BuildCommand:
-		code, err = RunBuildCommand(context.Background(), os.Args[2:], os.Stdin, os.Stdout)
+		code, err = RunBuildCommand(context.Background(), os.Args[2:], os.Stdin, os.Stdout, os.NewFile(StartedFD, "started"))
 	case SelfTestCommand:
 		code, err = RunSelfTest(context.Background(), os.Args[2:], os.Stdout)
 	default:
@@ -517,6 +518,48 @@ func TestSandboxToolRemoved(t *testing.T) {
 	}
 	if err := build(); err != nil {
 		t.Fatalf("Build with trmnlp restored: %v", err)
+	}
+	if p := sb.Problem(); p != "" {
+		t.Errorf("Problem() = %q after a build that started", p)
+	}
+}
+
+// TestSandboxStageDies checks that a sandbox that ends before its build
+// command says it started is an outage, which Problem names, not a failed
+// build: nothing of the recipe ran. It makes the command refuse its
+// arguments, as a first stage that dies does, by dropping trmnlp from the
+// tools after they were found. A later build that starts clears Problem.
+func TestSandboxStageDies(t *testing.T) {
+	t.Parallel()
+	sb, _ := newTestSandbox(t, SandboxConfig{})
+	tools, err := sb.setup(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := *tools
+	broken.List = slices.Clone(tools.List)
+	for i := range broken.List {
+		if broken.List[i].Name == "trmnlp" {
+			broken.List[i].Path = ""
+		}
+	}
+	sb.mu.Lock()
+	sb.tools = &broken
+	sb.mu.Unlock()
+	_, err = sb.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(), collect(map[string]string{}))
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Build: %v, want ErrUnavailable", err)
+	}
+	for _, want := range []string{"before its command started", "usage"} {
+		if !strings.Contains(err.Error(), want) || !strings.Contains(sb.Problem(), want) {
+			t.Errorf("Build: %v, Problem %q, want %q in each", err, sb.Problem(), want)
+		}
+	}
+	sb.mu.Lock()
+	sb.tools = tools
+	sb.mu.Unlock()
+	if _, err := sb.Build(t.Context(), Job{Width: 800, Height: 480, Palette: "bw"}, project(), collect(map[string]string{})); err != nil {
+		t.Fatalf("Build once fixed: %v", err)
 	}
 	if p := sb.Problem(); p != "" {
 		t.Errorf("Problem() = %q after a build that started", p)

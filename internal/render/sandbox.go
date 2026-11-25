@@ -184,8 +184,18 @@ func (s *Sandbox) Build(ctx context.Context, job Job, writeProject func(*tar.Wri
 	bctx, stop := context.WithCancelCause(tctx)
 	defer stop(nil)
 
-	cmd, err := sandbox.Command(bctx, s.Spec(*tools, home))
+	// The build command says on this pipe that it started, so an end
+	// before that is told apart from one the recipe could have caused.
+	startedR, startedW, err := os.Pipe()
 	if err != nil {
+		return "", s.outage(fmt.Errorf("make the build's started pipe: %w", err))
+	}
+	defer startedR.Close()
+	spec := s.Spec(*tools, home)
+	spec.Files = []*os.File{startedW}
+	cmd, err := sandbox.Command(bctx, spec)
+	if err != nil {
+		_ = startedW.Close()
 		return "", s.outage(fmt.Errorf("set up the build's sandbox: %w", err))
 	}
 	cmd.Env = s.Env(*tools, cmd.ListenAddrs()[0])
@@ -211,10 +221,10 @@ func (s *Sandbox) Build(ctx context.Context, job Job, writeProject func(*tar.Wri
 	err = cmd.Start()
 	_ = stdinR.Close()
 	_ = stdoutW.Close()
+	_ = startedW.Close()
 	if err != nil {
 		return "", s.outage(fmt.Errorf("start the build's sandbox: %w", err))
 	}
-	s.problem.Store(nil)
 
 	// The proxy is the build's only way out: its network namespace has
 	// nothing else.
@@ -240,10 +250,18 @@ func (s *Sandbox) Build(ctx context.Context, job Job, writeProject func(*tar.Wri
 	}
 	waitErr := cmd.Wait()
 	writeErr := <-written
+	// Every writer of the pipe is gone now, so this does not block.
+	started, _ := startedR.Read(make([]byte, 1))
 
 	if ctx.Err() != nil {
 		return res.log, ctx.Err()
 	}
+	if started == 0 {
+		// Nothing of the recipe ran: the sandbox ended before its command
+		// did anything, such as a first stage an AppArmor profile killed.
+		return res.log, s.outage(fmt.Errorf("the build's sandbox ended before its command started: %w%s", waitErr, stderrSuffix(&stderr)))
+	}
+	s.problem.Store(nil)
 	if writeErr != nil && !errors.Is(writeErr, errBody) {
 		return res.log, fmt.Errorf("write project: %w", writeErr)
 	}
@@ -253,10 +271,35 @@ func (s *Sandbox) Build(ctx context.Context, job Job, writeProject func(*tar.Wri
 	case errors.Is(cause, errOverMemory), cg != nil && cg.oomKilled():
 		return res.log, fmt.Errorf("the build used over %d MiB of memory", s.cfg.Memory>>20)
 	}
-	if readErr != nil {
+	// A result the build command could not write ends early, and the
+	// command's own reason says more than the read's error does.
+	ownReason := exitCode(waitErr) == exitBuildFailed && strings.TrimSpace(stderr.String()) != ""
+	if readErr != nil && !ownReason {
 		return res.log, readErr
 	}
 	return res.log, s.exitErr(waitErr, &stderr, res)
+}
+
+// exitCode is the exit status in err, from Wait: 0 for nil, and -1 for an
+// error that holds none, such as a signal's.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
+}
+
+// stderrSuffix is what a build command said on stderr, after a colon, or
+// "".
+func stderrSuffix(stderr *capped) string {
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return ": " + msg
+	}
+	return ""
 }
 
 // Bounds on a build's proxy, which runs in the server's process, so a
@@ -364,13 +407,15 @@ func (s *Sandbox) exitErr(err error, stderr *capped, res received) error {
 	case exitBuilt:
 		return res.outcome(true)
 	case exitBuildFailed:
-		// The log says why. Stderr has only what Xvfb printed, or a
-		// result the command could not write, which the result's own
-		// error shows.
+		// The log says why. Stderr is empty then, unless the command
+		// could not write the result, which it says there.
+		if msg != "" {
+			return fmt.Errorf("%w: %s", res.outcome(false), msg)
+		}
 		return res.outcome(false)
 	case exitRejected:
 		return fmt.Errorf("%w: %s", ErrRejected, msg)
-	case exitUnavailable, exitStageFailed:
+	case exitUnavailable:
 		if msg == "" {
 			msg = fmt.Sprintf("the build command exited with status %d and gave no reason", code)
 		}

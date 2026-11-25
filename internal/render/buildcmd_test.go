@@ -35,7 +35,8 @@ func TestRunBuildCommandUsage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var out strings.Builder
-			code, err := RunBuildCommand(t.Context(), tc.args, failingReader{t}, &out)
+			var started startedRecorder
+			code, err := RunBuildCommand(t.Context(), tc.args, failingReader{t}, &out, &started)
 			if code != exitUsage {
 				t.Errorf("exit status %d, want %d", code, exitUsage)
 			}
@@ -45,6 +46,23 @@ func TestRunBuildCommandUsage(t *testing.T) {
 			if out.Len() != 0 {
 				t.Errorf("wrote %q to stdout", out.String())
 			}
+			// It never started, so the server takes its end as the
+			// renderer's.
+			if started.Len() != 0 {
+				t.Errorf("said it started: %q", started.String())
+			}
 		})
 	}
+}
+
+// startedRecorder records what the build command writes on its started
+// descriptor.
+type startedRecorder struct {
+	strings.Builder
+	closed bool
+}
+
+func (s *startedRecorder) Close() error {
+	s.closed = true
+	return nil
 }
