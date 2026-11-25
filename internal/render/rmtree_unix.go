@@ -5,6 +5,7 @@ package render
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strconv"
@@ -53,36 +54,52 @@ type flattener struct {
 	next int
 }
 
-// run removes every entry of the root until it is empty.
+// run removes every entry of the root until it is empty. Each pass sees
+// the entries the last one moved up.
 func (t *flattener) run() error {
 	for {
-		names, err := t.names(t.root, t.dir)
-		if err != nil {
+		n, err := t.each(t.root, t.dir, t.remove)
+		if err != nil || n == 0 {
 			return err
-		}
-		if len(names) == 0 {
-			return nil
-		}
-		for _, name := range names {
-			if err := t.remove(name); err != nil {
-				return err
-			}
 		}
 	}
 }
 
-// names lists the open directory fd, at path.
-func (*flattener) names(fd int, path string) ([]string, error) {
+// readBatch is how many names each read of a directory returns, so a
+// directory of millions of entries, which a build can make, is never held
+// in memory at once.
+const readBatch = 1024
+
+// each calls fn for each entry of the open directory fd, at path, from its
+// start, reading readBatch names at a time, and returns how many it saw.
+// An entry made or removed while it reads may be seen or not, so a caller
+// that must see every one reads again until it sees none.
+func (*flattener) each(fd int, path string, fn func(name string) error) (int, error) {
 	dup, err := unix.Dup(fd)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	f := os.NewFile(uintptr(dup), path)
 	defer f.Close()
 	if _, err := f.Seek(0, 0); err != nil {
-		return nil, err
+		return 0, err
 	}
-	return f.Readdirnames(-1)
+	n := 0
+	for {
+		names, err := f.Readdirnames(readBatch)
+		for _, name := range names {
+			if err := fn(name); err != nil {
+				return n, err
+			}
+		}
+		n += len(names)
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+		if err != nil {
+			return n, fmt.Errorf("list %s: %w", path, err)
+		}
+	}
 }
 
 // remove removes the root's entry name: at once if it is not a directory
@@ -115,19 +132,26 @@ func (t *flattener) remove(name string) error {
 		return fmt.Errorf("open %s: %w", name, err)
 	}
 	defer unix.Close(sub)
-	names, err := t.names(sub, name)
-	if err != nil {
-		return fmt.Errorf("list %s: %w", name, err)
-	}
-	for _, n := range names {
-		if err := t.moveUp(sub, n); err != nil {
-			return fmt.Errorf("move %s/%s: %w", name, n, err)
+	for {
+		n, err := t.each(sub, name, func(entry string) error {
+			if err := t.moveUp(sub, entry); err != nil {
+				return fmt.Errorf("move %s/%s: %w", name, entry, err)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		// A read that ran while entries moved out may have skipped some,
+		// so the directory is read again until it can go.
+		err = unix.Unlinkat(t.root, name, unix.AT_REMOVEDIR)
+		if err == nil || errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		if n == 0 {
+			return fmt.Errorf("remove %s: %w", name, err)
 		}
 	}
-	if err := unix.Unlinkat(t.root, name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
-		return fmt.Errorf("remove %s: %w", name, err)
-	}
-	return nil
 }
 
 // moveUp renames the entry name of the directory sub into the root, under

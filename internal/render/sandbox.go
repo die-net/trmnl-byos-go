@@ -191,11 +191,13 @@ func (s *Sandbox) Build(ctx context.Context, job Job, writeProject func(*tar.Wri
 		return "", s.outage(fmt.Errorf("make the build's started pipe: %w", err))
 	}
 	defer startedR.Close()
+	// Closed by hand once the sandbox has started, so the build command
+	// holds the only write end. This is for every return before that.
+	defer startedW.Close()
 	spec := s.Spec(*tools, home)
 	spec.Files = []*os.File{startedW}
 	cmd, err := sandbox.Command(bctx, spec)
 	if err != nil {
-		_ = startedW.Close()
 		return "", s.outage(fmt.Errorf("set up the build's sandbox: %w", err))
 	}
 	cmd.Env = s.Env(*tools, cmd.ListenAddrs()[0])

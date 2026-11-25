@@ -82,6 +82,20 @@ func TestRemoveTreeShapes(t *testing.T) {
 				mustWrite(t, filepath.Join(dir, "f"+strconv.Itoa(i)), "x", 0o600)
 			}
 		}},
+		// Several of readBatch below the root, each moved up in batches,
+		// and one of mode 0500, which a mover must open up first.
+		{"subdirectories with many entries each", func(t *testing.T, dir string) {
+			mustMkdir(t, dir, 0o700)
+			for _, sub := range []string{"wide", "locked"} {
+				mustMkdir(t, filepath.Join(dir, sub), 0o700)
+				for i := range 3*readBatch + 7 {
+					mustWrite(t, filepath.Join(dir, sub, "f"+strconv.Itoa(i)), "x", 0o600)
+				}
+			}
+			mustMkdir(t, filepath.Join(dir, "wide", "inner"), 0o700)
+			mustWrite(t, filepath.Join(dir, "wide", "inner", "f"), "x", 0o600)
+			mustMkdir(t, filepath.Join(dir, "locked"), 0o500)
+		}},
 		{"directories of mode 0 and 0500 holding files", func(t *testing.T, dir string) {
 			mustMkdir(t, dir, 0o700)
 			paths := []string{"a", "a/b", "a/b/c", "a/b/c/d", "e", "e/f"}
