@@ -659,3 +659,30 @@ func chmodTemp(t *testing.T, path string, mode os.FileMode) {
 		t.Fatal(err)
 	}
 }
+
+// TestSandboxCoverResolved checks that a cover given through a link, such
+// as a data directory reached by a link, is covered at its real path, where
+// builds' homes are made, and that one that does not exist yet is kept as
+// given.
+func TestSandboxCoverResolved(t *testing.T) {
+	t.Parallel()
+	target, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "data")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(target, "not-yet")
+	sb, err := NewSandbox(SandboxConfig{TempDir: filepath.Join(link, "tmp"), Cover: []string{link, missing}, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(target, "tmp"); sb.tempDir != want {
+		t.Errorf("tempDir = %q, want %q", sb.tempDir, want)
+	}
+	if got, want := sb.Spec(Tools{}, sb.tempDir).Cover, []string{target, missing}; !slices.Equal(got, want) {
+		t.Errorf("Cover = %q, want %q", got, want)
+	}
+}

@@ -77,7 +77,8 @@ type Sandbox struct {
 	problem atomic.Pointer[string]
 }
 
-// NewSandbox returns a Sandbox, after it makes cfg.TempDir. It looks for
+// NewSandbox returns a Sandbox, after it makes cfg.TempDir, and resolves
+// its links and those of each of cfg.Cover. It looks for
 // the tools only at the first build, and again at each build until it has
 // them all, so a server whose host is missing one still starts.
 func NewSandbox(cfg SandboxConfig) (*Sandbox, error) {
@@ -91,6 +92,21 @@ func NewSandbox(cfg SandboxConfig) (*Sandbox, error) {
 	if dir, err = filepath.Abs(dir); err != nil {
 		return nil, fmt.Errorf("resolve %s: %w", cfg.TempDir, err)
 	}
+	// Builds' homes lie under TempDir's real path, so each cover is named
+	// by its real path too, whatever the library does with a link. One
+	// that does not exist yet, which doctor may be given, is kept as it is.
+	covers := make([]string, 0, len(cfg.Cover))
+	for _, c := range cfg.Cover {
+		rp, err := filepath.EvalSymlinks(c)
+		if errors.Is(err, fs.ErrNotExist) {
+			rp, err = c, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s: %w", c, err)
+		}
+		covers = append(covers, rp)
+	}
+	cfg.Cover = covers
 	return &Sandbox{cfg: cfg, tempDir: dir}, nil
 }
 
