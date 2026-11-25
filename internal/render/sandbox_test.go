@@ -323,7 +323,7 @@ func TestBuildOutsideLinux(t *testing.T) {
 		t.Errorf("Problem() = %q after a bad job, which says nothing about the host", got)
 	}
 
-	if _, err := ProbeSandbox(); !errors.Is(err, errors.ErrUnsupported) {
+	if _, err := ProbeSandbox(t.Context()); !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("ProbeSandbox error = %v, want one matching errors.ErrUnsupported", err)
 	}
 }

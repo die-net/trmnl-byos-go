@@ -20,7 +20,7 @@ import (
 // It does not check the exit status, since the self-test also needs
 // trmnl.com, which a test host may not reach.
 func TestDoctorSandbox(t *testing.T) {
-	if _, err := render.ProbeSandbox(); err != nil {
+	if _, err := render.ProbeSandbox(t.Context()); err != nil {
 		t.Skipf("no sandbox can start on this host, so doctor's sandbox checks cannot run here: %v", err)
 	}
 	bin := t.TempDir()

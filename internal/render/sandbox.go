@@ -442,22 +442,96 @@ func (s *Sandbox) setup(ctx context.Context) (*Tools, error) {
 var errUnsupportedOS = fmt.Errorf("sandboxed builds run only on Linux so far; run a renderer apart and give serve its -render-url: %w", errors.ErrUnsupported)
 
 // ProbeSandbox tries this host's sandbox for real, as sandbox.Probe does,
-// and returns its report. An error means no build's sandbox can start, and
-// says why and how to fix it. Outside Linux it is errUnsupportedOS.
-func ProbeSandbox() (sandbox.Report, error) {
+// then starts a sandbox that runs this binary's SelfTestCommand with
+// nothing to test, which a build's first stage needs to do too, and
+// returns the probe's report. An error means no build's sandbox can start,
+// and says why and how to fix it. Outside Linux it is errUnsupportedOS.
+//
+// sandbox.Probe alone is not enough: it tries bubblewrap with a command
+// that needs nothing, and on Ubuntu 24.04 and later, whose own AppArmor
+// profile for bubblewrap lets it make a user namespace but takes every
+// capability from what it runs, that passes while every build's first
+// stage, which needs CAP_SYS_ADMIN in the namespace, is killed.
+func ProbeSandbox(ctx context.Context) (sandbox.Report, error) {
 	if runtime.GOOS != "linux" {
 		return sandbox.Report{}, errUnsupportedOS
 	}
 	rep, err := sandbox.Probe()
 	if err != nil {
 		for _, c := range rep.Checks {
-			if c.Status == sandbox.Fail {
+			if c.Status == sandbox.Fail && !strings.Contains(err.Error(), c.Detail) {
 				return rep, fmt.Errorf("%w: %s", err, c.Detail)
 			}
 		}
 		return rep, err
 	}
+	if err := trialStage(ctx); err != nil {
+		return rep, fmt.Errorf("bubblewrap starts, but a sandbox's first stage cannot run in it: %w%s", err, apparmorHint())
+	}
 	return rep, nil
+}
+
+// trialStageTimeout bounds the trial sandbox ProbeSandbox starts.
+const trialStageTimeout = 30 * time.Second
+
+// trialStage starts a sandbox whose command is SelfTestCommand with
+// nothing to test, and returns why it did not exit 0.
+func trialStage(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, trialStageTimeout)
+	defer cancel()
+	home, err := os.MkdirTemp("", "trmnl-byos-probe-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = removeTree(home) }()
+	if home, err = filepath.EvalSymlinks(home); err != nil {
+		return err
+	}
+	cmd, err := sandbox.Command(ctx, sandbox.Spec{Command: []string{sandbox.SelfPath, SelfTestCommand}, Home: home})
+	if err != nil {
+		return err
+	}
+	// The self-test reads its proxy from here, and has nothing to send.
+	cmd.Env = []string{"HTTPS_PROXY=http://127.0.0.1:1"}
+	var stderr capped
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if err := cmd.Wait(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
+}
+
+// apparmorHint says how to give this binary the AppArmor profile it needs
+// where Ubuntu restricts unprivileged user namespaces, in the form
+// sandbox.Probe prints it where bubblewrap has no profile of its own, or
+// "" where that restriction is off.
+func apparmorHint() string {
+	b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+	if err != nil || strings.TrimSpace(string(b)) != "1" {
+		return ""
+	}
+	self, err := os.Executable()
+	if err == nil {
+		self, err = filepath.EvalSymlinks(self)
+	}
+	if err != nil || strings.ContainsAny(self, "\"\\\n{}[]?*^,;@$ ") {
+		return ". kernel.apparmor_restrict_unprivileged_userns is 1: give this binary an AppArmor profile with a userns rule"
+	}
+	name := "trmnl-byos-" + strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
+			return r
+		}
+		return '-'
+	}, strings.Trim(self, "/"))
+	return fmt.Sprintf(". kernel.apparmor_restrict_unprivileged_userns is 1, and bubblewrap's own profile takes the capabilities a sandbox's first stage needs. "+
+		"Give this binary a profile of its own: save\n\nabi <abi/4.0>,\ninclude <tunables/global>\n\nprofile %[1]s %[2]s flags=(unconfined) {\n  userns,\n}\n\n"+
+		"as /etc/apparmor.d/%[1]s, then run: sudo apparmor_parser -r /etc/apparmor.d/%[1]s", name, self)
 }
 
 // CheckCgroup makes and removes a build's cgroup in Config.Cgroup, as a

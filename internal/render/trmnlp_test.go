@@ -46,7 +46,7 @@ func hostSandbox(t *testing.T) *Sandbox {
 	t.Helper()
 	// These tests run only when asked for, with the trmnlp tag, so a host
 	// that cannot run them fails them rather than skipping.
-	if _, err := ProbeSandbox(); err != nil {
+	if _, err := ProbeSandbox(t.Context()); err != nil {
 		t.Fatalf("no sandbox can start on this host; set TRMNL_RENDER_URL to test a renderer instead: %v", err)
 	}
 	dir, err := filepath.EvalSymlinks(t.TempDir())

@@ -95,10 +95,17 @@ test -f "$dir/slowdone" && sleep 1
 echo built
 `
 
+// probed is ProbeSandbox's answer, asked once for every test, since it
+// starts a sandbox of its own.
+var probed = sync.OnceValue(func() error {
+	_, err := ProbeSandbox(context.Background())
+	return err
+})
+
 // requireSandbox skips a test where no sandbox can start, saying why.
 func requireSandbox(t *testing.T) {
 	t.Helper()
-	if _, err := ProbeSandbox(); err != nil {
+	if err := probed(); err != nil {
 		t.Skipf("no sandbox can start on this host, so this test cannot run here: %v", err)
 	}
 }

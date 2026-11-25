@@ -128,7 +128,7 @@ func doctorShim(ctx context.Context, r *report, url string) {
 // build. It returns an error only when it could not check.
 func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 	r.line("pass", "render.path", "each build runs in a sandbox on this host, since there is no -render-url")
-	rep, err := render.ProbeSandbox()
+	rep, err := render.ProbeSandbox(ctx)
 	if rep.Backend != "" {
 		detail := rep.Backend
 		if rep.Container != "" {
