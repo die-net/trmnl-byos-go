@@ -68,6 +68,7 @@ Without `-render-url`, it checks the sandbox on this host:
 - That the `-data` directory exists. It warns if not, since `serve` makes it when it first starts.
 - The library's check, run in a sandbox with the build's real settings. It expects the data directory and the cache to be unreadable, and the server's listen address to be unreachable.
 - `build.memory` and `build.tasks`. With `-render-cgroup`, it makes and removes a child cgroup to prove it works.
+- `build.oom`. Without `-render-cgroup` on a host that runs systemd, it warns that a build that uses up memory can get a process killed in the server's unit, and systemd's default then stops the server (see [setup](setup.md#running-under-systemd)).
 - A self-test, run in a sandbox that is a build's in all but its command, with a real proxy. It sends `CONNECT` through the build's listener. 169.254.169.254:80, 127.0.0.1, `::1` and each of the host's interface addresses at the server's listen port must be refused, and `trmnl.com:443` must be allowed, since builds need the internet.
 
 A failure of any check sets the exit status, but for the library's `limits.memory` and `limits.tasks`. They look at the sandbox the check makes, which has neither a build's cgroup nor its watchdog, so they are listed without counting, and a `note` line says so. `build.memory` and `build.tasks` say what bounds a build.

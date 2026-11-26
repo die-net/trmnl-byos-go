@@ -114,13 +114,45 @@ Compose and a separate user account enforce more than the sandbox does:
 - Builds run as the server's own user. Namespaces and the seccomp filter keep them from the server's files and processes, but there is no user boundary. A flaw in the kernel, bubblewrap or the library goes straight to the server's data. Compose and a separate user add a different uid.
 - The secrets key lives only in the server's environment, which a build never gets, and the build's PID namespace hides the server's `/proc`. But a build sees the host's files read-only outside the paths the sandbox covers, so a file that holds the key must be readable only by root.
 - Writes to the build's home, on the data directory's disk, are bounded per file (256 MiB) but not in total, until the build ends and the home is removed.
-- Without `-render-cgroup`, memory is bounded only by a soft watchdog that reads the build's memory every 250 ms. A spike between reads is missed, and the tmpfs a build writes is not counted. Nothing bounds how many processes a build starts until its 2-minute timeout ends it. They count against the same limits as the server's, so a build that forks without end can stop the server, until the service manager starts it again. Use `-render-cgroup` where that matters.
+- Without `-render-cgroup`, memory is bounded only by a soft watchdog that reads the build's memory every 250 ms. A spike between reads is missed, and the tmpfs a build writes is not counted. Nothing bounds how many processes a build starts until its 2-minute timeout ends it. The build's processes run in the server's own cgroup, so a build that uses up memory can get a process, such as Firefox, killed by the kernel there. With systemd's default `OOMPolicy`, that stops the whole server (see [Running under systemd](#running-under-systemd)). A build that forks without end reaches the same limits. Use `-render-cgroup` where that matters.
 
 ### Limits with a cgroup
 
 With `-render-cgroup DIR`, each build gets a child cgroup with a hard memory limit of `-render-memory` and no swap, 1024 processes and a kill of the whole group on an out-of-memory. After the build the server kills whatever is left in it and removes it. A build the kernel kills for memory fails with "the build used over N MiB of memory".
 
-`DIR` must be a cgroup v2 directory the server may write to, as an absolute path. Under systemd, give the unit `Delegate=yes`, and `DelegateSubgroup=` too, such as `DelegateSubgroup=server`, so the server runs in a subgroup and not in the delegated cgroup itself. The kernel refuses to enable controllers in a cgroup that has processes. Then `-render-cgroup` is the unit's own cgroup path under `/sys/fs/cgroup`, such as `/sys/fs/cgroup/system.slice/trmnl-byos.service`. No unit file ships yet. `trmnl-byos doctor` makes and removes a child cgroup to show that it works.
+`DIR` must be a cgroup v2 directory the server may write to, as an absolute path. Under systemd, give the unit `Delegate=yes`, and `DelegateSubgroup=` too, such as `DelegateSubgroup=server`, so the server runs in a subgroup and not in the delegated cgroup itself. The kernel refuses to enable controllers in a cgroup that has processes. Then `-render-cgroup` is the unit's own cgroup path under `/sys/fs/cgroup`, such as `/sys/fs/cgroup/system.slice/trmnl-byos.service`. `trmnl-byos doctor` makes and removes a child cgroup to show that it works. The unit below has these lines.
+
+### Running under systemd
+
+No unit file ships. This one runs `serve` with sandboxed builds, as a user of its own:
+
+```ini
+[Unit]
+Description=trmnl-byos
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=trmnl-byos
+ExecStart=/usr/local/bin/trmnl-byos serve -data /var/lib/trmnl-byos
+Restart=always
+OOMPolicy=continue
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`OOMPolicy=continue` matters. By default systemd stops the whole unit when the kernel kills any process in it for memory, as it may a build's Firefox, which would take the server down with it. With `continue`, the server keeps running and that build fails. Without `-render-cgroup`, `trmnl-byos doctor` warns about this as `build.oom`.
+
+The better setup gives each build a hard memory limit of its own, so an out-of-memory kill stays inside that build's cgroup and the server and other builds are not touched. Add these lines to `[Service]`, and replace its `ExecStart` with this one, which adds the flag:
+
+```ini
+Delegate=yes
+DelegateSubgroup=server
+ExecStart=/usr/local/bin/trmnl-byos serve -data /var/lib/trmnl-byos -render-cgroup /sys/fs/cgroup/system.slice/trmnl-byos.service
+```
+
+If the server does stop during a build, whatever the cause, the build is recorded as a failure when the server starts again, with the error "the server stopped during this build, which the build may have caused". It waits out its retry backoff and does not run again at once.
 
 ## Server only
 

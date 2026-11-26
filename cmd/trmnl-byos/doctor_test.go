@@ -266,3 +266,36 @@ func TestSandboxedCommandRefusesOutsideSandbox(t *testing.T) {
 		}
 	}
 }
+
+// TestDoctorOOM checks that the systemd memory warning appears only when
+// there is no -render-cgroup and the host runs systemd.
+func TestDoctorOOM(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		cgroup  string
+		systemd bool
+		want    bool
+	}{
+		{"systemd, no cgroup", "", true, true},
+		{"systemd, cgroup", "/sys/fs/cgroup/system.slice/trmnl-byos.service", true, false},
+		{"no systemd, no cgroup", "", false, false},
+		{"no systemd, cgroup", "/sys/fs/cgroup/x", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			r := &report{out: &out}
+			doctorOOM(r, &serveFlags{renderCgroup: tc.cgroup}, tc.systemd)
+			if got := strings.HasPrefix(out.String(), "warn  build.oom: "); got != tc.want {
+				t.Errorf("output %q: warns = %v, want %v", out.String(), got, tc.want)
+			}
+			if tc.want && !strings.Contains(out.String(), "OOMPolicy=continue") {
+				t.Errorf("warning does not name the fix: %q", out.String())
+			}
+			if r.failures != 0 {
+				t.Errorf("failures = %d: a warn must not count", r.failures)
+			}
+		})
+	}
+}

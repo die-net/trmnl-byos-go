@@ -229,6 +229,7 @@ func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 		r.write("note", "sandbox.check", "limits.memory and limits.tasks look at the sandbox Check makes, which has neither a build's cgroup nor its watchdog, so they do not change doctor's exit status. build.memory and build.tasks say what bounds a build")
 	}
 	doctorLimits(r, f, sb)
+	doctorOOM(r, f, hostRunsSystemd())
 	results, err = sb.SelfTest(ctx, refusedTargets(f.listen), []string{"trmnl.com:443"})
 	for _, res := range results {
 		r.result(res, true)
@@ -258,6 +259,25 @@ func doctorLimits(r *report, f *serveFlags, sb *render.Sandbox) {
 	}
 	r.line("pass", "build.memory", fmt.Sprintf("each build runs in a cgroup of its own in %s, with memory.max %d MiB and no swap", f.renderCgroup, f.renderMemory))
 	r.line("pass", "build.tasks", "each build's cgroup has pids.max "+strconv.Itoa(render.MaxTasks))
+}
+
+// hostRunsSystemd says whether the host booted with systemd, as sd_booted
+// does: /run/systemd/system is a directory.
+func hostRunsSystemd() bool {
+	fi, err := os.Stat("/run/systemd/system")
+	return err == nil && fi.IsDir()
+}
+
+// doctorOOM warns that, without -render-cgroup, a build that uses up memory
+// can get a process killed inside serve's own cgroup, which systemd's
+// default OOMPolicy answers by stopping serve. doctor usually runs from a
+// shell, not in serve's unit, so it cannot read the unit's setting and
+// warns whenever the host runs systemd.
+func doctorOOM(r *report, f *serveFlags, systemd bool) {
+	if f.renderCgroup != "" || !systemd {
+		return
+	}
+	r.line("warn", "build.oom", "if serve runs as a systemd unit, a build that uses up memory can get a process killed in the unit, and systemd's default OOMPolicy then stops serve. Set OOMPolicy=continue in the unit, or better give it Delegate=yes and DelegateSubgroup= and pass -render-cgroup, which bounds each build's memory on its own")
 }
 
 // expect is what a build's sandbox must keep from it, beyond the library's
