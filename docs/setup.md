@@ -91,7 +91,7 @@ This is the simplest way to run recipes. `serve` with no `-render-url` runs each
 
 At startup `serve` logs `render: each build runs in a sandbox` with the backend, or a warning that builds cannot start until the host is fixed, which says to run `trmnl-byos doctor`.
 
-**Ubuntu 24.04 and later.** They restrict unprivileged user namespaces with AppArmor, so bubblewrap fails for the `trmnl-byos` binary until it has an AppArmor profile with a `userns` rule. `trmnl-byos doctor` prints the profile for the binary's own path, and the commands that load it.
+**Ubuntu 24.04 and later.** They restrict unprivileged user namespaces with AppArmor, and Ubuntu 26.04's own profile for bubblewrap takes the capabilities a sandbox needs from what bubblewrap starts, so builds cannot start until the `trmnl-byos` binary has an AppArmor profile of its own. `trmnl-byos doctor` prints the profile for the binary's own path, and the commands that load it. The profile lets the binary, and every program it starts, make user namespaces and use capabilities in them, and keeps them out of stricter profiles of their own. It grants nothing to any other program.
 
 **Where the tools can be.** `serve` looks for each tool on its own `PATH`, at its first build, and again at each build until it finds all the required ones, so installing a tool later needs no restart. A tool under `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt` or `/nix` is already visible to a build. For one anywhere else, the sandbox shows it read-only:
 

@@ -101,7 +101,7 @@ echo built
 // probed is ProbeSandbox's answer, asked once for every test, since it
 // starts a sandbox of its own.
 var probed = sync.OnceValue(func() error {
-	_, err := ProbeSandbox(context.Background())
+	_, err := ProbeSandbox()
 	return err
 })
 
@@ -569,43 +569,11 @@ func TestSandboxStageDies(t *testing.T) {
 	}
 }
 
-// TestAppArmorProfile checks the profile the hint prints for a binary, and
-// refuses a path the profile would need escaped. With
-// TRMNL_TEST_APPARMOR_DIR set, it also writes the profile for each binary in
-// TRMNL_TEST_APPARMOR_FOR, a list of paths, into that directory under the
-// profile's name, which CI's sandbox job loads before it runs the test
-// binaries, so CI proves the printed profile works.
-func TestAppArmorProfile(t *testing.T) {
+// TestWriteProbeProfile writes the AppArmor profile sandbox.Probe prints
+// for this test binary into TRMNL_TEST_APPARMOR_DIR, for CI's sandbox job to
+// load before it runs the binary, so CI uses the profile an operator is told
+// to load. It does nothing without that variable.
+func TestWriteProbeProfile(t *testing.T) {
 	t.Parallel()
-	name, profile, err := apparmorProfile("/usr/local/bin/trmnl-byos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile trmnl-byos-usr-local-bin-trmnl-byos /usr/local/bin/trmnl-byos flags=(unconfined) {\n  userns,\n}\n"
-	if name != "trmnl-byos-usr-local-bin-trmnl-byos" || profile != want {
-		t.Errorf("apparmorProfile = %q, %q, want %q", name, profile, want)
-	}
-	for _, bad := range []string{"relative/trmnl-byos", "/opt/my bin/trmnl-byos", "/opt/x{y}/trmnl-byos", "/opt/x\ny"} {
-		if _, _, err := apparmorProfile(bad); err == nil {
-			t.Errorf("apparmorProfile(%q) made a profile", bad)
-		}
-	}
-	dir := os.Getenv("TRMNL_TEST_APPARMOR_DIR")
-	if dir == "" {
-		return
-	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	for _, bin := range filepath.SplitList(os.Getenv("TRMNL_TEST_APPARMOR_FOR")) {
-		name, profile, err := apparmorProfile(bin)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := root.WriteFile(name, []byte(profile), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	sandboxtest.WriteProbeProfile(t)
 }

@@ -21,7 +21,7 @@ import (
 // It does not check the exit status, since the self-test also needs
 // trmnl.com, which a test host may not reach.
 func TestDoctorSandbox(t *testing.T) {
-	if _, err := render.ProbeSandbox(t.Context()); err != nil {
+	if _, err := render.ProbeSandbox(); err != nil {
 		sandboxtest.Unavailable(t, err)
 	}
 	bin := t.TempDir()
@@ -65,4 +65,11 @@ func TestDoctorSandbox(t *testing.T) {
 	if entries, err := os.ReadDir(data); err != nil || len(entries) != 0 {
 		t.Errorf("doctor left %v in the data directory (%v)", entries, err)
 	}
+}
+
+// TestWriteProbeProfile writes the AppArmor profile sandbox.Probe prints
+// for this test binary, as render's test of the same name does for its own.
+func TestWriteProbeProfile(t *testing.T) {
+	t.Parallel()
+	sandboxtest.WriteProbeProfile(t)
 }

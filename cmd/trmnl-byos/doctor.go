@@ -29,10 +29,10 @@ type report struct {
 	// failures counts the failed checks that builds need, which make
 	// doctor exit non-zero.
 	failures int
-	// generic counts the library's own checks that failed, which doctor
-	// lists without counting (see doctorSandbox).
-	generic int
-	err     error
+	// uncounted counts the failed checks that doctor lists without counting
+	// (see checkLooksElsewhere).
+	uncounted int
+	err       error
 }
 
 // line writes one check's outcome: pass, fail, warn (a gap the operator may
@@ -64,7 +64,7 @@ func (r *report) result(res sandbox.Result, counted bool) {
 	case counted:
 		r.line(status, res.Name, res.Detail)
 	case status == "fail":
-		r.generic++
+		r.uncounted++
 		r.write(status, res.Name, res.Detail)
 	default:
 		r.write(status, res.Name, res.Detail)
@@ -128,7 +128,7 @@ func doctorShim(ctx context.Context, r *report, url string) {
 // build. It returns an error only when it could not check.
 func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 	r.line("pass", "render.path", "each build runs in a sandbox on this host, since there is no -render-url")
-	rep, err := render.ProbeSandbox(ctx)
+	rep, err := render.ProbeSandbox()
 	if rep.Backend != "" {
 		detail := rep.Backend
 		if rep.Container != "" {
@@ -218,19 +218,15 @@ func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 	if err != nil {
 		return err
 	}
-	// The library's own checks are listed, and only the ones that check
-	// what the server claims count: some of the rest fail in every sandbox
-	// v0.1.0 makes, such as proc.visible, which counts the sandbox's own
-	// pid 1 as a process outside it, and covers:/var, which counts the
-	// sandbox's own /var/tmp. Its limits checks look at the sandbox Check
-	// makes, which has neither the build's cgroup nor its watchdog, so
-	// the build's limits have lines of their own below.
 	results, err := sandbox.Check(ctx, &spec, want)
 	for _, res := range results {
-		r.result(res, strings.HasPrefix(res.Name, "expect."))
+		r.result(res, !checkLooksElsewhere[res.Name])
 	}
 	if err != nil {
 		r.line("fail", "sandbox.check", err.Error())
+	}
+	if r.uncounted > 0 {
+		r.write("note", "sandbox.check", "limits.memory and limits.tasks look at the sandbox Check makes, which has neither a build's cgroup nor its watchdog, so they do not change doctor's exit status. build.memory and build.tasks say what bounds a build")
 	}
 	doctorLimits(r, f, sb)
 	results, err = sb.SelfTest(ctx, refusedTargets(f.listen), []string{"trmnl.com:443"})
@@ -240,11 +236,14 @@ func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 	if err != nil {
 		r.line("fail", "proxy.selftest", err.Error())
 	}
-	if r.generic > 0 {
-		r.write("note", "sandbox.check", fmt.Sprintf("%d of the sandbox library's own checks failed. They are listed above, and do not change doctor's exit status, since some fail in every sandbox of this version of the library", r.generic))
-	}
 	return nil
 }
+
+// checkLooksElsewhere are the library's checks that doctor lists without
+// counting, since under a Spec they look at the sandbox Check makes, which
+// has neither a build's cgroup nor its memory watchdog, so they fail where
+// builds are bounded. doctorLimits reports what bounds a build instead.
+var checkLooksElsewhere = map[string]bool{"limits.memory": true, "limits.tasks": true}
 
 // doctorLimits says what bounds a build's memory and tasks.
 func doctorLimits(r *report, f *serveFlags, sb *render.Sandbox) {

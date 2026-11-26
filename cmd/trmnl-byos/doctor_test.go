@@ -98,8 +98,8 @@ func TestReport(t *testing.T) {
 		status  sandbox.Status
 		counted bool
 		want    string
-		// failures and generic are the counts after the one result.
-		failures, generic int
+		// failures and uncounted are the counts after the one result.
+		failures, uncounted int
 	}{
 		{"pass", sandbox.Pass, true, "pass  x.y: why\n", 0, 0},
 		{"counted fail", sandbox.Fail, true, "fail  x.y: why\n", 1, 0},
@@ -115,8 +115,8 @@ func TestReport(t *testing.T) {
 			if out.String() != tc.want {
 				t.Errorf("wrote %q, want %q", out.String(), tc.want)
 			}
-			if r.failures != tc.failures || r.generic != tc.generic {
-				t.Errorf("failures %d, generic %d; want %d, %d", r.failures, r.generic, tc.failures, tc.generic)
+			if r.failures != tc.failures || r.uncounted != tc.uncounted {
+				t.Errorf("failures %d, uncounted %d; want %d, %d", r.failures, r.uncounted, tc.failures, tc.uncounted)
 			}
 			if r.err != nil {
 				t.Errorf("err = %v", r.err)

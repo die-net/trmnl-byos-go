@@ -508,17 +508,12 @@ func (s *Sandbox) setup(ctx context.Context) (*Tools, error) {
 var errUnsupportedOS = fmt.Errorf("sandboxed builds run only on Linux so far; run a renderer apart and give serve its -render-url: %w", errors.ErrUnsupported)
 
 // ProbeSandbox tries this host's sandbox for real, as sandbox.Probe does,
-// then starts a sandbox that runs this binary's SelfTestCommand with
-// nothing to test, which a build's first stage needs to do too, and
-// returns the probe's report. An error means no build's sandbox can start,
-// and says why and how to fix it. Outside Linux it is errUnsupportedOS.
-//
-// sandbox.Probe alone is not enough: it tries bubblewrap with a command
-// that needs nothing, and on Ubuntu 24.04 and later, whose own AppArmor
-// profile for bubblewrap lets it make a user namespace but takes every
-// capability from what it runs, that passes while every build's first
-// stage, which needs CAP_SYS_ADMIN in the namespace, is killed.
-func ProbeSandbox(ctx context.Context) (sandbox.Report, error) {
+// starting a trial sandbox whose first stage runs this binary again, so
+// the binary must call sandbox.Stage first in main. It returns the probe's
+// report. An error means no build's sandbox can start, and says why and
+// how to fix it, such as the AppArmor profile this binary needs on Ubuntu.
+// Outside Linux it is errUnsupportedOS.
+func ProbeSandbox() (sandbox.Report, error) {
 	if runtime.GOOS != "linux" {
 		return sandbox.Report{}, errUnsupportedOS
 	}
@@ -531,89 +526,7 @@ func ProbeSandbox(ctx context.Context) (sandbox.Report, error) {
 		}
 		return rep, err
 	}
-	if err := trialStage(ctx); err != nil {
-		return rep, fmt.Errorf("bubblewrap starts, but a sandbox's first stage cannot run in it: %w%s", err, apparmorHint())
-	}
 	return rep, nil
-}
-
-// trialStageTimeout bounds the trial sandbox ProbeSandbox starts.
-const trialStageTimeout = 30 * time.Second
-
-// trialStage starts a sandbox whose command is SelfTestCommand with
-// nothing to test, and returns why it did not exit 0.
-func trialStage(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, trialStageTimeout)
-	defer cancel()
-	home, err := os.MkdirTemp("", "trmnl-byos-probe-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = removeTree(home) }()
-	if home, err = filepath.EvalSymlinks(home); err != nil {
-		return err
-	}
-	cmd, err := sandbox.Command(ctx, sandbox.Spec{Command: []string{sandbox.SelfPath, SelfTestCommand}, Home: home})
-	if err != nil {
-		return err
-	}
-	// The self-test reads its proxy from here, and has nothing to send.
-	cmd.Env = []string{"HTTPS_PROXY=http://127.0.0.1:1"}
-	var stderr capped
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	if err := cmd.Wait(); err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("%w: %s", err, msg)
-		}
-		return err
-	}
-	return nil
-}
-
-// apparmorHint says how to give this binary the AppArmor profile it needs
-// where Ubuntu restricts unprivileged user namespaces, in the form
-// sandbox.Probe prints it where bubblewrap has no profile of its own, or
-// "" where that restriction is off.
-func apparmorHint() string {
-	b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-	if err != nil || strings.TrimSpace(string(b)) != "1" {
-		return ""
-	}
-	self, err := os.Executable()
-	if err == nil {
-		self, err = filepath.EvalSymlinks(self)
-	}
-	var name, profile string
-	if err == nil {
-		name, profile, err = apparmorProfile(self)
-	}
-	if err != nil {
-		return ". kernel.apparmor_restrict_unprivileged_userns is 1: give this binary an AppArmor profile with a userns rule"
-	}
-	return fmt.Sprintf(". kernel.apparmor_restrict_unprivileged_userns is 1, so this binary needs an AppArmor profile of its own that lets it make user namespaces. "+
-		"Save\n\n%[2]s\nas /etc/apparmor.d/%[1]s, then run: sudo apparmor_parser -r /etc/apparmor.d/%[1]s", name, profile)
-}
-
-// apparmorProfile returns the AppArmor profile that lets the binary at self,
-// and bubblewrap when it runs it, make user namespaces, and the name to
-// save it under, as sandbox.Probe prints it where bubblewrap fails at once.
-// It is flags=(unconfined), so it confines nothing else, and no other
-// program gets user namespaces. A path a profile would need escaped is
-// refused.
-func apparmorProfile(self string) (name, profile string, err error) {
-	if !filepath.IsAbs(self) || strings.ContainsAny(self, "\"\\\n{}[]?*^,;@$ ") {
-		return "", "", fmt.Errorf("the path %q is relative, or has a character a profile would need escaped", self)
-	}
-	name = "trmnl-byos-" + strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
-			return r
-		}
-		return '-'
-	}, strings.Trim(self, "/"))
-	return name, fmt.Sprintf("abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile %s %s flags=(unconfined) {\n  userns,\n}\n", name, self), nil
 }
 
 // CheckCgroup makes and removes a build's cgroup in Config.Cgroup, as a

@@ -1,5 +1,5 @@
-github.com/die-net/sandbox v0.1.0 h1:qWnqnzQhQKcEZO7jkGc0FA9qOPqfObs0kIJLlbv8ul4=
-github.com/die-net/sandbox v0.1.0/go.mod h1:fXztuT4nWpu9mDxhYbzVNtyhbzAk66vEncv3qxL/UFA=
+github.com/die-net/sandbox v0.1.1-0.20261126225231-9e03f0fb21d2 h1:6fMb/KcX/UiKz7RELn/Vg9r4AL1enQl8ws+R93BlxHc=
+github.com/die-net/sandbox v0.1.1-0.20261126225231-9e03f0fb21d2/go.mod h1:fXztuT4nWpu9mDxhYbzVNtyhbzAk66vEncv3qxL/UFA=
 github.com/dustin/go-humanize v1.1.0 h1:dbKTrvD0klcbBV/h4AWJdMuZogJACoMlvWIWZ5b2xWg=
 github.com/dustin/go-humanize v1.1.0/go.mod h1:hc1CvRkJMsgxqjmjMQF3QNRAZBwY8AXBAzKYoSX9sFI=
 github.com/google/pprof v0.0.0-20261016150608-1facf8f91b50 h1:PlNWJRxu5APSV0pWqfIsZ0qt9OOGHSWfZQ4zvx+WgWs=

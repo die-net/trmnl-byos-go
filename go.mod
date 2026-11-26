@@ -3,7 +3,7 @@ module github.com/die-net/trmnl-byos-go
 go 1.26.0
 
 require (
-	github.com/die-net/sandbox v0.1.0
+	github.com/die-net/sandbox v0.1.1-0.20261126225231-9e03f0fb21d2
 	github.com/mattn/go-sqlite3 v1.14.53
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/crypto v0.59.0

@@ -70,7 +70,7 @@ Without `-render-url`, it checks the sandbox on this host:
 - `build.memory` and `build.tasks`. With `-render-cgroup`, it makes and removes a child cgroup to prove it works.
 - A self-test, run in a sandbox that is a build's in all but its command, with a real proxy. It sends `CONNECT` through the build's listener. 169.254.169.254:80, 127.0.0.1, `::1` and each of the host's interface addresses at the server's listen port must be refused, and `trmnl.com:443` must be allowed, since builds need the internet.
 
-Failures of the probe, the required tools, the expectations of the library's check, the cgroup and the proxy self-test set the exit status. The library's other checks are listed and do not count, and a closing `note` line says so. In version 0.1.0 some of them fail in every sandbox: they count the sandbox's own process 1 and its own `/var/tmp`, fail on the primary group, or look at the check's own sandbox, which has neither the build's cgroup nor its watchdog.
+A failure of any check sets the exit status, but for the library's `limits.memory` and `limits.tasks`. They look at the sandbox the check makes, which has neither a build's cgroup nor its watchdog, so they are listed without counting, and a `note` line says so. `build.memory` and `build.tasks` say what bounds a build.
 
 ## The web UI
 

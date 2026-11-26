@@ -254,7 +254,7 @@ func runServer(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	renderer, problem, err := f.renderer(ctx, assets)
+	renderer, problem, err := f.renderer(assets)
 	if err != nil {
 		return err
 	}
@@ -375,7 +375,7 @@ const sandboxBuildTimeout = 2 * time.Minute
 // sandbox for each build on this host, whose proxy serves from assets. It
 // also returns, for a sandbox, what says why builds cannot start, and nil
 // for the shim, whose outages show in the log.
-func (f *serveFlags) renderer(ctx context.Context, assets *cache.Cache) (scheduler.Renderer, func() string, error) {
+func (f *serveFlags) renderer(assets *cache.Cache) (scheduler.Renderer, func() string, error) {
 	if f.renderURL != "" {
 		if f.proxyListen == "" {
 			// Not a fallback: builds that fetch data or assets fail until a
@@ -396,7 +396,7 @@ func (f *serveFlags) renderer(ctx context.Context, assets *cache.Cache) (schedul
 	if err := sb.RemoveLeftovers(); err != nil {
 		slog.Warn("render: remove what builds of an earlier run left", "err", err)
 	}
-	if rep, err := render.ProbeSandbox(ctx); err != nil {
+	if rep, err := render.ProbeSandbox(); err != nil {
 		slog.Warn("render: builds cannot start in a sandbox on this host until it is fixed; run trmnl-byos doctor", "err", err)
 	} else {
 		slog.Info("render: each build runs in a sandbox", "backend", rep.Backend, "container", rep.Container)
