@@ -150,10 +150,11 @@ func FindTools(ctx context.Context, pathEnv string) Tools {
 		gems, err := gemPath(ctx, ruby)
 		t.GemErr = err
 		home, _ := os.UserHomeDir()
+		homes := hostHomes(home)
 		for _, dir := range gems {
 			// One that is not shown may hold trmnlp's gems, so it is
 			// reported.
-			if !gemShown(dir, home) {
+			if !homes.gemShown(dir) {
 				t.HiddenGems = append(t.HiddenGems, dir)
 				continue
 			}
@@ -232,17 +233,67 @@ func readEntry(rp string) string {
 	return rp
 }
 
-// holdsHome reports whether dir is a person's home or holds one: /, /home,
-// /root, a directory right below /home, or home, the server's own home, or a
-// directory above it. A gem path entry like that is not shown to builds.
-func holdsHome(dir, home string) bool {
-	switch {
-	case dir == "/" || dir == "/home" || dir == "/root" || filepath.Dir(dir) == "/home":
-		return true
-	case home != "" && filepath.IsAbs(home):
-		return within(home, dir)
+// homeView is where people's homes are on this host, by their names and by
+// their real paths, since a gem directory is compared by its real path.
+// On Fedora Atomic, for one, /home is a link to /var/home.
+type homeView struct {
+	// parents hold homes, one in each directory right below them: /home.
+	parents []string
+	// homes are homes themselves: /root, and the server's own.
+	homes []string
+}
+
+// hostHomes returns this host's homeView, with home the server's own home,
+// "" if it has none.
+func hostHomes(home string) homeView {
+	homes := []string{"/root"}
+	if filepath.IsAbs(home) {
+		homes = append(homes, home)
 	}
-	return false
+	return newHomeView([]string{"/home"}, homes)
+}
+
+// newHomeView returns a homeView of parents and homes, each by its name and
+// its real path.
+func newHomeView(parents, homes []string) homeView {
+	both := func(paths []string) []string {
+		var out []string
+		for _, p := range paths {
+			out = append(out, p)
+			if rp, err := filepath.EvalSymlinks(p); err == nil {
+				out = append(out, rp)
+			}
+		}
+		return compact(out)
+	}
+	return homeView{parents: both(parents), homes: both(homes)}
+}
+
+// holdsHome reports whether dir is a person's home or holds one: /, a parent
+// of homes, a directory right below one, or one of the homes, or a
+// directory above one. A gem path entry like that is never shown to
+// builds.
+func (v homeView) holdsHome(dir string) bool {
+	if dir == "/" {
+		return true
+	}
+	for _, p := range v.parents {
+		if within(p, dir) || filepath.Dir(dir) == p {
+			return true
+		}
+	}
+	return slices.ContainsFunc(v.homes, func(h string) bool { return within(h, dir) })
+}
+
+// inHome reports whether dir lies inside a person's home: below a parent of
+// homes, or inside one of the homes.
+func (v homeView) inHome(dir string) bool {
+	for _, p := range v.parents {
+		if strings.HasPrefix(dir, strings.TrimSuffix(p, "/")+"/") {
+			return true
+		}
+	}
+	return slices.ContainsFunc(v.homes, func(h string) bool { return within(dir, h) })
 }
 
 // gemShown reports whether a gem directory may be shown to builds. One that
@@ -252,21 +303,15 @@ func holdsHome(dir, home string) bool {
 // key in credentials, and a GEM_HOME such as ~/.local holds much more.
 // Anywhere else, any is shown, such as /var/lib/gems/3.3.0 or
 // /usr/local/bundle.
-func gemShown(dir, home string) bool {
-	if holdsHome(dir, home) {
+func (v homeView) gemShown(dir string) bool {
+	if v.holdsHome(dir) {
 		return false
 	}
-	if !inHome(dir, home) {
+	if !v.inHome(dir) {
 		return true
 	}
 	base := filepath.Base(dir)
 	return versionLike(base) && strings.Contains(base, ".")
-}
-
-// inHome reports whether dir lies inside a person's home: under /home or
-// /root, or inside home, the server's own.
-func inHome(dir, home string) bool {
-	return strings.HasPrefix(dir, "/home/") || within(dir, "/root") || home != "" && filepath.IsAbs(home) && within(dir, home)
 }
 
 // linuxbrew is Homebrew's prefix on Linux. Its var directory, which

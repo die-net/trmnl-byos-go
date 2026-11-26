@@ -353,7 +353,9 @@ func TestFindToolsGemDirs(t *testing.T) {
 // holds it, but not a directory inside a home.
 func TestHoldsHome(t *testing.T) {
 	t.Parallel()
-	const home = "/srv/trmnl"
+	// As on Fedora Atomic, where /home is a link to /var/home, so a gem
+	// directory's real path is under /var/home.
+	view := homeView{parents: []string{"/home", "/var/home"}, homes: []string{"/root", "/srv/trmnl"}}
 	for _, tc := range []struct {
 		dir  string
 		want bool
@@ -362,6 +364,9 @@ func TestHoldsHome(t *testing.T) {
 		{"/home", true},
 		{"/root", true},
 		{"/home/pat", true},
+		{"/var/home", true},
+		{"/var/home/pat", true},
+		{"/var", true},
 		{"/srv", true},
 		{"/srv/trmnl", true},
 		{"/home/pat/gems", false},
@@ -370,12 +375,15 @@ func TestHoldsHome(t *testing.T) {
 		{"/var/lib/gems/3.3.0", false},
 		{"/usr/local/bundle", false},
 	} {
-		if got := holdsHome(tc.dir, home); got != tc.want {
-			t.Errorf("holdsHome(%q, %q) = %v, want %v", tc.dir, home, got, tc.want)
+		if got := view.holdsHome(tc.dir); got != tc.want {
+			t.Errorf("holdsHome(%q) = %v, want %v", tc.dir, got, tc.want)
 		}
 	}
-	if holdsHome("/srv", "") || holdsHome("/srv", "relative") {
-		t.Error("holdsHome counted a home that is unknown or relative")
+	if v := hostHomes(""); v.holdsHome("/srv") {
+		t.Error("holdsHome counted a home that is unknown")
+	}
+	if v := hostHomes("relative"); v.holdsHome("/srv") {
+		t.Error("holdsHome counted a home that is relative")
 	}
 }
 
@@ -479,12 +487,17 @@ func TestFindToolsHiddenGems(t *testing.T) {
 // one, never is. Anywhere else, any directory is.
 func TestGemShown(t *testing.T) {
 	t.Parallel()
-	const home = "/srv/trmnl"
+	// As on Fedora Atomic, where /home is a link to /var/home, so a gem
+	// directory's real path is under /var/home.
+	view := homeView{parents: []string{"/home", "/var/home"}, homes: []string{"/root", "/srv/trmnl"}}
 	for _, tc := range []struct {
 		dir  string
 		want bool
 	}{
 		{"/home/pat/.gem", false},
+		{"/var/home/pat/.gem", false},
+		{"/var/home/pat/.local", false},
+		{"/var/home/pat/.gem/ruby/3.4.0", true},
 		{"/home/pat/.local", false},
 		{"/home/pat/gems", false},
 		{"/root/.gem", false},
@@ -500,8 +513,36 @@ func TestGemShown(t *testing.T) {
 		{"/usr/local/bundle", true},
 		{"/opt/gems", true},
 	} {
-		if got := gemShown(tc.dir, home); got != tc.want {
-			t.Errorf("gemShown(%q, %q) = %v, want %v", tc.dir, home, got, tc.want)
+		if got := view.gemShown(tc.dir); got != tc.want {
+			t.Errorf("gemShown(%q) = %v, want %v", tc.dir, got, tc.want)
+		}
+	}
+}
+
+// TestNewHomeViewResolvesLinks checks that a home reached through a link is
+// known by its real path too, since a gem directory is compared by its real
+// path, and a home missed that way would be shown whole.
+func TestNewHomeViewResolvesLinks(t *testing.T) {
+	t.Parallel()
+	target, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"homes/pat/.gem", "me/.local"} {
+		if err := os.MkdirAll(filepath.Join(target, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := t.TempDir()
+	for _, l := range []string{"homes", "me"} {
+		if err := os.Symlink(filepath.Join(target, l), filepath.Join(links, l)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	view := newHomeView([]string{filepath.Join(links, "homes")}, []string{filepath.Join(links, "me")})
+	for _, dir := range []string{filepath.Join(target, "homes", "pat", ".gem"), filepath.Join(target, "me", ".local"), filepath.Join(target, "homes", "pat")} {
+		if view.gemShown(dir) {
+			t.Errorf("gemShown(%q) = true, though it is in a home reached through a link", dir)
 		}
 	}
 }
