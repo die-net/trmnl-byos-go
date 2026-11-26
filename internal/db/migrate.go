@@ -39,6 +39,7 @@ var steps = []step{
 	{"add per-device button command and double-click function, and the function last sent", addButtons},
 	{"record the settings a render's images were made from, and its latest counted failure", addRenderedSettingsAt},
 	{"add recipe revisions and source hashes, for replacing a recipe", addRecipeRevision},
+	{"record each build while it runs, so a server that stops during one counts it", addRenderAttempt},
 }
 
 // migrate brings the database to the latest version in one transaction, so a
@@ -719,6 +720,35 @@ ALTER TABLE recipe ADD COLUMN replaced_at INTEGER NOT NULL DEFAULT 0`
 func addRecipeRevision(ctx context.Context, tx DBTX) error {
 	if _, err := tx.ExecContext(ctx, addRecipeRevisionSQL); err != nil {
 		return fmt.Errorf("add recipe revisions: %w", err)
+	}
+	return nil
+}
+
+// addRenderAttemptSQL is step 15: the render_attempt table and its
+// trigger, as in schema.sql. No build is running while the server
+// migrates, so it starts empty.
+const addRenderAttemptSQL = `CREATE TABLE render_attempt (
+  instance_id INTEGER NOT NULL REFERENCES plugin_instance (id) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  palette TEXT NOT NULL,
+  time_zone TEXT NOT NULL,
+  locale TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  data_at INTEGER NOT NULL DEFAULT 0,
+  settings_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (instance_id, device_id, width, height, palette, time_zone, locale)
+);
+CREATE TRIGGER render_attempt_device_deleted AFTER DELETE ON device
+BEGIN
+  DELETE FROM render_attempt WHERE device_id = OLD.id;
+END`
+
+// addRenderAttempt is step 15: see addRenderAttemptSQL.
+func addRenderAttempt(ctx context.Context, tx DBTX) error {
+	if _, err := tx.ExecContext(ctx, addRenderAttemptSQL); err != nil {
+		return fmt.Errorf("add render attempts: %w", err)
 	}
 	return nil
 }

@@ -161,8 +161,14 @@ func New(cfg Config) *Scheduler {
 // Config.Wake. A pass that could not reach the renderer waits
 // unavailableWait, doubling while the renderer stays unreachable, up to
 // checkEvery, without a wake cutting it short, so an outage costs one
-// target's build at a time, not every due target's.
+// target's build at a time, not every due target's. Before its first scan
+// it records each build the server stopped during (see RecoverAttempts).
 func (s *Scheduler) Run(ctx context.Context) {
+	if n, err := s.RecoverAttempts(ctx); err != nil && ctx.Err() == nil {
+		slog.Error("scheduler: record builds the server stopped during", "err", err)
+	} else if n > 0 {
+		slog.Warn("scheduler: the server stopped during builds, recorded as failures", "builds", n)
+	}
 	unavailable := 0
 	for {
 		more, err := s.RenderNext(ctx)
@@ -615,6 +621,25 @@ type stored struct {
 // to write otherwise.
 func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorded bool, err error) {
 	start := s.now()
+	// A server that stops during the build, as when a build's process is
+	// killed for memory and systemd stops the whole unit, records nothing
+	// of it. This row survives that, and RecoverAttempts makes it a counted
+	// failure at the next start, so the build waits out its backoff rather
+	// than running again at once. It goes once the outcome is saved, or
+	// the build ended with nothing to record, a cancel included.
+	key := attemptKey(t)
+	if err := s.cfg.DB.Write.StartRenderAttempt(ctx, db.StartRenderAttemptParams{
+		InstanceID: key.InstanceID, DeviceID: key.DeviceID, Width: key.Width, Height: key.Height,
+		Palette: key.Palette, TimeZone: key.TimeZone, Locale: key.Locale,
+		StartedAt: start.Unix(), DataAt: seen.data, SettingsAt: seen.settings,
+	}); err != nil {
+		return false, fmt.Errorf("record the build's start: %w", err)
+	}
+	defer func() {
+		if derr := s.cfg.DB.Write.EndRenderAttempt(context.WithoutCancel(ctx), key); derr != nil {
+			err = errors.Join(err, fmt.Errorf("clear the build's start: %w", derr))
+		}
+	}()
 	bctx, cancel := context.WithTimeout(ctx, s.buildTimeout)
 	defer cancel()
 	images, log, read, err := s.build(bctx, t, seen)
@@ -680,6 +705,56 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 		return nil
 	})
 	return err == nil, err
+}
+
+// attemptKey is t's key in render_attempt.
+func attemptKey(t target) db.EndRenderAttemptParams {
+	return db.EndRenderAttemptParams{
+		InstanceID: t.instance, DeviceID: t.device, Width: int64(t.width), Height: int64(t.height),
+		Palette: t.palette, TimeZone: t.zone, Locale: t.locale,
+	}
+}
+
+// stoppedDuringBuild is the error a build gets that was running when the
+// server stopped, which RecoverAttempts records at the next start.
+const stoppedDuringBuild = "the server stopped during this build, which the build may have caused"
+
+// RecoverAttempts records each build that started and saved no outcome,
+// which means the server stopped during it, as a counted failure of its
+// target, so it waits out the backoff, and the instance's page says why.
+// Run calls it before its first scan. It does all of them in one
+// transaction. A leftover whose instance or device was deleted went with
+// it, by the instance's foreign key and the device's trigger, so every
+// leftover still has its target's instance. It returns how many it
+// recorded.
+func (s *Scheduler) RecoverAttempts(ctx context.Context) (int, error) {
+	n := 0
+	err := s.cfg.DB.InTx(ctx, func(q *db.Queries) error {
+		n = 0
+		rows, err := q.ListRenderAttempts(ctx)
+		if err != nil {
+			return fmt.Errorf("list render attempts: %w", err)
+		}
+		for _, a := range rows {
+			if err := q.SaveRenderFailure(ctx, db.SaveRenderFailureParams{
+				InstanceID: a.InstanceID, DeviceID: a.DeviceID, Width: a.Width, Height: a.Height,
+				Palette: a.Palette, TimeZone: a.TimeZone, Locale: a.Locale,
+				AttemptedAt: a.StartedAt, Error: stoppedDuringBuild,
+				DataAt: a.DataAt, SettingsAt: a.SettingsAt, Failures: 1,
+			}); err != nil {
+				return fmt.Errorf("record a build the server stopped during: %w", err)
+			}
+			if err := q.EndRenderAttempt(ctx, db.EndRenderAttemptParams{
+				InstanceID: a.InstanceID, DeviceID: a.DeviceID, Width: a.Width, Height: a.Height,
+				Palette: a.Palette, TimeZone: a.TimeZone, Locale: a.Locale,
+			}); err != nil {
+				return fmt.Errorf("clear a build the server stopped during: %w", err)
+			}
+			n++
+		}
+		return nil
+	})
+	return n, err
 }
 
 // build sends t's project to the renderer and stores the images it returns.

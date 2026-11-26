@@ -339,6 +339,38 @@ BEGIN
   DELETE FROM render WHERE device_id = OLD.id;
 END;
 
+-- render_attempt is a build that has started and not yet recorded its
+-- outcome, one per render target, keyed as render is. The scheduler writes
+-- it before the build, and deletes it once the outcome is saved, or the
+-- build ended with nothing to record, as at a cancel or a shutdown. One
+-- left when the server starts means the server stopped during the build,
+-- which the build may have caused, such as a sandboxed build whose process
+-- the kernel killed for memory, which by default makes systemd stop the
+-- whole unit. At startup each leftover becomes a counted failure of its
+-- target, so the build waits out the backoff and is not run again at once.
+-- started_at, data_at and settings_at are what that failure records: when
+-- the build started, and the versions of the instance the scan saw. A
+-- deleted instance takes its rows with it, and the
+-- render_attempt_device_deleted trigger a deleted device's.
+CREATE TABLE IF NOT EXISTS render_attempt (
+  instance_id INTEGER NOT NULL REFERENCES plugin_instance (id) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  palette TEXT NOT NULL,
+  time_zone TEXT NOT NULL,
+  locale TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  data_at INTEGER NOT NULL DEFAULT 0,
+  settings_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (instance_id, device_id, width, height, palette, time_zone, locale)
+);
+
+CREATE TRIGGER IF NOT EXISTS render_attempt_device_deleted AFTER DELETE ON device
+BEGIN
+  DELETE FROM render_attempt WHERE device_id = OLD.id;
+END;
+
 -- render_image is one layout's image from a render.
 CREATE TABLE IF NOT EXISTS render_image (
   render_id INTEGER NOT NULL REFERENCES render (id) ON DELETE CASCADE,
