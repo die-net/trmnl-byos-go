@@ -244,10 +244,11 @@ type homeView struct {
 }
 
 // hostHomes returns this host's homeView, with home the server's own home,
-// "" if it has none.
+// "" if it has none. A home of /, which an account without one gets, as
+// under systemd's DynamicUser=, is no home: everything would lie inside it.
 func hostHomes(home string) homeView {
 	homes := []string{"/root"}
-	if filepath.IsAbs(home) {
+	if filepath.IsAbs(home) && filepath.Clean(home) != "/" {
 		homes = append(homes, home)
 	}
 	return newHomeView([]string{"/home"}, homes)

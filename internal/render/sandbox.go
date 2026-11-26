@@ -117,6 +117,16 @@ const (
 	selfTestPrefix = "selftest-"
 )
 
+// newHome makes a fresh home in TempDir, named from prefix. TempDir is made
+// again first, so one removed while the server runs, as by an operator or a
+// restore of the data directory, costs no build.
+func (s *Sandbox) newHome(prefix string) (string, error) {
+	if err := os.MkdirAll(s.tempDir, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(s.tempDir, prefix)
+}
+
 // RemoveLeftovers removes the homes of builds an earlier run of the server
 // left in TempDir, and their cgroups in Config.Cgroup, as a crash would
 // leave them. Only the server makes them, so call it once at startup,
@@ -172,7 +182,7 @@ func (s *Sandbox) Build(ctx context.Context, job Job, writeProject func(*tar.Wri
 	if err != nil {
 		return "", s.outage(err)
 	}
-	home, err := os.MkdirTemp(s.tempDir, homePrefix)
+	home, err := s.newHome(homePrefix)
 	if err != nil {
 		return "", s.outage(fmt.Errorf("create the build's home: %w", err))
 	}
@@ -362,7 +372,7 @@ func (s *Sandbox) SelfTest(ctx context.Context, refused, allowed []string) ([]sa
 	if err != nil {
 		return nil, err
 	}
-	home, err := os.MkdirTemp(s.tempDir, selfTestPrefix)
+	home, err := s.newHome(selfTestPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create the sandbox's home: %w", err)
 	}

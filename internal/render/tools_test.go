@@ -385,6 +385,13 @@ func TestHoldsHome(t *testing.T) {
 	if v := hostHomes("relative"); v.holdsHome("/srv") {
 		t.Error("holdsHome counted a home that is relative")
 	}
+	// An account with no home has a HOME of /, which is no home, so the
+	// system's own gem directories are still shown.
+	for _, dir := range []string{"/usr/local/bundle", "/usr/share/rubygems-integration/all"} {
+		if v := hostHomes("/"); !v.gemShown(dir) {
+			t.Errorf("with a home of /, gemShown(%q) = false", dir)
+		}
+	}
 }
 
 // TestFindToolsGemErr checks that a ruby that cannot give its gem path is

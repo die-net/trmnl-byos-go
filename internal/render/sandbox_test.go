@@ -686,3 +686,24 @@ func TestSandboxCoverResolved(t *testing.T) {
 		t.Errorf("Cover = %q, want %q", got, want)
 	}
 }
+
+// TestNewHomeRemakesTempDir checks that a build's home is made even after
+// TempDir was removed while the server ran, as by an operator or a restore
+// of the data directory, so that costs no build.
+func TestNewHomeRemakesTempDir(t *testing.T) {
+	t.Parallel()
+	sb, err := NewSandbox(SandboxConfig{TempDir: filepath.Join(t.TempDir(), "tmp"), Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(sb.tempDir); err != nil {
+		t.Fatal(err)
+	}
+	home, err := sb.newHome(homePrefix)
+	if err != nil {
+		t.Fatalf("newHome after TempDir was removed: %v", err)
+	}
+	if filepath.Dir(home) != sb.tempDir {
+		t.Errorf("home %q is not in %q", home, sb.tempDir)
+	}
+}
