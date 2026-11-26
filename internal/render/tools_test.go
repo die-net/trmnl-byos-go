@@ -471,3 +471,37 @@ func TestFindToolsHiddenGems(t *testing.T) {
 		t.Errorf("Read = %v shows the home", tools.Read)
 	}
 }
+
+// TestGemShown checks which gem directories builds may see. A directory in
+// a person's home is shown only when it is named by a Ruby version, since
+// ~/.gem holds the RubyGems push key in credentials, and a GEM_HOME such as
+// ~/.local or ~/gems could hold anything of theirs. A home, or what holds
+// one, never is. Anywhere else, any directory is.
+func TestGemShown(t *testing.T) {
+	t.Parallel()
+	const home = "/srv/trmnl"
+	for _, tc := range []struct {
+		dir  string
+		want bool
+	}{
+		{"/home/pat/.gem", false},
+		{"/home/pat/.local", false},
+		{"/home/pat/gems", false},
+		{"/root/.gem", false},
+		{"/srv/trmnl/.gem", false},
+		{"/home/pat", false},
+		{"/srv", false},
+		{"/home/pat/.gem/ruby/3.4.0", true},
+		{"/home/pat/.local/share/gem/ruby/3.4.0", true},
+		{"/home/pat/.rbenv/versions/3.4.1/lib/ruby/gems/3.4.0", true},
+		{"/srv/trmnl/.gem/ruby/3.4.0", true},
+		{"/home/pat/.gem/ruby/22", false},
+		{"/var/lib/gems/3.3.0", true},
+		{"/usr/local/bundle", true},
+		{"/opt/gems", true},
+	} {
+		if got := gemShown(tc.dir, home); got != tc.want {
+			t.Errorf("gemShown(%q, %q) = %v, want %v", tc.dir, home, got, tc.want)
+		}
+	}
+}

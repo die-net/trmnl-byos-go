@@ -51,8 +51,8 @@ type Tools struct {
 	// did or Ruby was not found. trmnlp cannot load its gems without it.
 	GemErr error
 	// HiddenGems are the directories of Ruby's gem path that the sandbox
-	// does not show, since each is, or holds, a person's home. trmnlp
-	// fails in every build if its gems are in one.
+	// does not show, since each could show a person's credentials (see
+	// gemShown). trmnlp fails in every build if its gems are in one.
 	HiddenGems []string
 }
 
@@ -151,10 +151,9 @@ func FindTools(ctx context.Context, pathEnv string) Tools {
 		t.GemErr = err
 		home, _ := os.UserHomeDir()
 		for _, dir := range gems {
-			// A gem directory that is, or holds, a person's home is not
-			// shown, since it would show their credentials. trmnlp's gems
-			// may be in it, so it is reported.
-			if holdsHome(dir, home) {
+			// One that is not shown may hold trmnlp's gems, so it is
+			// reported.
+			if !gemShown(dir, home) {
 				t.HiddenGems = append(t.HiddenGems, dir)
 				continue
 			}
@@ -244,6 +243,30 @@ func holdsHome(dir, home string) bool {
 		return within(home, dir)
 	}
 	return false
+}
+
+// gemShown reports whether a gem directory may be shown to builds. One that
+// is or holds a person's home never is. One inside a home is shown only
+// when it is named by a Ruby version with a dot, such as ~/.gem/ruby/3.4.0,
+// which holds gems and nothing else: ~/.gem itself holds the RubyGems push
+// key in credentials, and a GEM_HOME such as ~/.local holds much more.
+// Anywhere else, any is shown, such as /var/lib/gems/3.3.0 or
+// /usr/local/bundle.
+func gemShown(dir, home string) bool {
+	if holdsHome(dir, home) {
+		return false
+	}
+	if !inHome(dir, home) {
+		return true
+	}
+	base := filepath.Base(dir)
+	return versionLike(base) && strings.Contains(base, ".")
+}
+
+// inHome reports whether dir lies inside a person's home: under /home or
+// /root, or inside home, the server's own.
+func inHome(dir, home string) bool {
+	return strings.HasPrefix(dir, "/home/") || within(dir, "/root") || home != "" && filepath.IsAbs(home) && within(dir, home)
 }
 
 // linuxbrew is Homebrew's prefix on Linux. Its var directory, which

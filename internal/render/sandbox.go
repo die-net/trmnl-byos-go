@@ -490,7 +490,7 @@ func (s *Sandbox) setup(ctx context.Context) (*Tools, error) {
 			return nil, tools.GemErr
 		}
 		if len(tools.HiddenGems) > 0 {
-			return nil, fmt.Errorf("a directory of Ruby's gem path, %s, is or holds a person's home, so builds cannot see it; install trmnlp's gems in a directory of their own, such as system-wide", tools.HiddenGems[0])
+			return nil, fmt.Errorf("a directory of Ruby's gem path, %s, could show a person's credentials, so builds cannot see it; install trmnlp's gems system-wide, or in a directory named by Ruby's version, such as ~/.gem/ruby/3.4.0", tools.HiddenGems[0])
 		}
 		s.tools = &tools
 	}

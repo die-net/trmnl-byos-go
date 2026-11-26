@@ -172,7 +172,7 @@ func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 		r.line("fail", "tool.gems", tools.GemErr.Error()+"; trmnlp cannot load its gems without Ruby's gem path")
 	}
 	for _, dir := range tools.HiddenGems {
-		r.line("fail", "tool.gems", "Ruby's gem path has "+dir+", which is or holds a person's home, so builds cannot see it. Install trmnlp's gems in a directory of their own, such as system-wide")
+		r.line("fail", "tool.gems", "Ruby's gem path has "+dir+", which could show a person's credentials, so builds cannot see it. Install trmnlp's gems system-wide, or in a directory named by Ruby's version, such as ~/.gem/ruby/3.4.0")
 	}
 	for _, p := range tools.Read {
 		r.line("pass", "sandbox.read", "shown read-only to builds, though under a path the sandbox covers: "+p)
@@ -191,7 +191,7 @@ func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 	}
 	scratch, err := os.MkdirTemp("", "trmnl-byos-doctor-")
 	if err != nil {
-		return err
+		return fmt.Errorf("make doctor's scratch directory: %w", err)
 	}
 	defer func() {
 		if err := os.RemoveAll(scratch); err != nil {
@@ -199,24 +199,24 @@ func doctorSandbox(ctx context.Context, r *report, f *serveFlags) error {
 		}
 	}()
 	if scratch, err = filepath.EvalSymlinks(scratch); err != nil {
-		return err
+		return fmt.Errorf("resolve doctor's scratch directory: %w", err)
 	}
 	assets, err := cache.New(filepath.Join(scratch, "cache"))
 	if err != nil {
-		return err
+		return fmt.Errorf("make the self-test's asset cache: %w", err)
 	}
 	sb, err := f.sandbox(assets, filepath.Join(scratch, "tmp"))
 	if err != nil {
-		return err
+		return fmt.Errorf("make the sandbox runner: %w", err)
 	}
 	home := filepath.Join(scratch, "home")
 	if err := os.Mkdir(home, 0o700); err != nil {
-		return err
+		return fmt.Errorf("make the check's home: %w", err)
 	}
 	spec := sb.Spec(tools, home)
 	want, err := expect(f)
 	if err != nil {
-		return err
+		return fmt.Errorf("work out what the check expects: %w", err)
 	}
 	results, err := sandbox.Check(ctx, &spec, want)
 	for _, res := range results {
