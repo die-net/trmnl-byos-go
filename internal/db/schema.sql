@@ -341,8 +341,10 @@ END;
 
 -- render_attempt is a build that has started and not yet recorded its
 -- outcome, one per render target, keyed as render is. The scheduler writes
--- it before the build, and deletes it once the outcome is saved, or the
--- build ended with nothing to record, as at a cancel or a shutdown. One
+-- it before the build, and deletes it in the transaction that saves the
+-- outcome, or when the renderer did not take the build. It stays when the
+-- server is stopping, since systemd stops a unit with SIGTERM after the
+-- kernel killed one of its processes for memory as for a planned stop. One
 -- left when the server starts means the server stopped during the build,
 -- which the build may have caused, such as a sandboxed build whose process
 -- the kernel killed for memory, which by default makes systemd stop the

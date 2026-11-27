@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -162,9 +163,12 @@ func TestAttemptDeletedTarget(t *testing.T) {
 	}
 }
 
-// TestAttemptCanceled checks that a build canceled partway, as at a
-// shutdown, leaves no record, so the next start counts nothing against
-// it: the shutdown was not the build's doing.
+// TestAttemptCanceled checks that a build canceled partway, as when the
+// server is stopping, keeps its record, and that the next start counts it.
+// systemd stops a unit with SIGTERM after the kernel killed one of its
+// processes for memory, as for a planned stop, so a record deleted at a
+// cancel would let a build that takes the server down run again first at
+// every start.
 func TestAttemptCanceled(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -173,13 +177,21 @@ func TestAttemptCanceled(t *testing.T) {
 	if _, err := h.s.RenderNext(ctx); err == nil {
 		t.Fatal("RenderNext succeeded through a cancel")
 	}
-	if rows := h.attempts(t); len(rows) != 0 {
-		t.Errorf("records left after a canceled build: %+v", rows)
+	if rows := h.attempts(t); len(rows) != 1 {
+		t.Fatalf("records after a canceled build: %+v, want 1", rows)
 	}
+	h.duringBuild = nil
+	if n, err := h.s.RecoverAttempts(t.Context()); err != nil || n != 1 {
+		t.Fatalf("RecoverAttempts = %d, %v; want 1", n, err)
+	}
+	if r := h.render(t); r.Error != stoppedDuringBuild || r.Failures != 1 {
+		t.Errorf("render after recovery: error %q, failures %d; want %q, 1", r.Error, r.Failures, stoppedDuringBuild)
+	}
+	h.renderDue(t, 1)
 }
 
-// TestAttemptShutdown checks that Run stopped during a build, as at a
-// graceful shutdown, returns and leaves no record behind.
+// TestAttemptShutdown checks that Run stopped during a build, as at a stop
+// of its unit, returns, and leaves the record for the next start.
 func TestAttemptShutdown(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -198,8 +210,30 @@ func TestAttemptShutdown(t *testing.T) {
 	if n := h.builds.Load(); n != 1 {
 		t.Errorf("%d builds, want the 1 the shutdown stopped", n)
 	}
+	if rows := h.attempts(t); len(rows) != 1 {
+		t.Errorf("records after a shutdown: %+v, want 1", rows)
+	}
+}
+
+// TestAttemptOutcomeOnce checks that a build whose outcome was saved leaves
+// no record, since the outcome and the record's removal are one
+// transaction, so the next start does not count a failed build twice, or a
+// good one as failed.
+func TestAttemptOutcomeOnce(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	if err := os.WriteFile(h.failFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.renderDue(t, 1)
 	if rows := h.attempts(t); len(rows) != 0 {
-		t.Errorf("records left after a shutdown: %+v", rows)
+		t.Fatalf("records after a failed build: %+v", rows)
+	}
+	if n, err := h.s.RecoverAttempts(t.Context()); err != nil || n != 0 {
+		t.Fatalf("RecoverAttempts = %d, %v; want 0", n, err)
+	}
+	if r := h.render(t); r.Failures != 1 || r.Error == stoppedDuringBuild {
+		t.Errorf("render: failures %d, error %q; want the build's one failure", r.Failures, r.Error)
 	}
 }
 

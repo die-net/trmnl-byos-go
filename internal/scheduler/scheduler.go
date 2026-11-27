@@ -621,12 +621,16 @@ type stored struct {
 // to write otherwise.
 func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorded bool, err error) {
 	start := s.now()
-	// A server that stops during the build, as when a build's process is
-	// killed for memory and systemd stops the whole unit, records nothing
-	// of it. This row survives that, and RecoverAttempts makes it a counted
-	// failure at the next start, so the build waits out its backoff rather
-	// than running again at once. It goes once the outcome is saved, or
-	// the build ended with nothing to record, a cancel included.
+	// A server that stops during the build records nothing of it, so the
+	// build would run again first at the next start. This row survives,
+	// and RecoverAttempts makes it a counted failure then, so the build
+	// waits out its backoff. It is deleted in the same transaction that
+	// saves the outcome, so a crash between the two cannot count a saved
+	// build again, and when the renderer did not take the build. It stays
+	// when the server is stopping: systemd stops a unit with SIGTERM when
+	// the kernel killed one of its processes for memory, as it may a build's
+	// Firefox, and the server cannot tell that from a planned stop, so a
+	// planned restart during a build costs that build one retry delay.
 	key := attemptKey(t)
 	if err := s.cfg.DB.Write.StartRenderAttempt(ctx, db.StartRenderAttemptParams{
 		InstanceID: key.InstanceID, DeviceID: key.DeviceID, Width: key.Width, Height: key.Height,
@@ -635,11 +639,6 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 	}); err != nil {
 		return false, fmt.Errorf("record the build's start: %w", err)
 	}
-	defer func() {
-		if derr := s.cfg.DB.Write.EndRenderAttempt(context.WithoutCancel(ctx), key); derr != nil {
-			err = errors.Join(err, fmt.Errorf("clear the build's start: %w", derr))
-		}
-	}()
 	bctx, cancel := context.WithTimeout(ctx, s.buildTimeout)
 	defer cancel()
 	images, log, read, err := s.build(bctx, t, seen)
@@ -654,23 +653,31 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 		// target, so nothing is recorded: the row keeps its last real
 		// outcome, and Run waits before it tries again. It is logged.
 		if errors.Is(err, render.ErrUnavailable) {
+			if derr := s.cfg.DB.Write.EndRenderAttempt(ctx, key); derr != nil {
+				return false, errors.Join(err, fmt.Errorf("clear the build's start: %w", derr))
+			}
 			return false, err
 		}
-		serr := s.cfg.DB.Write.SaveRenderFailure(ctx, db.SaveRenderFailureParams{
-			InstanceID:  t.instance,
-			DeviceID:    t.device,
-			Width:       int64(t.width),
-			Height:      int64(t.height),
-			Palette:     t.palette,
-			TimeZone:    t.zone,
-			Locale:      t.locale,
-			AttemptedAt: start.Unix(),
-			DurationMs:  took.Milliseconds(),
-			Error:       log.line(err),
-			Log:         log.stored(),
-			DataAt:      read.data,
-			SettingsAt:  read.settings,
-			Failures:    1,
+		serr := s.cfg.DB.InTx(ctx, func(q *db.Queries) error {
+			if err := q.SaveRenderFailure(ctx, db.SaveRenderFailureParams{
+				InstanceID:  t.instance,
+				DeviceID:    t.device,
+				Width:       int64(t.width),
+				Height:      int64(t.height),
+				Palette:     t.palette,
+				TimeZone:    t.zone,
+				Locale:      t.locale,
+				AttemptedAt: start.Unix(),
+				DurationMs:  took.Milliseconds(),
+				Error:       log.line(err),
+				Log:         log.stored(),
+				DataAt:      read.data,
+				SettingsAt:  read.settings,
+				Failures:    1,
+			}); err != nil {
+				return err
+			}
+			return q.EndRenderAttempt(ctx, key)
 		})
 		if serr != nil {
 			return false, errors.Join(err, fmt.Errorf("save render failure: %w", serr))
@@ -701,6 +708,9 @@ func (s *Scheduler) render(ctx context.Context, t target, seen version) (recorde
 			if err != nil {
 				return fmt.Errorf("save render image: %w", err)
 			}
+		}
+		if err := q.EndRenderAttempt(ctx, key); err != nil {
+			return fmt.Errorf("clear the build's start: %w", err)
 		}
 		return nil
 	})

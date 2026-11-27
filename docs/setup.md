@@ -152,7 +152,7 @@ DelegateSubgroup=server
 ExecStart=/usr/local/bin/trmnl-byos serve -data /var/lib/trmnl-byos -render-cgroup /sys/fs/cgroup/system.slice/trmnl-byos.service
 ```
 
-If the server does stop during a build, whatever the cause, the build is recorded as a failure when the server starts again, with the error "the server stopped during this build, which the build may have caused". It waits out its retry backoff and does not run again at once.
+If the server does stop during a build, whatever the cause, a planned restart included, the build is recorded as a failure when the server starts again, with the error "the server stopped during this build, which the build may have caused". It waits out its retry backoff and does not run again at once.
 
 ## Server only
 
