@@ -164,8 +164,10 @@ func New(cfg Config) *Scheduler {
 // target's build at a time, not every due target's. Before its first scan
 // it records each build the server stopped during (see RecoverAttempts).
 func (s *Scheduler) Run(ctx context.Context) {
-	if n, err := s.RecoverAttempts(ctx); err != nil && ctx.Err() == nil {
-		slog.Error("scheduler: record builds the server stopped during", "err", err)
+	if n, err := s.RecoverAttempts(ctx); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("scheduler: record builds the server stopped during", "err", err)
+		}
 	} else if n > 0 {
 		slog.Warn("scheduler: the server stopped during builds, recorded as failures", "builds", n)
 	}
@@ -736,7 +738,7 @@ const stoppedDuringBuild = "the server stopped during this build, which the buil
 // transaction. A leftover whose instance or device was deleted went with
 // it, by the instance's foreign key and the device's trigger, so every
 // leftover still has its target's instance. It returns how many it
-// recorded.
+// recorded, 0 with an error, since a failed transaction records none.
 func (s *Scheduler) RecoverAttempts(ctx context.Context) (int, error) {
 	n := 0
 	err := s.cfg.DB.InTx(ctx, func(q *db.Queries) error {
@@ -764,7 +766,11 @@ func (s *Scheduler) RecoverAttempts(ctx context.Context) (int, error) {
 		}
 		return nil
 	})
-	return n, err
+	// A failed transaction rolled back, so nothing was recorded.
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // build sends t's project to the renderer and stores the images it returns.

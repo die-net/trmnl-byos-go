@@ -250,3 +250,23 @@ func TestAttemptUnavailable(t *testing.T) {
 		t.Errorf("records left after an outage: %+v", rows)
 	}
 }
+
+// TestAttemptRecoverCanceled checks that a recovery whose context ended
+// records nothing and says so, returning no count with its error, and that
+// the leftovers stay for the next start.
+func TestAttemptRecoverCanceled(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.renderDue(t, 1)
+	r := h.render(t)
+	h.leaveAttempt(t, r.Width, h.now.Unix())
+	h.leaveAttempt(t, r.Width/2, h.now.Unix())
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if n, err := h.s.RecoverAttempts(ctx); err == nil || n != 0 {
+		t.Errorf("RecoverAttempts with its context ended = %d, %v; want 0 and an error", n, err)
+	}
+	if rows := h.attempts(t); len(rows) != 2 {
+		t.Errorf("records after a recovery that did not commit: %+v, want 2", rows)
+	}
+}
