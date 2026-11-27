@@ -38,7 +38,7 @@ Follow these steps. Launch the agents of one step in a single message so they ru
 2. Launch a sonnet agent to read the diff (`git diff <base>...<head>`) and return a summary of the change: what behavior it adds or changes, and the files, types and functions involved.
 
 3. Launch 4 agents in parallel to review the change independently. Give each the pull request's title and description, the summary from step 2, the base and head commits, and the path of the root `CLAUDE.md`. Each returns a list of findings, at most 8, most severe first. Each finding has:
-   - the file and the line in the head commit, which must be a line the diff adds or changes, or a line inside a changed hunk
+   - the file and the line in the head commit, which must be one the comment can be anchored on (see step 7). A defect in code the diff does not show is anchored on the nearest changed line, and the finding names the real file and line.
    - a one-sentence statement of the defect
    - a concrete scenario: the input, request, timing or stored state, and the wrong result it produces (a wrong status, a crash, a leak, data loss, a stuck device, a rule broken)
    - the reason it was flagged: "bug", or the CLAUDE.md rule, quoted exactly
@@ -69,7 +69,7 @@ Follow these steps. Launch the agents of one step in a single message so they ru
    - a suggestion that is a matter of taste
    - a rule that the code silences explicitly with a reason, such as a `//nolint` that names the linter and says why
 
-4. Merge the four lists. Combine findings with the same root cause into one. `threads.json` from "This run" lists the pull request's unresolved review threads: their file, line, whether GitHub marks them outdated, and their comments. It keeps only comments from people who can write to the repository and from this workflow's bot (`github-actions`). Drop any finding that one of those threads already raises, and count it as still open if the head commit still has the problem. A resolved thread is not listed, so a problem that comes back after its thread was resolved is posted again.
+4. Merge the four lists. Combine findings with the same root cause into one. `threads.json` from "This run" lists the pull request's unresolved review threads: their file, line, whether GitHub marks them outdated, and their comments. It keeps only comments from people who can write to the repository and from this workflow's bot (`github-actions`). Drop any finding that one of those threads already raises, and count it as still open if the head commit still has the problem. A thread with a null `path` and `line` is a finding that could not be placed inline, posted as a plain comment: its text names the file and line. A resolved thread is not listed, so a problem that comes back after its thread was resolved is posted again.
 
 5. For each remaining finding, launch a validating agent in parallel: sonnet for a finding that only Agent 1 raised, opus for any other. Give it the title and description, the finding, its scenario, and the base and head commits. Its job is to decide whether the finding is real, with high confidence, and to return "valid" or "invalid", the evidence, and how it was checked:
 
@@ -92,10 +92,12 @@ Follow these steps. Launch the agents of one step in a single message so they ru
 
    Check that each comment is one unique issue and that no two say the same thing.
 
+   Before returning, check every `path`, `line` and `start_line` against the diff output once more. The workflow posts a comment GitHub refuses as a plain comment on the pull request, so a wrong anchor costs the reader the link to the code.
+
    Each comment has these fields:
    - `path`: the file, relative to the repository root
-   - `line`: the line the comment is on. With `side` "RIGHT" (the usual case) it is a line in the head commit that the diff adds or changes, or a line inside a changed hunk. With "LEFT" it is a line in the base commit that the diff deletes.
-   - `start_line`: only for a comment on a range of lines, the first line of the range, on the same side
+   - `line`: the line the comment is on. GitHub accepts a comment only on a line that `git diff <base>...<head>` prints in a hunk of that file (run it without a path, so git can pair a renamed file with its old name): a `+` or context line for `side` "RIGHT", numbered in the head commit, or a `-` or context line for "LEFT", numbered in the base commit. Take the number from the hunk header (`@@ -old,len +new,len @@`) and count down the hunk. A line the hunk does not print is refused, even when it is in the same function as a changed line. A file the diff does not touch cannot be commented on at all. Use "RIGHT" except to point at a line the diff deletes.
+   - `start_line`: only for a comment on a range of lines, the first line of the range, on the same side. Both ends must be in the same hunk, with no `@@` line between them. When a range would leave its hunk, comment on the single line that matters most and give the rest of the range in the body.
    - `side`: "RIGHT" or "LEFT"
    - `checked`: "running" if the finding was confirmed by running code, "reading" if it was found by reading only. The workflow adds the matching label to the comment, so do not write the label yourself.
    - `body`, in Markdown:
