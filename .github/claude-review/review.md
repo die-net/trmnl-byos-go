@@ -69,7 +69,7 @@ Follow these steps. Launch the agents of one step in a single message so they ru
    - a suggestion that is a matter of taste
    - a rule that the code silences explicitly with a reason, such as a `//nolint` that names the linter and says why
 
-4. Merge the four lists. Combine findings with the same root cause into one. `threads.json` from "This run" lists the pull request's unresolved review threads: their file, line, whether GitHub marks them outdated, and their comments. It keeps only comments from people who can write to the repository and from this workflow's bot (`github-actions`). Drop any finding that one of those threads already raises, and count it as still open if the head commit still has the problem. A thread with a null `path` and `line` is a finding that could not be placed inline, posted as a plain comment: its text names the file and line. A resolved thread is not listed, so a problem that comes back after its thread was resolved is posted again.
+4. Merge the four lists. Combine findings with the same root cause into one. `threads.json` from "This run" lists the pull request's unresolved review threads: their file, line, whether GitHub marks them outdated, and their comments. It keeps only comments from people who can write to the repository and from this workflow's bot (`github-actions`). Drop any finding that one of those threads already raises, and count it as still open if the head commit still has the problem. A resolved thread is not listed, so a problem that comes back after its thread was resolved is posted again.
 
 5. For each remaining finding, launch a validating agent in parallel: sonnet for a finding that only Agent 1 raised, opus for any other. Give it the title and description, the finding, its scenario, and the base and head commits. Its job is to decide whether the finding is real, with high confidence, and to return "valid" or "invalid", the evidence, and how it was checked:
 
@@ -92,7 +92,7 @@ Follow these steps. Launch the agents of one step in a single message so they ru
 
    Check that each comment is one unique issue and that no two say the same thing.
 
-   Before returning, check every `path`, `line` and `start_line` against the diff output once more. The workflow posts a comment GitHub refuses as a plain comment on the pull request, so a wrong anchor costs the reader the link to the code.
+   Before returning, check every `path`, `line` and `start_line` against the diff output once more. GitHub refuses a comment on a wrong anchor, and the post job then fails, so no one sees the finding.
 
    Each comment has these fields:
    - `path`: the file, relative to the repository root

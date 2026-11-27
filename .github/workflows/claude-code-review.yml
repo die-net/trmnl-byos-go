@@ -155,16 +155,6 @@ jobs:
           ' "$dir/threads-all.json" > "$dir/threads.json"
           rm "$dir/threads-all.json"
 
-          # A finding the post job could not place inline is a plain comment
-          # by this workflow's bot that starts with "Finding on", and is no
-          # review thread. Add each as a thread with no file or line, so the
-          # next review sees it as already raised and does not post it again.
-          gh api --paginate "repos/$OWNER/$NAME/issues/$PR/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("Finding on `")))
-              | {path: null, line: null, isOutdated: false, comments: [{author: "github-actions", body}]}' \
-            | jq -s --slurpfile t "$dir/threads.json" '$t[0] + .' > "$dir/threads.tmp"
-          mv "$dir/threads.tmp" "$dir/threads.json"
-
       - id: go
         if: steps.prompt.outputs.found == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -299,9 +289,8 @@ jobs:
           # The file is read as one array of every JSON value in it, which
           # must hold exactly one, so a second value cannot slip past the
           # check: jq -e alone answers for the last value only. Everything
-          # after reads that one checked value. A path may not be absolute,
-          # step out of the repository, or hold a backtick or a control
-          # character, since it is quoted in a comment and in a log line.
+          # after reads that one checked value. A path may not be absolute
+          # or step out of the repository.
           if ! jq -es '
             def int: type == "number" and . == floor;
             length == 1 and (.[0] |
@@ -314,7 +303,7 @@ jobs:
               type == "object"
               and (keys - ["path", "line", "start_line", "side", "body", "checked"] | length == 0)
               and (.path | type == "string" and length >= 1 and length <= 512
-                   and (test("^/|(^|/)\\.\\.(/|$)|[`\\p{Cc}]") | not))
+                   and (test("^/|(^|/)\\.\\.(/|$)") | not))
               and (.line | int and . >= 1)
               and (if has("start_line") then (.start_line | int and . >= 1) and .start_line < .line else true end)
               and (.side == "RIGHT" or .side == "LEFT")
@@ -330,49 +319,22 @@ jobs:
           # a name gets a zero-width space after it, so a comment cannot
           # mention, and notify, anyone. The commit is the event's head, not
           # anything from the file.
-          #
-          # GitHub refuses an inline comment on a line the diff at the head
-          # commit does not show (HTTP 422), and the reviewer cannot always
-          # tell. So a comment that cannot go inline is posted as a plain
-          # comment on the pull request, with its path and line in the text,
-          # and the job fails only if that fails too. The plain comment is
-          # built the same way, from the same checked fields: the path has
-          # no backtick or control character, so it stays inside its code
-          # span, and the mention-breaking covers the whole text.
           failed=0
-          inline_refused=0
-          while IFS= read -r pair; do
-            if jq -c .inline <<<"$pair" |
-                gh api -X POST "repos/$REPO/pulls/$PR/comments" --input - --silent; then
-              continue
-            fi
-            inline_refused=$((inline_refused + 1))
-            where=$(jq -r .where <<<"$pair")
-            echo "::warning::Could not post the inline comment on $where. Posting it as a pull request comment."
-            if ! jq -c .plain <<<"$pair" |
-                gh api -X POST "repos/$REPO/issues/$PR/comments" --input - --silent; then
+          while IFS= read -r comment; do
+            if ! gh api -X POST "repos/$REPO/pulls/$PR/comments" --input - --silent <<<"$comment"; then
               failed=$((failed + 1))
             fi
           done < <(jq -c --arg head "$HEAD" '
-            def tame: gsub("@(?<c>[A-Za-z0-9])"; "@\u200b\(.c)");
             .comments[]
-            | (if .checked == "running" then "_Confirmed by running code._" else "_Found by reading only._" end) as $label
-            | (if .start_line then "\(.path):\(.start_line)-\(.line)" else "\(.path):\(.line)" end) as $where
-            | {where: $where,
-               inline: ({path, line, side, commit_id: $head,
-                         body: ((.body | tame) + "\n\n" + $label)}
-                        + (if .start_line then {start_line: .start_line, start_side: .side} else {} end)),
-               plain: {body: (("Finding on `\($where)`"
-                               + (if .side == "LEFT" then " in the base commit" else " at `\($head[0:7])`" end)
-                               + ", which GitHub would not take as an inline comment:\n\n"
-                               + .body + "\n\n" + $label) | tame)}}
+            | {path, line, side, commit_id: $head,
+               body: ((.body | gsub("@(?<c>[A-Za-z0-9])"; "@\u200b\(.c)"))
+                      + "\n\n"
+                      + (if .checked == "running" then "_Confirmed by running code._" else "_Found by reading only._" end))}
+              + (if .start_line then {start_line: .start_line, start_side: .side} else {} end)
           ' "$f")
           if [ "$failed" -gt 0 ]; then
-            echo "::error::$failed comment(s) could not be posted, inline or as a pull request comment."
+            echo "::error::$failed comment(s) could not be posted."
             exit 1
-          fi
-          if [ "$inline_refused" -gt 0 ]; then
-            echo "$inline_refused comment(s) were posted as pull request comments, not inline."
           fi
 
           if [ "$(jq .open_findings "$f")" -eq 0 ]; then
