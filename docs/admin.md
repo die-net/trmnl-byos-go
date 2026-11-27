@@ -81,7 +81,7 @@ Open the server's address in a browser, such as `http://192.168.1.10:8080`, and 
 - **A device's page.** Its screen, its facts, and the playlist it would show now. A form for its name, firmware updates and pin, panel profile and palette, time zone and locale, sleep window, and what a button press and a double-click do. The order of its playlists. Block, unblock or delete it.
 - **Recipes.** Every recipe with its instances, the playlists that show them, when each last rendered and why a build failed. Upload a recipe zip. Remove an instance, once no playlist shows it.
 - **A recipe's page.** Add an instance, with a control for each of the recipe's custom fields. Replace the recipe's files with a new zip.
-- **An instance's page.** Edit its name, palette and fields, and see how its builds stand. When the host cannot start a sandbox, it says "Builds cannot start: REASON; run trmnl-byos doctor on the server to see why" until a sandbox starts again.
+- **An instance's page.** Edit its name, palette and fields, and see how its builds stand. When the host cannot start a sandbox, it says "Builds cannot start: REASON; run trmnl-byos doctor on the server to see why" until a sandbox starts again. A build failed with "the server stopped during this build" was running when the server stopped. After a planned restart that is expected, and the next build clears it.
 - **Playlists.** Every playlist with its schedule, devices and items. Create a playlist. Move, hide, show and remove items.
 - **A playlist's page.** Its name and schedule, its items, adding an item, and linking or unlinking devices.
 - **Firmware.** Every build with its rollout stage. Upload a build.
