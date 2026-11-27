@@ -496,3 +496,46 @@ func TestResultSizes(t *testing.T) {
 		}
 	}
 }
+
+// TestBuilderTrmnlpMissing checks that a build whose trmnlp cannot be started
+// is an error matching both ErrBuildFailed and errStartTrmnlp, which the
+// build command reports as the renderer's fault, and that through the shim it
+// is still a failed build to the client, not an outage, as it always was.
+func TestBuilderTrmnlpMissing(t *testing.T) {
+	t.Parallel()
+	job := Job{Width: 800, Height: 480, Palette: "bw"}
+	missing := filepath.Join(t.TempDir(), "nonexistent", "trmnlp")
+
+	t.Run("builder", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "project"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		xvfb := filepath.Join(t.TempDir(), "Xvfb")
+		if err := os.WriteFile(xvfb, []byte(fakeXvfb), 0o700); err != nil { //nolint:gosec // G306: the fake command must be executable.
+			t.Fatal(err)
+		}
+		err := builder{trmnlp: missing, xvfb: xvfb, env: []string{"PATH=" + os.Getenv("PATH")}}.build(t.Context(), dir, job)
+		if !errors.Is(err, ErrBuildFailed) || !errors.Is(err, errStartTrmnlp) {
+			t.Errorf("build: %v, want one matching ErrBuildFailed and errStartTrmnlp", err)
+		}
+	})
+
+	t.Run("shim", func(t *testing.T) {
+		t.Parallel()
+		xvfb := filepath.Join(t.TempDir(), "Xvfb")
+		if err := os.WriteFile(xvfb, []byte(fakeXvfb), 0o700); err != nil { //nolint:gosec // G306: the fake command must be executable.
+			t.Fatal(err)
+		}
+		// Never NewShim, whose sweep would start at once.
+		shim := &Shim{Trmnlp: missing, Xvfb: xvfb, Env: []string{"PATH=" + os.Getenv("PATH")}, Timeout: ampleTimeout, gate: newGate(scopedSweeper("no process has this name"), 2)}
+		srv := httptest.NewServer(shim)
+		t.Cleanup(srv.Close)
+		c := &Client{URL: srv.URL, HTTP: srv.Client()}
+		_, err := c.Build(t.Context(), job, project(), collect(map[string]string{}))
+		if !errors.Is(err, ErrBuildFailed) || errors.Is(err, ErrUnavailable) {
+			t.Errorf("Build: %v, want ErrBuildFailed and not ErrUnavailable", err)
+		}
+	})
+}

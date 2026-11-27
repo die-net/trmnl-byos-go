@@ -86,3 +86,78 @@ jobs:
         env:
           CGO_ENABLED: '1'
         run: go test -race -count=1 ./...
+
+  # The tests that start real sandboxes, which the jobs above skip: Ubuntu
+  # restricts unprivileged user namespaces with AppArmor, so a binary that
+  # starts sandboxes needs a profile of its own. Each test binary is built
+  # at a fixed path and gets the profile the sandbox library's Probe prints
+  # for it, which trmnl-byos doctor shows, so this also proves that profile
+  # works.
+  # TRMNL_TEST_REQUIRE_SANDBOX makes a test that still cannot start a
+  # sandbox fail rather than skip, so a green run means they ran. Both
+  # SQLite drivers, since a sandbox's first stage runs the binary's init
+  # functions, which they change.
+  sandbox:
+    name: sandbox (CGO_ENABLED=${{ matrix.cgo }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cgo: ['0', '1']
+    steps:
+      - uses: actions/checkout@v7
+      - id: go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-sandbox-cgo${{ matrix.cgo }}-${{ hashFiles('go.mod') }}
+      - name: Build the test binaries
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/apparmor"
+          go test -c -o "$RUNNER_TEMP/bin/render.test" ./internal/render/
+          go test -c -o "$RUNNER_TEMP/bin/trmnl-byos.test" ./cmd/trmnl-byos/
+      - name: Load the AppArmor profile the sandbox library prints, for each test binary
+        env:
+          TRMNL_TEST_APPARMOR_DIR: ${{ runner.temp }}/apparmor
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          # Each binary writes the profile sandbox.AppArmorProfile gives for
+          # its own path, which is the one Probe prints and doctor shows an
+          # operator (TestWriteProbeProfile).
+          (cd internal/render && "$RUNNER_TEMP/bin/render.test" -test.run '^TestWriteProbeProfile$' -test.count=1 -test.v)
+          (cd cmd/trmnl-byos && "$RUNNER_TEMP/bin/trmnl-byos.test" -test.run '^TestWriteProbeProfile$' -test.count=1 -test.v)
+          for f in "$RUNNER_TEMP"/apparmor/*; do
+            cat "$f"
+            sudo install -m 0644 "$f" /etc/apparmor.d/
+            sudo apparmor_parser -r "/etc/apparmor.d/$(basename "$f")"
+          done
+      - name: Run the sandboxed tests
+        env:
+          TRMNL_TEST_REQUIRE_SANDBOX: '1'
+        run: |
+          set -o pipefail
+          (cd internal/render && "$RUNNER_TEMP/bin/render.test" -test.v -test.count=1) | tee "$RUNNER_TEMP/render.log"
+          (cd cmd/trmnl-byos && "$RUNNER_TEMP/bin/trmnl-byos.test" -test.v -test.count=1) | tee "$RUNNER_TEMP/trmnl-byos.log"
+          ran=$(cat "$RUNNER_TEMP/render.log" "$RUNNER_TEMP/trmnl-byos.log" | grep -cE '^ *--- PASS: Test(Sandbox|DoctorSandbox)' || true)
+          skipped=$(cat "$RUNNER_TEMP/render.log" "$RUNNER_TEMP/trmnl-byos.log" | grep -cE '^ *--- SKIP: Test(Sandbox|DoctorSandbox)' || true)
+          echo "sandboxed tests and subtests passed: $ran, skipped: $skipped"
+          test "$ran" -gt 0 && test "$skipped" -eq 0
+      # What the kernel said about a first stage that died: AppArmor's
+      # denials and seccomp's kills are in its log.
+      - name: Show the kernel's AppArmor and seccomp messages
+        if: failure()
+        run: |
+          uname -a
+          bwrap --version || true
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.apparmor_restrict_unprivileged_unconfined || true
+          grep -lE 'bwrap|userns' /etc/apparmor.d/* 2>/dev/null || true
+          sudo aa-status 2>/dev/null | grep -iE 'bwrap|userns|test|profiles are' || true
+          sudo dmesg | grep -iE 'apparmor|audit|seccomp' | tail -60 || true

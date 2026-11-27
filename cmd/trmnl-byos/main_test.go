@@ -15,10 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/die-net/sandbox"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/die-net/trmnl-byos-go/internal/db"
 	"github.com/die-net/trmnl-byos-go/internal/imagestore"
+	"github.com/die-net/trmnl-byos-go/internal/render"
 	"github.com/die-net/trmnl-byos-go/internal/testutil/testlog"
 )
 
@@ -355,6 +357,15 @@ func TestExitCode(t *testing.T) {
 	}
 }
 
+// TestMain runs the sandbox's first stage, or the build or self-test
+// command, when a sandbox doctor's tests start runs the test binary as one,
+// and the tests otherwise.
 func TestMain(m *testing.M) {
+	if code, ok := sandbox.Stage(); ok {
+		os.Exit(code)
+	}
+	if len(os.Args) > 1 && (os.Args[1] == render.BuildCommand || os.Args[1] == render.SelfTestCommand) {
+		os.Exit(sandboxedCommand(context.Background(), os.Args[1], os.Args[2:]))
+	}
 	os.Exit(testlog.Run(m))
 }

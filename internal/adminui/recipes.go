@@ -74,6 +74,9 @@ type renderView struct {
 	// and the URLs in trmnlp's lines cut to scheme and host. It is shown as
 	// text.
 	Error string
+	// Outage is why no build can start now, from Config.RenderProblem, or
+	// "" when builds can. It is shown as text.
+	Outage string
 }
 
 // renderViewOf returns the view of an instance's render status as
@@ -81,6 +84,9 @@ type renderView struct {
 // long before now the render was.
 func (s *Server) renderViewOf(lastRenderedAt int64, lastError string, now time.Time) renderView {
 	v := renderView{Error: lastError}
+	if s.renderProblem != nil {
+		v.Outage = s.renderProblem()
+	}
 	if lastRenderedAt != 0 {
 		v.Rendered = s.timeAt(lastRenderedAt, now, true)
 	}

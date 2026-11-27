@@ -196,6 +196,19 @@ type Render struct {
 	FailedError        string `json:"failed_error"`
 }
 
+type RenderAttempt struct {
+	InstanceID int64  `json:"instance_id"`
+	DeviceID   int64  `json:"device_id"`
+	Width      int64  `json:"width"`
+	Height     int64  `json:"height"`
+	Palette    string `json:"palette"`
+	TimeZone   string `json:"time_zone"`
+	Locale     string `json:"locale"`
+	StartedAt  int64  `json:"started_at"`
+	DataAt     int64  `json:"data_at"`
+	SettingsAt int64  `json:"settings_at"`
+}
+
 type RenderImage struct {
 	RenderID int64  `json:"render_id"`
 	Layout   string `json:"layout"`

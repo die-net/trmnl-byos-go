@@ -57,11 +57,6 @@ func scratchRoots() []string {
 	return slices.Compact(resolved)
 }
 
-// within reports whether path is dir or lies inside it.
-func within(path, dir string) bool {
-	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
-}
-
 // checkRoots refuses a cleanup root that is /, that holds another file
 // system's mount point, which the cleanup would walk into, or that holds a
 // path the shim needs, such as its own binary, which the cleanup could

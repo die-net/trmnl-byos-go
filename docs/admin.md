@@ -16,7 +16,7 @@ Setting the admin password and managing API tokens are only on the command line.
 
 ### Running commands
 
-Every command but `proxy` takes `-data DIR`, the server's data directory, which is `data` unless you give another. Give the same directory the server uses. The examples here use `/var/lib/trmnl-byos`, as [setup](setup.md#server-only) does. A command given a directory with no database fails with "no database at PATH: pass the -data directory the server uses", and creates nothing. Only `serve` creates the database, so start it once before you run any other command. In Compose, wait for the server container to start first.
+Every command but `proxy` and `doctor` takes `-data DIR`, the server's data directory, which is `data` unless you give another. Give the same directory the server uses. The examples here use `/var/lib/trmnl-byos`, as [setup](setup.md#server-only) does. A command given a directory with no database fails with "no database at PATH: pass the -data directory the server uses", and creates nothing. Only `serve` creates the database, so start it once before you run any other command but `doctor`. In Compose, wait for the server container to start first.
 
 In the Compose setup, run each command inside the server's container, where the default data directory is the server's:
 
@@ -48,6 +48,31 @@ It asks twice without echo. From a script, pipe the password in as one line: `pr
 
 Until a password is set, a sign-in attempt fails with a message that says to run `trmnl-byos password`.
 
+### Checking the server with doctor
+
+`trmnl-byos doctor` checks whether the host can run recipe builds. It takes `serve`'s flags (see [setup](setup.md#settings-and-secrets)), so run it with the same command line as `serve`. It never starts the server, and makes nothing in the data directory, which need not exist yet. It writes one line per check:
+
+```
+pass|fail|warn|n/a|skip|note  <name>: <detail>
+```
+
+The detail of a failing check has the fix. It exits non-zero when a check that builds need fails. A `warn` does not change the exit status.
+
+With `-render-url`, it checks that the renderer answers a GET at that URL (any HTTP status means it is there). It says that `trmnl-render` checks its own user, writable places and processes when it starts and refuses to start otherwise, and that the deployment gives the network, the limits and what it can read. It checks none of those.
+
+Without `-render-url`, it checks the sandbox on this host:
+
+- The sandbox library's probe: the backend, whether it runs in a container, and each prerequisite with its fix. On Ubuntu 24.04 and later it prints the AppArmor profile.
+- Each tool, with its path and version. A missing required tool fails, and a missing optional one (Node, Python, PHP) warns.
+- Each path the sandbox shows read-only.
+- That the `-data` directory exists. It warns if not, since `serve` makes it when it first starts.
+- The library's check, run in a sandbox with the build's real settings. It expects the data directory and the cache to be unreadable, and the server's listen address to be unreachable.
+- `build.memory` and `build.tasks`. With `-render-cgroup`, it makes and removes a child cgroup to prove it works.
+- `build.oom`. Without `-render-cgroup` on a host that runs systemd, it warns that a build that uses up memory can get a process killed in the server's unit, and systemd's default then stops the server (see [setup](setup.md#running-under-systemd)).
+- A self-test, run in a sandbox that is a build's in all but its command, with a real proxy. It sends `CONNECT` through the build's listener. 169.254.169.254:80, 127.0.0.1, `::1` and each of the host's interface addresses at the server's listen port must be refused, and `trmnl.com:443` must be allowed, since builds need the internet.
+
+A failure of any check sets the exit status, but for the library's `limits.memory` and `limits.tasks`. They look at the sandbox the check makes, which has neither a build's cgroup nor its watchdog, so they are listed without counting, and a `note` line says so. `build.memory` and `build.tasks` say what bounds a build.
+
 ## The web UI
 
 Open the server's address in a browser, such as `http://192.168.1.10:8080`, and sign in. The pages are:
@@ -56,7 +81,7 @@ Open the server's address in a browser, such as `http://192.168.1.10:8080`, and 
 - **A device's page.** Its screen, its facts, and the playlist it would show now. A form for its name, firmware updates and pin, panel profile and palette, time zone and locale, sleep window, and what a button press and a double-click do. The order of its playlists. Block, unblock or delete it.
 - **Recipes.** Every recipe with its instances, the playlists that show them, when each last rendered and why a build failed. Upload a recipe zip. Remove an instance, once no playlist shows it.
 - **A recipe's page.** Add an instance, with a control for each of the recipe's custom fields. Replace the recipe's files with a new zip.
-- **An instance's page.** Edit its name, palette and fields, and see how its builds stand.
+- **An instance's page.** Edit its name, palette and fields, and see how its builds stand. When the host cannot start a sandbox, it says "Builds cannot start: REASON; run trmnl-byos doctor on the server to see why" until a sandbox starts again. A build failed with "the server stopped during this build" was running when the server stopped. After a planned restart that is expected, and the next build clears it.
 - **Playlists.** Every playlist with its schedule, devices and items. Create a playlist. Move, hide, show and remove items.
 - **A playlist's page.** Its name and schedule, its items, adding an item, and linking or unlinking devices.
 - **Firmware.** Every build with its rollout stage. Upload a build.
@@ -403,6 +428,7 @@ Every command but `proxy` also takes `-data DIR`. A device is a friendly ID or a
 | --- | --- |
 | `serve` | Run the server. Its flags are in [setup](setup.md#settings-and-secrets). |
 | `proxy` | Run the renderer's proxy apart from the server (see [setup](setup.md#the-renderer)). |
+| `doctor` | Check that builds can run, with serve's flags (see [below](#checking-the-server-with-doctor)). |
 | `join` | `join [-for duration]` |
 | `password` | `password` |
 | `calibrate` | `calibrate [-for duration] [-dot 1\|2] <device>` |

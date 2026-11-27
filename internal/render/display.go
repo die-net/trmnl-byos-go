@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -33,7 +34,8 @@ type display struct {
 // the pipe it gets as -displayfd once it accepts connections. Each build has
 // its own, so no build sees another's windows, and none outlives its build
 // to be killed by a sweep.
-func startDisplay(xvfb string, env []string) (*display, error) {
+// Xvfb's own output goes to out.
+func startDisplay(xvfb string, env []string, out io.Writer) (*display, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errNoDisplay, err)
@@ -50,7 +52,7 @@ func startDisplay(xvfb string, env []string) (*display, error) {
 	cmd := exec.CommandContext(ctx, xvfb, args...)
 	cmd.ExtraFiles = []*os.File{w}
 	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	cmd.Stdout, cmd.Stderr = out, out
 	// SIGTERM lets Xvfb remove its lock file and socket.
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 5 * time.Second

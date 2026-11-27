@@ -29,17 +29,25 @@ CI runs both, on the oldest supported Go (1.26) and the newest (1.27), and runs 
 
 The web UI's tests run its script in Node.js, so `node` must be on the path. Without it they fail rather than skip, so the script never goes unchecked.
 
-Some of the renderer's tests run only on Linux, since the shim lists processes and mounts from `/proc`.
+Some of the renderer's tests run only on Linux, since the shim lists processes and mounts from `/proc`, and sandboxed builds exist only there.
+
+On Linux, `go test ./...` runs sandboxed builds with a fake trmnlp (`internal/render/sandbox_linux_test.go`). They cover a build, each failure (trmnlp fails, the fetch fails, a malformed project, a timeout, over memory), a canceled build, a sandbox that cannot start, two builds at once, the proxy listener, and the sandbox library's check. They skip, saying why, where no sandbox can start: there is no bubblewrap, or the host is Ubuntu 24.04 or later and the test binary has no AppArmor profile with a `userns` rule. Run `trmnl-byos doctor` to get a profile and the commands to load it, and adapt its path to the test binary. So `go test ./...` skips them in CI. CI's `sandbox` job runs them instead, with `CGO_ENABLED` 0 and 1. It builds `internal/render` and `cmd/trmnl-byos`'s test binaries at fixed paths, loads for each the AppArmor profile the sandbox library's probe prints for that binary's path, the one `trmnl-byos doctor` shows (`TestWriteProbeProfile` writes them), and runs them with `TRMNL_TEST_REQUIRE_SANDBOX=1`, which makes a test that cannot start a sandbox fail rather than skip. Set it yourself to be sure a run did not skip them.
 
 ### Tests against a real renderer
 
-Tests with the `docker` build tag build small recipes in a running renderer. Start one (see [Running the renderer](#running-the-renderer)), then:
+Tests with the `trmnlp` build tag build small recipes with the real trmnlp (the file is `internal/render/trmnlp_test.go`). They need the internet. Without `TRMNL_RENDER_URL`, they run real builds in a sandbox on this host, so trmnlp and its tools must be on the `PATH` (see [setup](setup.md#builds-in-a-sandbox-on-the-host)). A host that cannot run them fails them, since they run only when asked for:
 
 ```bash
-TRMNL_RENDER_URL=http://localhost:8081 go test -tags docker ./internal/render/
+go test -tags trmnlp ./internal/render/
 ```
 
-They fail if `TRMNL_RENDER_URL` is not set. The renderer refuses a build while another runs, so these tests do not run in parallel.
+With `TRMNL_RENDER_URL`, they build in that renderer. Start one (see [Running the renderer](#running-the-renderer)), then:
+
+```bash
+TRMNL_RENDER_URL=http://localhost:8081 go test -tags trmnlp ./internal/render/
+```
+
+The shim refuses a build while another runs, so these tests do not run in parallel. `TestRendererWebGL` checks that a page that draws with WebGL is not blank. `TestRendererRefusesOwnBuilds` runs only against the shim.
 
 ## Lint
 
@@ -66,6 +74,8 @@ go generate ./internal/profile/
 It fetches with `curl`.
 
 ## Running the renderer
+
+`serve` with no `-render-url` builds recipes in a sandbox on the host. That needs bubblewrap and the tools on `serve`'s `PATH` (see [setup](setup.md#builds-in-a-sandbox-on-the-host)), and `trmnl-byos doctor` checks them. The rest of this section is about the renderer run apart with `-render-url`.
 
 The renderer runs only on Linux. To run it on its own, build its image from the repository root and run it without an init process, since the shim is process 1 and reaps its own children:
 

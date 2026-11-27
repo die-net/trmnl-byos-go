@@ -1,6 +1,7 @@
 // Command trmnl-byos is a self-hosted server for TRMNL e-ink displays.
 //
 //	trmnl-byos serve      run the server
+//	trmnl-byos doctor     check that builds can run, and how they are kept apart
 //	trmnl-byos proxy      run the renderer's proxy apart from the server
 //	trmnl-byos join       let new devices register for a while
 //	trmnl-byos device     list, delete and block devices
@@ -31,6 +32,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/die-net/sandbox"
+
 	"github.com/die-net/trmnl-byos-go/internal/adminapi"
 	"github.com/die-net/trmnl-byos-go/internal/adminui"
 	"github.com/die-net/trmnl-byos-go/internal/cache"
@@ -51,6 +54,7 @@ const usage = `usage: trmnl-byos <command> [flags]
 
 commands:
   serve      run the server
+  doctor     check that builds can run, and how they are kept apart
   proxy      run the renderer's proxy apart from the server
   join       let new devices register for a while
   device     list, delete and block devices: list, delete, block, unblock, blocked
@@ -67,6 +71,11 @@ Run "trmnl-byos <command> -h" for a command's flags.
 `
 
 func main() {
+	// Sandboxed builds start this binary again, inside the sandbox, as its
+	// first stage, which this finds before anything else runs.
+	if code, ok := sandbox.Stage(); ok {
+		os.Exit(code)
+	}
 	os.Exit(run())
 }
 
@@ -81,8 +90,12 @@ func run() int {
 
 	var err error
 	switch cmd, args := os.Args[1], os.Args[2:]; cmd {
+	case render.BuildCommand, render.SelfTestCommand:
+		return sandboxedCommand(ctx, os.Args[1], args)
 	case "serve":
 		err = serve(ctx, args)
+	case "doctor":
+		err = doctor(ctx, args, os.Stdout)
 	case "proxy":
 		err = proxy(ctx, args)
 	case "join":
@@ -199,17 +212,13 @@ func serve(ctx context.Context, args []string) error {
 
 // runServer is serve without the shutdown handling.
 func runServer(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	data := dataFlag(fs)
-	listen := fs.String("listen", ":8080", "address to listen on")
-	publicURL := fs.String("public-url", "", "base URL devices reach this server at, such as http://192.168.1.10:8080 (default: from each request)")
-	renderURL := fs.String("render-url", "", "URL of the renderer, such as http://renderer:8081 (default: recipes are not rendered)")
-	proxyListen := fs.String("proxy-listen", "", "address the renderer's proxy listens on in this process, such as :3128; never publish it (default: no proxy here, run trmnl-byos proxy)")
-	cacheDir := fs.String("cache", "cache", "directory holding the renderer's asset cache, with -proxy-listen")
-	debug := fs.Bool("debug", false, "log at debug level, including device request headers")
+	fs, f := newServeFlags("serve")
 	_ = fs.Parse(args) // ExitOnError exits on a parse error.
+	if err := f.check(); err != nil {
+		return err
+	}
 
-	if *debug {
+	if f.debug {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 	key, err := secrets.FromEnv()
@@ -221,20 +230,33 @@ func runServer(ctx context.Context, args []string) error {
 		return err
 	}
 
-	client, err := db.Open(ctx, dbPath(*data))
+	client, err := db.Open(ctx, dbPath(f.data))
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	images, err := imagestore.New(filepath.Join(*data, "images"))
+	images, err := imagestore.New(filepath.Join(f.data, "images"))
 	if err != nil {
 		return err
 	}
 
 	// Before anything that installs a recipe or starts the scheduler: clear
 	// what a crash during an install or an upload left behind.
-	if err := recipe.Sweep(ctx, client, recipesDir(*data), firmwareDir(*data), time.Now()); err != nil {
+	if err := recipe.Sweep(ctx, client, recipesDir(f.data), firmwareDir(f.data), time.Now()); err != nil {
 		return fmt.Errorf("sweep leftovers: %w", err)
+	}
+
+	// The asset cache serves a proxy in this process: the one each
+	// sandboxed build reaches, and the one -proxy-listen serves.
+	var assets *cache.Cache
+	if f.renderURL == "" || f.proxyListen != "" {
+		if assets, err = cache.New(f.cacheDir); err != nil {
+			return err
+		}
+	}
+	renderer, problem, err := f.renderer(assets)
+	if err != nil {
+		return err
 	}
 
 	// A change that may make a render due wakes the scheduler, so what it
@@ -243,11 +265,14 @@ func runServer(ctx context.Context, args []string) error {
 	wake := scheduler.NewWaker()
 	client.OnChange = wake.Wake
 	mux := http.NewServeMux()
-	deviceapi.New(client, images, deviceapi.Config{PublicURL: *publicURL, FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
-	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Zone: zone}).Register(mux)
-	adminui.New(client, adminui.Config{PublicURL: *publicURL, Zone: zone, RecipesDir: recipesDir(*data), FirmwareDir: firmwareDir(*data), Secrets: key}).Register(mux)
+	deviceapi.New(client, images, deviceapi.Config{PublicURL: f.publicURL, FirmwareDir: firmwareDir(f.data), Zone: zone}).Register(mux)
+	adminapi.New(client, adminapi.Config{Key: key, RecipesDir: recipesDir(f.data), FirmwareDir: firmwareDir(f.data), Zone: zone}).Register(mux)
+	adminui.New(client, adminui.Config{
+		PublicURL: f.publicURL, Zone: zone, RecipesDir: recipesDir(f.data), FirmwareDir: firmwareDir(f.data), Secrets: key,
+		RenderProblem: problem,
+	}).Register(mux)
 	srv := &http.Server{
-		Addr:              *listen,
+		Addr:              f.listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -262,33 +287,167 @@ func runServer(ctx context.Context, args []string) error {
 	g, ctx := errgroup.WithContext(ctx)
 	// The proxy fails before it starts anything, so returning here leaves
 	// nothing running.
-	if *proxyListen != "" {
-		ln, err := listenOn(ctx, *proxyListen)
+	if f.proxyListen != "" {
+		ln, err := listenOn(ctx, f.proxyListen)
 		if err != nil {
 			return err
 		}
-		if err := startProxy(ctx, g, ln, *cacheDir); err != nil {
-			return err
-		}
+		startProxy(ctx, g, ln, assets)
 	}
-	switch {
-	case *renderURL == "":
-		slog.Warn("no -render-url: playlists that show recipes will wait for renders")
-	case *proxyListen == "":
-		// Not a fallback: builds that fetch data or assets fail until a
-		// proxy the renderer can reach is running.
-		slog.Info("no -proxy-listen: the renderer's builds reach the internet only through a proxy run apart, such as trmnl-byos proxy")
+	if assets != nil {
+		g.Go(func() error {
+			assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
+			return nil
+		})
 	}
-	if *renderURL != "" {
-		startScheduler(ctx, g, client, images, key, zone, *data, *renderURL, wake)
-	}
+	startScheduler(ctx, g, client, images, key, zone, f.data, renderer, wake)
 	g.Go(func() error { return listenAndServe(ctx, srv, shutdownGrace) })
 	g.Go(func() error {
 		expireLoop(ctx, client, images)
 		return nil
 	})
-	slog.Info("serving", "listen", *listen, "data", *data, "render_url", *renderURL, "proxy_listen", *proxyListen)
+	slog.Info("serving", "listen", f.listen, "data", f.data, "render_url", f.renderURL, "proxy_listen", f.proxyListen)
 	return g.Wait()
+}
+
+// serveFlags are serve's flags. doctor takes the same ones, so it checks
+// the server as the same command line runs it.
+type serveFlags struct {
+	data, listen, publicURL string
+	// renderURL is the shim's URL, or "" to run each build in a sandbox
+	// on this host.
+	renderURL string
+	// proxyListen is the address of a proxy for a renderer run apart, or
+	// "" for none.
+	proxyListen string
+	// cacheDir is the proxy's asset cache, cache in the data directory
+	// unless -cache gives another, which check fills in.
+	cacheDir string
+	// renderMemory is the most memory a sandboxed build may use, in MiB.
+	renderMemory int
+	// renderCgroup is a delegated cgroup directory each sandboxed build
+	// gets a child of, or "" for none.
+	renderCgroup string
+	debug        bool
+}
+
+// newServeFlags returns a flag set called name with serve's flags, and
+// where they go.
+func newServeFlags(name string) (*flag.FlagSet, *serveFlags) {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	f := &serveFlags{}
+	fs.StringVar(&f.data, "data", "data", "directory holding the database and images")
+	fs.StringVar(&f.listen, "listen", ":8080", "address to listen on")
+	fs.StringVar(&f.publicURL, "public-url", "", "base URL devices reach this server at, such as http://192.168.1.10:8080 (default: from each request)")
+	fs.StringVar(&f.renderURL, "render-url", "", "URL of a renderer run apart, such as http://renderer:8081 (default: each build runs in a sandbox on this host)")
+	fs.StringVar(&f.proxyListen, "proxy-listen", "", "address a proxy for a renderer run apart listens on in this process, such as :3128; never publish it (default: none)")
+	fs.StringVar(&f.cacheDir, "cache", "", "directory holding the proxy's asset cache (default: cache in the -data directory)")
+	fs.IntVar(&f.renderMemory, "render-memory", 2048, "most memory a sandboxed build may use, in MiB")
+	fs.StringVar(&f.renderCgroup, "render-cgroup", "", "a cgroup v2 directory delegated to the server, which each sandboxed build gets a child of (default: none, a watchdog bounds its memory)")
+	fs.BoolVar(&f.debug, "debug", false, "log at debug level, including device request headers")
+	return fs, f
+}
+
+// minRenderMemory is the least -render-memory that lets a build start
+// Firefox at all.
+const minRenderMemory = 256
+
+// check refuses flags that cannot work together, and fills in the
+// defaults that depend on other flags.
+func (f *serveFlags) check() error {
+	if f.cacheDir == "" {
+		f.cacheDir = filepath.Join(f.data, "cache")
+	}
+	if f.renderMemory < minRenderMemory {
+		return fmt.Errorf("-render-memory %d: want at least %d MiB; a build takes about 1 GB", f.renderMemory, minRenderMemory)
+	}
+	if f.renderCgroup != "" && !filepath.IsAbs(f.renderCgroup) {
+		return fmt.Errorf("-render-cgroup %q: want an absolute path, such as one under /sys/fs/cgroup", f.renderCgroup)
+	}
+	return nil
+}
+
+// sandboxBuildTimeout bounds one sandboxed build, as trmnl-render's
+// default -timeout bounds one of its builds.
+const sandboxBuildTimeout = 2 * time.Minute
+
+// renderer returns what runs builds: the shim at -render-url, or a
+// sandbox for each build on this host, whose proxy serves from assets. It
+// also returns, for a sandbox, what says why builds cannot start, and nil
+// for the shim, whose outages show in the log.
+func (f *serveFlags) renderer(assets *cache.Cache) (scheduler.Renderer, func() string, error) {
+	if f.renderURL != "" {
+		if f.proxyListen == "" {
+			// Not a fallback: builds that fetch data or assets fail until a
+			// proxy the renderer can reach is running.
+			slog.Info("no -proxy-listen: the renderer's builds reach the internet only through a proxy run apart, such as trmnl-byos proxy")
+		}
+		slog.Info("render: builds go to the renderer", "render_url", f.renderURL)
+		return &render.Client{URL: f.renderURL, HTTP: &http.Client{}}, nil, nil
+	}
+	data, err := filepath.Abs(f.data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve -data: %w", err)
+	}
+	sb, err := f.sandbox(assets, filepath.Join(data, "tmp"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := sb.RemoveLeftovers(); err != nil {
+		slog.Warn("render: remove what builds of an earlier run left", "err", err)
+	}
+	if rep, err := render.ProbeSandbox(); err != nil {
+		slog.Warn("render: builds cannot start in a sandbox on this host until it is fixed; run trmnl-byos doctor", "err", err)
+	} else {
+		slog.Info("render: each build runs in a sandbox", "backend", rep.Backend, "container", rep.Container)
+	}
+	return sb, sb.Problem, nil
+}
+
+// sandbox returns the Sandbox that runs builds on this host, with their
+// homes in tempDir. Builds see neither the data directory nor the asset
+// cache, and reach the internet only through a proxy, which serves from
+// assets.
+func (f *serveFlags) sandbox(assets *cache.Cache, tempDir string) (*render.Sandbox, error) {
+	data, err := filepath.Abs(f.data)
+	if err != nil {
+		return nil, fmt.Errorf("resolve -data: %w", err)
+	}
+	cacheDir, err := filepath.Abs(f.cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve -cache: %w", err)
+	}
+	return render.NewSandbox(render.SandboxConfig{
+		TempDir: tempDir,
+		Cover:   []string{data, cacheDir},
+		Proxy:   proxyHandler(assets),
+		PathEnv: os.Getenv("PATH"),
+		Memory:  int64(f.renderMemory) << 20,
+		Cgroup:  f.renderCgroup,
+		Timeout: sandboxBuildTimeout,
+	})
+}
+
+// sandboxedCommand runs cmd, render.BuildCommand or
+// render.SelfTestCommand, which the server starts inside a build's
+// sandbox, and returns its exit status. Anywhere else it refuses: a build
+// would run with all of the user's access.
+func sandboxedCommand(ctx context.Context, cmd string, args []string) int {
+	if os.Args[0] != sandbox.SelfPath {
+		fmt.Fprintf(os.Stderr, "%s runs only inside a build's sandbox, which trmnl-byos starts\n", cmd)
+		return 2
+	}
+	var code int
+	var err error
+	if cmd == render.SelfTestCommand {
+		code, err = render.RunSelfTest(ctx, args, os.Stdout)
+	} else {
+		code, err = render.RunBuildCommand(ctx, args, os.Stdin, os.Stdout, os.NewFile(render.StartedFD, "started"))
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	return code
 }
 
 // shutdownGrace is how long a server waits for requests in flight when the
@@ -348,15 +507,15 @@ const (
 	cacheMaxBytes   = 2 << 30
 )
 
-// startScheduler starts the scheduler in g. It renders through the
-// renderer at renderURL, and wake makes it scan at once.
+// startScheduler starts the scheduler in g. It renders through renderer,
+// and wake makes it scan at once.
 func startScheduler(ctx context.Context, g *errgroup.Group, client *db.Client, images *imagestore.Store, key *secrets.Key,
-	zone *time.Location, data, renderURL string, wake scheduler.Waker,
+	zone *time.Location, data string, renderer scheduler.Renderer, wake scheduler.Waker,
 ) {
 	sched := scheduler.New(scheduler.Config{
 		DB:         client,
 		Images:     images,
-		Renderer:   &render.Client{URL: renderURL, HTTP: &http.Client{}},
+		Renderer:   renderer,
 		RecipesDir: recipesDir(data),
 		Secrets:    key,
 		Zone:       zone,
@@ -369,29 +528,24 @@ func startScheduler(ctx context.Context, g *errgroup.Group, client *db.Client, i
 	})
 }
 
-// startProxy starts, in g, the forward proxy the renderer's builds reach the
-// internet through, serving on ln, and the janitor of its asset cache in
-// cacheDir. If it fails, it has started nothing and closed ln.
-func startProxy(ctx context.Context, g *errgroup.Group, ln net.Listener, cacheDir string) error {
-	assets, err := cache.New(cacheDir)
-	if err != nil {
-		_ = ln.Close()
-		return err
-	}
-	g.Go(func() error {
-		assets.Janitor(ctx, cacheSweepEvery, cacheMaxAge, cacheMaxBytes)
-		return nil
-	})
-	handler := renderproxy.New(renderproxy.Config{
+// proxyHandler returns the forward proxy builds reach the internet
+// through, which refuses every address that is not public and serves the
+// framework's assets from assets.
+func proxyHandler(assets *cache.Cache) http.Handler {
+	return renderproxy.New(renderproxy.Config{
 		Dialer:      guard.NewDialer(10 * time.Second),
 		Cache:       assets,
 		CachedHosts: renderproxy.AssetHosts,
 	})
+}
+
+// startProxy starts, in g, the forward proxy a renderer run apart reaches
+// the internet through, serving on ln from assets.
+func startProxy(ctx context.Context, g *errgroup.Group, ln net.Listener, assets *cache.Cache) {
 	// No read or write timeout: a CONNECT tunnel lasts as long as the build
 	// uses it, and the renderer kills a build that runs too long.
-	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: proxyHandler(assets), ReadHeaderTimeout: 10 * time.Second}
 	g.Go(func() error { return serveOn(ctx, srv, ln, shutdownGrace) })
-	return nil
 }
 
 const (

@@ -42,15 +42,9 @@ type Client struct {
 func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writer) error,
 	png func(layout string, r io.Reader) error,
 ) (string, error) {
-	if err := job.validate(); err != nil {
-		return "", err
-	}
-	enc, err := encodeJob(job)
+	enc, err := prepareJob(job)
 	if err != nil {
 		return "", err
-	}
-	if len(enc) > maxJobBytes {
-		return "", fmt.Errorf("%w: the job is %d bytes, over the limit of %d", ErrRejected, len(enc), maxJobBytes)
 	}
 	pr, pw := io.Pipe()
 	written := make(chan error, 1)
@@ -110,50 +104,96 @@ func (c *Client) Build(ctx context.Context, job Job, writeProject func(*tar.Writ
 		return "", fmt.Errorf("render request: the renderer answered %s with no 102 Processing first: whatever is between the server and the renderer drops 1xx responses; reach it directly or through a TCP forward", resp.Status)
 	}
 
+	res, err := readResult(resp.Body, png)
+	if err != nil {
+		return res.log, err
+	}
+	return res.log, res.outcome(resp.StatusCode == http.StatusOK)
+}
+
+// prepareJob checks job and returns it encoded as it is sent. A job over
+// maxJobBytes is refused as ErrRejected.
+func prepareJob(job Job) ([]byte, error) {
+	if err := job.validate(); err != nil {
+		return nil, err
+	}
+	enc, err := encodeJob(job)
+	if err != nil {
+		return nil, err
+	}
+	if len(enc) > maxJobBytes {
+		return nil, fmt.Errorf("%w: the job is %d bytes, over the limit of %d", ErrRejected, len(enc), maxJobBytes)
+	}
+	return enc, nil
+}
+
+// received is what a result tar held.
+type received struct {
+	// log is the build log, cut to maxLogBytes.
+	log string
+	// layouts is how many layouts' PNGs came.
+	layouts int
+	// fetchFailed is whether the result said the build's data fetch failed.
+	fetchFailed bool
+}
+
+// outcome is the error for a result, or nil for a good one. built is
+// whether the renderer said the build succeeded.
+func (r received) outcome(built bool) error {
+	if !built {
+		if r.fetchFailed {
+			return ErrFetchFailed
+		}
+		return ErrBuildFailed
+	}
+	if r.layouts != len(Layouts) {
+		return fmt.Errorf("render result has %d of %d layouts", r.layouts, len(Layouts))
+	}
+	return nil
+}
+
+// readResult reads a result tar from r as it streams, and hands each
+// layout's PNG to png. It refuses a member it does not know and a PNG over
+// maxPNGBytes. The log it returns is what it read before any error.
+func readResult(r io.Reader, png func(layout string, r io.Reader) error) (received, error) {
 	var log strings.Builder
-	tr := tar.NewReader(resp.Body)
-	got := 0
-	fetchFailed := false
+	var res received
+	tr := tar.NewReader(r)
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return log.String(), fmt.Errorf("read render result: %w", err)
+			res.log = log.String()
+			return res, fmt.Errorf("read render result: %w", err)
 		}
 		if h.Name == logMember {
 			if _, err := io.Copy(&log, io.LimitReader(tr, maxLogBytes)); err != nil {
-				return log.String(), fmt.Errorf("read build log: %w", err)
+				res.log = log.String()
+				return res, fmt.Errorf("read build log: %w", err)
 			}
 			continue
 		}
 		if h.Name == fetchFailedMember {
-			fetchFailed = true
+			res.fetchFailed = true
 			continue
 		}
 		layout, ok := isLayout(h.Name)
+		res.log = log.String()
 		if !ok {
-			return log.String(), fmt.Errorf("read render result: unexpected %q", h.Name)
+			return res, fmt.Errorf("read render result: unexpected %q", h.Name)
 		}
 		if h.Size > maxPNGBytes {
-			return log.String(), fmt.Errorf("read render result: %s is %d bytes, over the limit of %d", h.Name, h.Size, maxPNGBytes)
+			return res, fmt.Errorf("read render result: %s is %d bytes, over the limit of %d", h.Name, h.Size, maxPNGBytes)
 		}
 		if err := png(layout, tr); err != nil {
-			return log.String(), err
+			return res, err
 		}
-		got++
+		res.layouts++
 	}
-	if resp.StatusCode == http.StatusUnprocessableEntity {
-		if fetchFailed {
-			return log.String(), ErrFetchFailed
-		}
-		return log.String(), ErrBuildFailed
-	}
-	if got != len(Layouts) {
-		return log.String(), fmt.Errorf("render result has %d of %d layouts", got, len(Layouts))
-	}
-	return log.String(), nil
+	res.log = log.String()
+	return res, nil
 }
 
 // errFailedDuringBuild marks an error status the renderer answered after it
