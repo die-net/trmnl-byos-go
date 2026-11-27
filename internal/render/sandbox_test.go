@@ -4,9 +4,9 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -139,16 +139,6 @@ func TestSandboxEnv(t *testing.T) {
 	}
 }
 
-// exitError runs a shell that ends as what says, and returns the error from
-// waiting for it, which is an *exec.ExitError for any status but 0. what is
-// an exit status, or "kill" for a shell that kills itself with SIGKILL.
-func exitError(t *testing.T, what string) error {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "sh", "-c", `if [ "$WHAT" = kill ]; then kill -9 $$; fi; exit "$WHAT"`)
-	cmd.Env = []string{"WHAT=" + what}
-	return cmd.Run()
-}
-
 // TestExitErr checks how each way a build's sandbox can end becomes an
 // error: the build command's own statuses, and any other end, such as a
 // signal, which matches none of the kinds that mean the renderer, the job
@@ -158,9 +148,11 @@ func TestExitErr(t *testing.T) {
 	full := received{layouts: len(Layouts)}
 	kinds := []error{ErrUnavailable, ErrRejected, ErrBuildFailed, ErrFetchFailed}
 	for _, tc := range []struct {
-		name   string
-		script string
-		// waitErr is used instead of the script's when set.
+		name string
+		// code is the exit status, from exitCode, and waitErr the error
+		// from Wait, nil for a status of 0 and an exit status error for
+		// any other unless set.
+		code    int
 		waitErr error
 		stderr  string
 		res     received
@@ -175,57 +167,53 @@ func TestExitErr(t *testing.T) {
 	}{
 		{name: "built", ok: true, res: full},
 		{name: "built with too few layouts", res: received{layouts: 3}, contains: []string{"3 of 4 layouts"}},
-		{name: "build failed", script: "3", res: full, is: []error{ErrBuildFailed}},
-		{name: "fetch failed", script: "3", res: received{fetchFailed: true}, is: []error{ErrFetchFailed}},
+		{name: "build failed", code: 3, res: full, is: []error{ErrBuildFailed}},
+		{name: "fetch failed", code: 3, res: received{fetchFailed: true}, is: []error{ErrFetchFailed}},
 		// Stderr has only the build command's own reasons, such as a
 		// result it could not write. Xvfb's output goes elsewhere.
 		{
-			name: "build failed with a reason", script: "3", stderr: "write result: broken pipe\n", res: full,
+			name: "build failed with a reason", code: 3, stderr: "write result: broken pipe\n", res: full,
 			is: []error{ErrBuildFailed}, contains: []string{"write result: broken pipe"},
 		},
 		{
-			name: "fetch failed with a reason", script: "3", stderr: "note", res: received{fetchFailed: true},
+			name: "fetch failed with a reason", code: 3, stderr: "note", res: received{fetchFailed: true},
 			is: []error{ErrFetchFailed}, contains: []string{"note"},
 		},
 		{
-			name: "unavailable with no reason", script: "5", res: full, outage: true,
+			name: "unavailable with no reason", code: 5, res: full, outage: true,
 			is: []error{ErrUnavailable}, contains: []string{"status 5", "trmnl-byos doctor"},
 		},
 		// Once the command has said it started, any other end may be the
 		// recipe's doing, so it counts against the build. One before that
 		// is an outage, which Build decides (see TestSandboxStageDies).
 		{
-			name: "first stage status after the command started", script: "125", stderr: "sandbox: reaper", res: full,
+			name: "first stage status after the command started", code: 125, stderr: "sandbox: reaper", res: full,
 			contains: []string{"reaper"},
 		},
 		{
-			name: "rejected", script: "4", stderr: "bad job: no palette", res: full,
+			name: "rejected", code: 4, stderr: "bad job: no palette", res: full,
 			is: []error{ErrRejected}, contains: []string{"bad job: no palette"},
 		},
 		{
-			name: "unavailable", script: "5", stderr: "Xvfb did not start\n", res: full, outage: true,
+			name: "unavailable", code: 5, stderr: "Xvfb did not start\n", res: full, outage: true,
 			is: []error{ErrUnavailable}, contains: []string{"Xvfb did not start", "trmnl-byos doctor"},
 		},
-		{name: "usage", script: "2", stderr: "usage: render-build", res: full, contains: []string{"usage: render-build"}},
-		{name: "usage with no reason", script: "2", res: full},
-		{name: "other status", script: "1", stderr: "boom", res: full, contains: []string{"boom"}},
-		{name: "killed", script: "kill", stderr: "partial output", res: full, contains: []string{"partial output", "killed"}},
-		{name: "not an exit error", waitErr: errors.New("wait failed"), res: full, contains: []string{"wait failed"}},
+		{name: "usage", code: 2, stderr: "usage: render-build", res: full, contains: []string{"usage: render-build"}},
+		{name: "usage with no reason", code: 2, res: full},
+		{name: "other status", code: 1, stderr: "boom", res: full, contains: []string{"boom"}},
+		{name: "killed", code: -1, waitErr: errors.New("signal: killed"), stderr: "partial output", res: full, contains: []string{"partial output", "killed"}},
+		{name: "not an exit error", code: -1, waitErr: errors.New("wait failed"), res: full, contains: []string{"wait failed"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sb, _ := newUnitSandbox(t, SandboxConfig{})
 			waitErr := tc.waitErr
-			if tc.script != "" {
-				waitErr = exitError(t, tc.script)
-				var exit *exec.ExitError
-				if !errors.As(waitErr, &exit) {
-					t.Fatalf("%q gave %v, not an exit error", tc.script, waitErr)
-				}
+			if waitErr == nil && tc.code != 0 {
+				waitErr = fmt.Errorf("exit status %d", tc.code)
 			}
 			stderr := &capped{}
 			_, _ = stderr.Write([]byte(tc.stderr))
-			err := sb.exitErr(waitErr, stderr, tc.res)
+			err := sb.exitErr(tc.code, waitErr, stderr, tc.res)
 			if tc.ok {
 				if err != nil {
 					t.Fatalf("exitErr = %v, want nil", err)
@@ -705,5 +693,18 @@ func TestNewHomeRemakesTempDir(t *testing.T) {
 	}
 	if filepath.Dir(home) != sb.tempDir {
 		t.Errorf("home %q is not in %q", home, sb.tempDir)
+	}
+}
+
+// TestExitCode checks the exit status Build hands exitErr: 0 for a sandbox
+// that ended well, and -1 for an error that holds no status, such as a
+// failure to wait.
+func TestExitCode(t *testing.T) {
+	t.Parallel()
+	if got := exitCode(nil); got != 0 {
+		t.Errorf("exitCode(nil) = %d, want 0", got)
+	}
+	if got := exitCode(errors.New("wait failed")); got != -1 {
+		t.Errorf("exitCode of a plain error = %d, want -1", got)
 	}
 }

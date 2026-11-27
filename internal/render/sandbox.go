@@ -305,7 +305,7 @@ func (s *Sandbox) Build(ctx context.Context, job Job, writeProject func(*tar.Wri
 	if readErr != nil && !ownReason {
 		return res.log, readErr
 	}
-	return res.log, s.exitErr(waitErr, &stderr, res)
+	return res.log, s.exitErr(exitCode(waitErr), waitErr, &stderr, res)
 }
 
 // exitCode is the exit status in err, from Wait: 0 for nil, and -1 for an
@@ -420,16 +420,9 @@ func (s *Sandbox) SelfTest(ctx context.Context, refused, allowed []string) ([]sa
 }
 
 // exitErr is the outcome of a build whose sandbox ended with err, from
-// Wait, having written stderr and the result res.
-func (s *Sandbox) exitErr(err error, stderr *capped, res received) error {
-	code := 0
-	if err != nil {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
-			return fmt.Errorf("the build's sandbox: %w", err)
-		}
-		code = exit.ExitCode()
-	}
+// Wait, and code, its exit status from exitCode, having written stderr and
+// the result res.
+func (s *Sandbox) exitErr(code int, err error, stderr *capped, res received) error {
 	msg := strings.TrimSpace(stderr.String())
 	switch code {
 	case exitBuilt:
