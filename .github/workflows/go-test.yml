@@ -129,9 +129,9 @@ jobs:
           TRMNL_TEST_APPARMOR_DIR: ${{ runner.temp }}/apparmor
         run: |
           sysctl kernel.apparmor_restrict_unprivileged_userns || true
-          # Each binary runs sandbox.Probe, which fails here and prints the
-          # profile for that binary's own path, the one doctor shows an
-          # operator, and writes it out (TestWriteProbeProfile).
+          # Each binary writes the profile sandbox.AppArmorProfile gives for
+          # its own path, which is the one Probe prints and doctor shows an
+          # operator (TestWriteProbeProfile).
           (cd internal/render && "$RUNNER_TEMP/bin/render.test" -test.run '^TestWriteProbeProfile$' -test.count=1 -test.v)
           (cd cmd/trmnl-byos && "$RUNNER_TEMP/bin/trmnl-byos.test" -test.run '^TestWriteProbeProfile$' -test.count=1 -test.v)
           for f in "$RUNNER_TEMP"/apparmor/*; do

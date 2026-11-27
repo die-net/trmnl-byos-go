@@ -9,8 +9,7 @@ package sandboxtest
 
 import (
 	"os"
-	"regexp"
-	"strings"
+	"path/filepath"
 	"testing"
 
 	"github.com/die-net/sandbox"
@@ -33,48 +32,37 @@ func Unavailable(t testing.TB, err error) {
 // ProfileDirEnv names a directory WriteProbeProfile writes into.
 const ProfileDirEnv = "TRMNL_TEST_APPARMOR_DIR"
 
-// profileName finds the name the profile is to be saved under in the fix a
-// probe's finding gives.
-var profileName = regexp.MustCompile(`save this as /etc/apparmor\.d/([A-Za-z0-9-]+),`)
-
-// WriteProbeProfile runs sandbox.Probe in this test binary, and writes the
-// AppArmor profile its failed finding prints, under the name it gives, into
-// the directory ProfileDirEnv names. That is the profile an operator is told
-// to load, for this binary's own path. Without ProfileDirEnv it skips. It
-// fails when Probe passes or prints no profile, since CI's sandbox job runs
-// it on a host that needs one. The profile starts at the finding's blank
-// line before "abi", after the fix and what the profile grants.
+// WriteProbeProfile writes the AppArmor profile for this test binary, from
+// sandbox.AppArmorProfile, which is the one sandbox.Probe prints and doctor
+// shows an operator, under the name it gives, into the directory
+// ProfileDirEnv names. Without ProfileDirEnv it skips. The profile is for the
+// binary's path with its links resolved, which is the file the kernel
+// execs, and AppArmor attaches profiles by.
 func WriteProbeProfile(t *testing.T) {
 	t.Helper()
 	dir := os.Getenv(ProfileDirEnv)
 	if dir == "" {
 		t.Skipf("%s is not set; CI's sandbox job sets it to load the profile", ProfileDirEnv)
 	}
-	rep, err := sandbox.Probe()
-	if err == nil {
-		t.Fatal("sandbox.Probe passed, so it printed no profile to load")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range rep.Checks {
-		m := profileName.FindStringSubmatch(c.Detail)
-		if c.Status != sandbox.Fail || m == nil {
-			continue
-		}
-		i := strings.Index(c.Detail, "\n\nabi ")
-		if i < 0 {
-			t.Fatalf("%s gives no profile after its fix: %s", c.Name, c.Detail)
-		}
-		profile := strings.TrimSpace(c.Detail[i+2:]) + "\n"
-		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = root.WriteFile(m[1], []byte(profile), 0o600)
-		_ = root.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("%s: wrote %s", c.Name, m[1])
-		return
+	if exe, err = filepath.EvalSymlinks(exe); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("sandbox.Probe failed with no profile to load: %v", err)
+	profile, name, err := sandbox.AppArmorProfile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = root.WriteFile(name, []byte(profile), 0o600)
+	_ = root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("wrote %s for %s", name, exe)
 }
